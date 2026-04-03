@@ -1,0 +1,110 @@
+// ============================================================
+// MeshRenderer component
+//
+// Tells the renderer to draw a mesh at this entity's transform.
+// Holds asset paths (resolved at load time) and optional GPU handles
+// (filled by the renderer lazily).
+//
+// C# / Unity equivalent: MeshRenderer + MeshFilter combined.
+// ============================================================
+
+use serde::{Deserialize, Serialize};
+
+use crate::ecs::component::Component;
+
+/// Built-in geometric shape to use when no mesh file is specified.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum PrimitiveType {
+    Cube,
+    Sphere,
+    Plane,
+    Cylinder,
+    Capsule,
+}
+
+/// MeshRenderer component.
+///
+/// Attach to any entity with a `Transform` to render a 3D mesh.
+///
+/// # Example
+/// ```rust
+/// world.add_component(entity, MeshRenderer {
+///     primitive: Some(PrimitiveType::Cube),
+///     cast_shadow: true,
+///     ..MeshRenderer::default()
+/// });
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeshRenderer {
+    // ── Asset references (serialized) ─────────────────────────────────────────
+
+    /// Path to a mesh file (.glb, .gltf, .fluxmesh).
+    /// If `None`, use `primitive` instead.
+    pub mesh_path: Option<String>,
+
+    /// Path to a material file (.fluxmat).
+    /// If `None`, the default PBR material is used.
+    pub material_path: Option<String>,
+
+    /// Use a built-in primitive shape. Ignored if `mesh_path` is set.
+    pub primitive: Option<PrimitiveType>,
+
+    // ── Rendering options (serialized) ────────────────────────────────────────
+
+    /// Whether this mesh casts shadows. Default: true.
+    pub cast_shadow: bool,
+
+    /// Whether this mesh receives shadows from other objects. Default: true.
+    pub receive_shadow: bool,
+
+    /// Render layer bitmask. Cameras can be configured to only render
+    /// specific layers (e.g., layer 0 = scene, layer 1 = UI overlays).
+    /// Default: layer 0.
+    pub layer: u8,
+
+    // ── Runtime GPU handles (NOT serialized) ──────────────────────────────────
+    // These are indices/keys into the renderer's registries.
+    // Filled by FluxionRenderer on first render, cleared on scene unload.
+
+    /// Handle into the renderer's MeshRegistry. None until loaded.
+    #[serde(skip)]
+    pub mesh_handle: Option<u32>,
+
+    /// Handle into the renderer's MaterialRegistry. None until loaded.
+    #[serde(skip)]
+    pub material_handle: Option<u32>,
+}
+
+impl MeshRenderer {
+    pub fn from_primitive(primitive: PrimitiveType) -> Self {
+        MeshRenderer { primitive: Some(primitive), ..Self::default() }
+    }
+
+    pub fn from_mesh_path(path: &str) -> Self {
+        MeshRenderer { mesh_path: Some(path.to_string()), ..Self::default() }
+    }
+}
+
+impl Default for MeshRenderer {
+    fn default() -> Self {
+        MeshRenderer {
+            mesh_path:       None,
+            material_path:   None,
+            primitive:       Some(PrimitiveType::Cube), // default: a cube
+            cast_shadow:     true,
+            receive_shadow:  true,
+            layer:           0,
+            mesh_handle:     None,
+            material_handle: None,
+        }
+    }
+}
+
+impl Component for MeshRenderer {
+    fn on_destroy(&mut self) {
+        // Release GPU handle references. The renderer will GC the actual GPU
+        // resources when reference count hits zero.
+        self.mesh_handle     = None;
+        self.material_handle = None;
+    }
+}

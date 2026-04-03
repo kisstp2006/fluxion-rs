@@ -1,0 +1,357 @@
+// ============================================================
+// fluxion-renderer — FluxionRenderer
+//
+// Top-level renderer. Owns the wgpu device + queue + surface,
+// manages the RenderGraph, and orchestrates each frame.
+//
+// Frame flow:
+//   1. acquire surface texture
+//   2. extract_frame_data()  — read ECS, build FrameData
+//   3. render_graph.execute() — run all passes
+//   4. submit + present
+//
+// WASM / native platform handling:
+//   - wgpu handles the backend selection automatically
+//   - Surface creation differs (winit window on native, HTMLCanvas on web)
+//   - async init is driven by pollster on native, wasm-bindgen-futures on web
+// ============================================================
+
+use std::sync::Arc;
+
+use anyhow::Context;
+use glam::Mat4;
+use winit::window::Window;
+use wgpu::SurfaceError;
+
+use fluxion_core::{
+    ECSWorld,
+    components::{Camera, Light, MeshRenderer},
+    components::light::LightType,
+    transform::Transform,
+    time::Time,
+};
+
+use crate::{
+    render_graph::{RenderGraph, PassSlot, RenderContext, RenderResources},
+    render_graph::context::{FrameData, CameraData, MeshDrawCall},
+    passes::{GeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass},
+    lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT},
+    material::MaterialRegistry,
+    mesh::MeshRegistry,
+    texture::TextureCache,
+    shader::ShaderCache,
+};
+
+/// The main renderer.
+///
+/// # Initialization
+/// ```rust
+/// // Native:
+/// let renderer = pollster::block_on(FluxionRenderer::new(Arc::new(window)))?;
+/// // WASM:
+/// let renderer = FluxionRenderer::new(Arc::new(window)).await?;
+/// ```
+pub struct FluxionRenderer {
+    pub device:  wgpu::Device,
+    pub queue:   wgpu::Queue,
+    surface:     wgpu::Surface<'static>,
+    config:      wgpu::SurfaceConfiguration,
+
+    pub render_graph: RenderGraph,
+    pub resources:    RenderResources,
+
+    pub materials: MaterialRegistry,
+    pub meshes:    MeshRegistry,
+    pub textures:  TextureCache,
+    pub shaders:   ShaderCache,
+
+    light_buffer: LightBuffer,
+
+    pub width:  u32,
+    pub height: u32,
+}
+
+impl FluxionRenderer {
+    /// Create the renderer from a winit window.
+    ///
+    /// This is `async` because wgpu device creation is asynchronous.
+    /// On native: wrap with `pollster::block_on(...)`.
+    /// On WASM:   `await` inside an `async fn`.
+    pub async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
+        let size = window.inner_size();
+        let (w, h) = (size.width.max(1), size.height.max(1));
+
+        // ── wgpu instance ─────────────────────────────────────────────────────
+        // Backends::all() picks the best available backend for the platform:
+        //   Windows: Vulkan > DX12 > DX11
+        //   macOS:   Metal
+        //   Web:     WebGPU > WebGL2
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        // Safety: the surface must not outlive the window.
+        // We use Arc<Window> so the window lives as long as the renderer.
+        let surface = instance
+            .create_surface(window.clone())
+            .context("Failed to create wgpu surface")?;
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference:       wgpu::PowerPreference::HighPerformance,
+                compatible_surface:     Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .context("No compatible GPU adapter found")?;
+
+        log::info!("GPU: {:?} ({:?})", adapter.get_info().name, adapter.get_info().backend);
+
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label:             Some("fluxion_device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits:   wgpu::Limits::default(),
+                    memory_hints:      Default::default(),
+                },
+                None,
+            )
+            .await
+            .context("Failed to create wgpu device")?;
+
+        // ── Surface configuration ─────────────────────────────────────────────
+        let surface_caps   = surface.get_capabilities(&adapter);
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .find(|f| f.is_srgb())
+            .copied()
+            .unwrap_or(surface_caps.formats[0]);
+
+        let config = wgpu::SurfaceConfiguration {
+            usage:         wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format:        surface_format,
+            width:         w,
+            height:        h,
+            present_mode:  wgpu::PresentMode::AutoVsync,
+            alpha_mode:    surface_caps.alpha_modes[0],
+            view_formats:  vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &config);
+
+        // ── GPU resources ─────────────────────────────────────────────────────
+        let resources = RenderResources::new(&device, w, h);
+
+        // Material registry needs a bind group layout matching geometry.frag.wgsl group(2).
+        // We create a temporary material bgl here; the geometry pass also creates one.
+        // In a full implementation, the bgl would be shared via a Rc/Arc.
+        // For Phase 1 we create the default material directly.
+        let tex_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding, visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            count: None,
+        };
+        let samp_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding, visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None,
+        };
+        let mat_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mat_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                tex_entry(1), samp_entry(2), tex_entry(3), samp_entry(4),
+                tex_entry(5), samp_entry(6), tex_entry(7), samp_entry(8),
+            ],
+        });
+
+        let mut textures  = TextureCache::new();
+        let materials     = MaterialRegistry::new(&device, &queue, &mat_bgl);
+        let meshes        = MeshRegistry::new(&device);
+        let light_buffer  = LightBuffer::new(&device);
+
+        // ── Render graph ──────────────────────────────────────────────────────
+        let mut render_graph = RenderGraph::new();
+        render_graph.add_pass("geometry",  PassSlot::Geometry,  Box::new(GeometryPass::new()));
+        render_graph.add_pass("lighting",  PassSlot::Lighting,  Box::new(LightingPass::new()));
+        render_graph.add_pass("skybox",    PassSlot::Skybox,    Box::new(SkyboxPass::new(surface_format)));
+        render_graph.add_pass("ssao",      PassSlot::Ssao,      Box::new(SsaoPass::new()));
+        render_graph.add_pass("bloom",     PassSlot::Bloom,     Box::new(BloomPass::new()));
+        render_graph.add_pass("tonemap",   PassSlot::Tonemap,   Box::new(TonemapPass::new(surface_format)));
+        render_graph.prepare(&device, &resources);
+
+        Ok(Self {
+            device, queue, surface, config,
+            render_graph, resources,
+            materials, meshes, textures, shaders: ShaderCache::new(),
+            light_buffer,
+            width: w, height: h,
+        })
+    }
+
+    // ── Public API ─────────────────────────────────────────────────────────────
+
+    /// Call when the window is resized.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 { return; }
+        self.width  = width;
+        self.height = height;
+        self.config.width  = width;
+        self.config.height = height;
+        self.surface.configure(&self.device, &self.config);
+        self.resources.resize(&self.device, width, height);
+        self.render_graph.resize(&self.device, width, height);
+    }
+
+    /// Render one frame from the current ECS world state.
+    ///
+    /// Returns `Err(SurfaceError::Outdated)` if the window was resized between
+    /// this call and the last `resize()` — just call `resize()` and retry.
+    pub fn render(&mut self, world: &ECSWorld, time: &Time) -> Result<(), SurfaceError> {
+        // ── Acquire surface texture ───────────────────────────────────────────
+        let surface_texture = self.surface.get_current_texture()?;
+        let surface_view    = surface_texture.texture.create_view(&Default::default());
+
+        // ── Extract scene data from ECS ───────────────────────────────────────
+        let frame = self.extract_frame_data(world, time);
+
+        // ── Upload light buffer to GPU ────────────────────────────────────────
+        let mut light_data = LightBufferData::new();
+        for light in &frame.lights {
+            light_data.push(*light);
+        }
+        self.light_buffer.upload(&self.queue, &light_data);
+
+        // ── Record commands ───────────────────────────────────────────────────
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("frame_encoder"),
+        });
+
+        let mut ctx = RenderContext {
+            device:       &self.device,
+            queue:        &self.queue,
+            encoder:      &mut encoder,
+            resources:    &self.resources,
+            frame:        &frame,
+            surface_view: &surface_view,
+            light_buffer: &self.light_buffer.gpu_buffer,
+            meshes:       &self.meshes,
+            materials:    &self.materials,
+        };
+
+        self.render_graph.execute(&mut ctx);
+
+        // ── Submit ────────────────────────────────────────────────────────────
+        self.queue.submit(std::iter::once(encoder.finish()));
+        surface_texture.present();
+        Ok(())
+    }
+
+    // ── Private: ECS → FrameData ──────────────────────────────────────────────
+
+    fn extract_frame_data(&mut self, world: &ECSWorld, time: &Time) -> FrameData {
+        // ── Camera ────────────────────────────────────────────────────────────
+        let camera = self.extract_camera(world);
+
+        // ── Mesh draw calls ───────────────────────────────────────────────────
+        let mut draw_calls: Vec<MeshDrawCall> = Vec::new();
+        let default_mat = self.materials.default_handle();
+        let meshes      = &self.meshes;
+        world.query_active::<(&Transform, &MeshRenderer), _>(|_id, (transform, mesh_renderer)| {
+            let mesh_handle = match mesh_renderer.mesh_handle {
+                Some(h) => h,
+                None => {
+                    if let Some(prim) = mesh_renderer.primitive {
+                        meshes.primitive_handle(prim)
+                    } else {
+                        return; // no mesh, skip
+                    }
+                }
+            };
+
+            let mat_handle  = mesh_renderer.material_handle.unwrap_or(default_mat);
+            let world_mat   = transform.world_matrix;
+            let normal_mat  = world_mat.inverse().transpose();
+
+            draw_calls.push(MeshDrawCall {
+                mesh:          mesh_handle,
+                material:      mat_handle,
+                world_matrix:  world_mat,
+                normal_matrix: normal_mat,
+                cast_shadow:   mesh_renderer.cast_shadow,
+                layer:         mesh_renderer.layer,
+            });
+        });
+
+        // ── Lights ────────────────────────────────────────────────────────────
+        let mut lights: Vec<LightUniform> = Vec::new();
+        world.query_active::<(&Transform, &Light), _>(|_id, (transform, light)| {
+            let light_type = match light.light_type {
+                LightType::Directional => LIGHT_DIRECTIONAL,
+                LightType::Point       => LIGHT_POINT,
+                LightType::Spot        => LIGHT_SPOT,
+            };
+
+            let outer_cos = (light.spot_angle.to_radians() * 0.5).cos();
+            let inner_cos = ((light.spot_angle * (1.0 - light.spot_penumbra)).to_radians() * 0.5).cos();
+
+            lights.push(LightUniform {
+                position:   transform.world_position.to_array(),
+                light_type,
+                direction:  transform.world_forward().to_array(),
+                range:      light.range,
+                color:      light.color,
+                intensity:  light.intensity,
+                spot_angle: outer_cos,
+                spot_inner: inner_cos,
+                _pad0:      0.0, _pad1: 0.0,
+            });
+        });
+
+        FrameData {
+            camera,
+            draw_calls,
+            lights,
+            viewport: (self.width, self.height),
+            time: time.elapsed,
+        }
+    }
+
+    fn extract_camera(&self, world: &ECSWorld) -> CameraData {
+        let mut result: Option<CameraData> = None;
+        let (w, h) = (self.width, self.height);
+
+        world.query_active::<(&Transform, &Camera), _>(|_id, (transform, camera)| {
+            if result.is_some() || !camera.is_active { return; }
+
+            let view = Mat4::look_at_rh(
+                transform.world_position,
+                transform.world_position + transform.world_forward(),
+                transform.world_up(),
+            );
+            let proj        = camera.projection_matrix(w, h);
+            let view_proj   = proj * view;
+            let inv_vp      = view_proj.inverse();
+            let inv_proj    = proj.inverse();
+
+            result = Some(CameraData {
+                view,
+                projection:    proj,
+                view_proj,
+                inv_view_proj: inv_vp,
+                inv_proj,
+                position:      transform.world_position,
+                near:          camera.near,
+                far:           camera.far,
+            });
+        });
+
+        result.unwrap_or_else(|| {
+            log::warn!("No active camera found in the scene");
+            CameraData::identity()
+        })
+    }
+}

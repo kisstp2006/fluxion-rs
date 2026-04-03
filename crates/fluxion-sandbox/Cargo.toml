@@ -1,0 +1,30 @@
+[package]
+name        = "fluxion-sandbox"
+version     = "0.1.0"
+edition     = "2021"
+description = "FluxionRS sandbox — test harness, demo scene, winit event loop."
+
+# This is a binary-only crate.
+[[bin]]
+name = "fluxion-sandbox"
+path = "src/main.rs"
+
+[dependencies]
+fluxion-core      = { path = "../fluxion-core" }
+fluxion-renderer  = { path = "../fluxion-renderer" }
+fluxion-scripting = { path = "../fluxion-scripting" }
+glam              = { workspace = true }
+anyhow            = { workspace = true }
+log               = { workspace = true }
+winit             = { workspace = true }
+wgpu              = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11"
+pollster   = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen         = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+console_log = "1"

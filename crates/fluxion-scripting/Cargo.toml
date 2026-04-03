@@ -1,0 +1,22 @@
+[package]
+name        = "fluxion-scripting"
+version     = "0.1.0"
+edition     = "2021"
+description = "FluxionRS JS/TS scripting — QuickJS VM, FluxionBehaviour lifecycle, render graph bindings."
+
+[features]
+default = []
+
+[dependencies]
+fluxion-core     = { path = "../fluxion-core" }
+fluxion-renderer = { path = "../fluxion-renderer" }
+glam             = { workspace = true }
+anyhow           = { workspace = true }
+log              = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+
+# QuickJS embedded JS engine.
+# "loader" enables ES module loading support.
+# "rust-alloc" uses Rust's allocator inside the JS heap.
+rquickjs = { version = "0.8", features = ["loader", "rust-alloc", "macro"] }

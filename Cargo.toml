@@ -1,0 +1,23 @@
+[workspace]
+members = [
+    "crates/fluxion-core",
+    "crates/fluxion-renderer",
+    "crates/fluxion-scripting",
+    "crates/fluxion-sandbox",
+]
+resolver = "2"
+
+# Shared dependency versions for the whole workspace.
+# Individual crates still opt-in via their own [dependencies] sections,
+# but the version is declared once here to keep things consistent.
+[workspace.dependencies]
+glam        = { version = "0.28", features = ["serde"] }
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+anyhow      = "1"
+log         = "0.4"
+bytemuck    = { version = "1", features = ["derive"] }
+hecs        = "0.10"
+wgpu        = { version = "22", features = ["wgsl"] }
+winit       = "0.30"
+image       = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
