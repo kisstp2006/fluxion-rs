@@ -13,7 +13,7 @@ use rune::Module;
 // ── Thread-local state ────────────────────────────────────────────────────────
 
 thread_local! {
-    static VP_TEXTURE_ID: Cell<u64> = Cell::new(u64::MAX);
+    static VP_TEXTURE: Cell<Option<egui::TextureId>> = Cell::new(None);
 }
 
 /// Set the current viewport texture ID.
@@ -21,11 +21,7 @@ thread_local! {
 /// Width/height are pushed to the VM separately via `RuneVm::push_viewport`.
 pub fn set_viewport_texture(id: egui::TextureId, width: u32, height: u32) {
     let _ = (width, height); // dimensions go through RuneVm::push_viewport instead
-    let raw: u64 = match id {
-        egui::TextureId::Managed(v) => v,
-        egui::TextureId::User(v)    => v,
-    };
-    VP_TEXTURE_ID.with(|c| c.set(raw));
+    VP_TEXTURE.with(|c| c.set(Some(id)));
 }
 
 /// Build the `fluxion::viewport` extension module.
@@ -37,7 +33,11 @@ pub fn build_viewport_module() -> anyhow::Result<Module> {
     let mut m = Module::with_crate_item("fluxion", ["viewport"])?;
 
     m.function("texture_id", || -> i64 {
-        VP_TEXTURE_ID.with(|c| c.get()) as i64
+        VP_TEXTURE.with(|c| match c.get() {
+            None                              => -1i64,
+            Some(egui::TextureId::Managed(v)) => v as i64,
+            Some(egui::TextureId::User(v))    => (v | (1u64 << 62)) as i64,
+        })
     }).build()?;
 
     Ok(m)

@@ -184,7 +184,12 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("image", |texture_id: i64, w: f64, h: f64| {
         with_ui(|ui| {
             if texture_id < 0 { return; }
-            let tid = egui::TextureId::Managed(texture_id as u64);
+            let raw = texture_id as u64;
+            let tid = if (raw >> 62) & 1 == 1 {
+                egui::TextureId::User(raw & !(1u64 << 62))
+            } else {
+                egui::TextureId::Managed(raw)
+            };
             let size = if w > 0.0 && h > 0.0 {
                 egui::Vec2::new(w as f32, h as f32)
             } else {
