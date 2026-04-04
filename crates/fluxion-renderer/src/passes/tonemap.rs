@@ -119,9 +119,14 @@ impl RenderPass for TonemapPass {
     }
 
     fn execute(&mut self, ctx: &mut RenderContext) {
-        let pipeline = match self.pipeline.as_ref()   { Some(p) => p, None => return };
-        let bind_group = match self.bind_group.as_ref() { Some(g) => g, None => return };
-        let params_buf = match self.params_buf.as_ref() { Some(b) => b, None => return };
+        // Rebuild bind group after resize (hdr_main texture was recreated).
+        if self.bind_group.is_none() {
+            self.rebuild_bind_group(ctx.device, &ctx.resources.hdr_main.view, &ctx.resources.hdr_main.sampler);
+        }
+
+        let pipeline   = match self.pipeline.as_ref()    { Some(p) => p, None => return };
+        let bind_group = match self.bind_group.as_ref()  { Some(g) => g, None => return };
+        let params_buf = match self.params_buf.as_ref()  { Some(b) => b, None => return };
 
         // Update time for film grain animation
         self.config.time = ctx.frame.time;

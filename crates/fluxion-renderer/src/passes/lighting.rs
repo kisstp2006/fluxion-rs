@@ -147,7 +147,7 @@ impl RenderPass for LightingPass {
     }
 
     fn execute(&mut self, ctx: &mut RenderContext) {
-        // Lazy-build the light bind group on first execute (buffer pointer is stable).
+        // Lazy-build stable bind groups (lost on resize, rebuilt here on demand).
         if self.light_bg.is_none() {
             if let Some(bgl) = self.light_bgl.as_ref() {
                 self.light_bg = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -159,6 +159,9 @@ impl RenderPass for LightingPass {
                     }],
                 }));
             }
+        }
+        if self.gbuf_bg.is_none() {
+            self.rebuild_gbuf_bind_group(ctx.device, ctx.resources);
         }
 
         let pipeline   = match self.pipeline.as_ref()   { Some(p) => p, None => return };

@@ -35,7 +35,10 @@ pub struct PbrParams {
     pub uv_offset:          [f32; 2],
     /// Bitfield: bit 0=albedo tex, 1=normal tex, 2=orm tex, 3=emissive tex.
     pub texture_flags:      u32,
-    pub _pad:               [f32; 3],
+    // WGSL aligns vec4<f32> to 16 bytes. texture_flags ends at offset 68,
+    // so we need 12 bytes of explicit gap before the vec4 at offset 80.
+    pub _pad0:              [u32; 3],  // 12 bytes: offset 68..80
+    pub _pad1:              [f32; 4],  // 16 bytes: offset 80..96
 }
 
 // ── PbrMaterial ────────────────────────────────────────────────────────────────
@@ -123,7 +126,8 @@ impl PbrMaterial {
             uv_scale:           uv.scale,
             uv_offset:          uv.offset,
             texture_flags,
-            _pad:               [0.0; 3],
+            _pad0:              [0; 3],
+            _pad1:              [0.0; 4],
         };
 
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

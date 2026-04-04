@@ -33,7 +33,8 @@ struct PbrParams {
     // Bitfield: which texture slots are bound.
     // bit 0 = albedo, 1 = normal, 2 = orm, 3 = emissive
     texture_flags:      u32,
-    _pad:               vec3<f32>,
+    // implicit 12-byte gap here (WGSL aligns vec4 to 16)
+    _pad:               vec4<f32>,  // offset 80, size 16 → struct size = 96
 }
 
 @group(2) @binding(0) var<uniform> material: PbrParams;

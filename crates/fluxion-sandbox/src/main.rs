@@ -51,7 +51,11 @@ use fluxion_scripting::{JsVm, bindings};
 fn main() {
     // Set up logging
     #[cfg(not(target_arch = "wasm32"))]
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .filter_module("wgpu_core", log::LevelFilter::Warn)
+        .filter_module("wgpu_hal",  log::LevelFilter::Warn)
+        .filter_module("wgpu",      log::LevelFilter::Warn)
+        .init();
 
     #[cfg(target_arch = "wasm32")]
     {

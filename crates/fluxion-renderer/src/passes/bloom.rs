@@ -30,7 +30,7 @@ pub struct BloomConfig {
 
 impl Default for BloomConfig {
     fn default() -> Self {
-        Self { enabled: true, threshold: 0.8, soft_knee: 0.5, strength: 0.4, blur_passes: 4 }
+        Self { enabled: false, threshold: 0.8, soft_knee: 0.5, strength: 0.4, blur_passes: 4 }
     }
 }
 
