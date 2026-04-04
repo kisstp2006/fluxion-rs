@@ -33,9 +33,11 @@ use winit::{
 
 use fluxion_core::{
     ECSWorld, EntityId, InputState, Time,
-    components::{Camera, Light, MeshRenderer},
+    components::{Camera, Light, MeshRenderer, ParticleEmitter},
     components::light::LightType,
     components::mesh_renderer::PrimitiveType,
+    step_particle_emitters,
+    scene::SceneSettings,
     transform::Transform,
     transform::system::TransformSystem,
 };
@@ -46,6 +48,11 @@ use fluxion_scripting::{
     JsVm, bindings,
     apply_transforms_from_scripts_to_world, sync_transforms_from_world_to_scripts,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+mod gamepad;
+#[cfg(not(target_arch = "wasm32"))]
+mod egui_shell;
 
 // ── Entry point ────────────────────────────────────────────────────────────────
 
@@ -98,6 +105,18 @@ struct SandboxInner {
     pending_demo: Option<SceneEntities>,
     /// Parent directory of loaded `.scene` (for `.fluxmat` resolution).
     asset_root: Option<PathBuf>,
+    /// Scene JSON `settings` applied to the renderer after init (`None` = built-in demo).
+    loaded_scene_settings: Option<SceneSettings>,
+    #[cfg(not(target_arch = "wasm32"))]
+    gilrs: Option<gilrs::Gilrs>,
+    #[cfg(not(target_arch = "wasm32"))]
+    egui: Option<egui_shell::EguiShell>,
+    #[cfg(not(target_arch = "wasm32"))]
+    ui_debug_lines: Vec<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    physics_demo: Option<(fluxion_physics::PhysicsWorld, fluxion_physics::RigidBodyHandle)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    _audio_keepalive: Option<fluxion_audio::AudioEngine>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -114,6 +133,9 @@ impl SandboxInner {
         let (fixed_steps, dt) = self.time.tick();
         #[cfg(target_arch = "wasm32")]
         let (fixed_steps, dt) = self.time.tick_wasm(performance_now_ms());
+
+        #[cfg(not(target_arch = "wasm32"))]
+        gamepad::poll_gamepad(&mut self.input, &mut self.gilrs);
 
         for _ in 0..fixed_steps {
             if let Err(e) = self.scripts.fixed_update(self.time.fixed_dt) {
@@ -140,11 +162,23 @@ impl SandboxInner {
             log::warn!("Script update error: {e}");
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.ui_debug_lines = bindings::drain_ui_debug_lines(&self.scripts);
+        }
+
         if let Err(e) = apply_transforms_from_scripts_to_world(&self.scripts, &mut self.world) {
             log::warn!("script transform sync (post): {e}");
         }
 
         TransformSystem::update(&mut self.world);
+
+        step_particle_emitters(&mut self.world, dt);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((ref mut pw, _)) = self.physics_demo.as_mut() {
+            pw.step(dt);
+        }
 
         self.input.begin_frame();
 
@@ -152,6 +186,60 @@ impl SandboxInner {
             return;
         };
 
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let win = self.window.clone();
+            let lines = self.ui_debug_lines.clone();
+            let ents = self.world.entity_count();
+            let dt = self.time.dt;
+            let smooth_fps = self.time.smooth_fps;
+            let elapsed = self.time.elapsed;
+            let frame = self.time.frame_count;
+            let scene_loaded = self.loaded_scene_settings.is_some();
+            let gamepad = self.input.gamepad_connected;
+            let ball_y = self
+                .physics_demo
+                .as_ref()
+                .and_then(|(w, h)| w.body_translation(*h))
+                .map(|p| p.y);
+            let w = renderer.width;
+            let h = renderer.height;
+            let res = if let Some(ref mut egui) = self.egui {
+                renderer.render_with(&self.world, &self.time, |device, queue, enc, view| {
+                    egui_shell::paint_sandbox_panel(
+                        egui,
+                        &win,
+                        device,
+                        queue,
+                        enc,
+                        view,
+                        w,
+                        h,
+                        &lines,
+                        ents,
+                        dt,
+                        smooth_fps,
+                        elapsed,
+                        frame,
+                        scene_loaded,
+                        gamepad,
+                        ball_y,
+                    )
+                })
+            } else {
+                renderer.render(&self.world, &self.time)
+            };
+            match res {
+                Ok(()) => {}
+                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    let size = self.window.inner_size();
+                    renderer.resize(size.width, size.height);
+                }
+                Err(e) => log::error!("Render error: {e}"),
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
         match renderer.render(&self.world, &self.time) {
             Ok(()) => {}
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -165,7 +253,7 @@ impl SandboxInner {
 
 fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
     let mut world = ECSWorld::new();
-    let (pending_demo, asset_root) = bootstrap_world(&mut world);
+    let (pending_demo, asset_root, loaded_scene_settings) = bootstrap_world(&mut world);
 
     let scripts = JsVm::new().expect("JS VM init failed");
     bindings::setup_bindings(&scripts).expect("JS binding setup failed");
@@ -184,6 +272,21 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    let grav = loaded_scene_settings
+        .as_ref()
+        .map(|s| Vec3::from_array(s.physics_gravity))
+        .unwrap_or(Vec3::new(0.0, -9.81, 0.0));
+    #[cfg(not(target_arch = "wasm32"))]
+    let physics_demo = {
+        let mut w = fluxion_physics::PhysicsWorld::new(grav);
+        w.add_ground_plane();
+        let ball = w.add_ball(0.25, Vec3::new(0.0, 2.5, 0.0));
+        Some((w, ball))
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let _audio_keepalive = fluxion_audio::AudioEngine::try_new();
+
     let inner = Rc::new(RefCell::new(SandboxInner {
         window: window.clone(),
         world,
@@ -193,6 +296,17 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
         renderer: None,
         pending_demo,
         asset_root,
+        loaded_scene_settings,
+        #[cfg(not(target_arch = "wasm32"))]
+        gilrs: gilrs::Gilrs::new().ok(),
+        #[cfg(not(target_arch = "wasm32"))]
+        egui: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        ui_debug_lines: Vec::new(),
+        #[cfg(not(target_arch = "wasm32"))]
+        physics_demo,
+        #[cfg(not(target_arch = "wasm32"))]
+        _audio_keepalive,
     }));
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -225,6 +339,19 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
 fn finish_renderer_setup(g: &mut SandboxInner) {
     let Some(ref mut renderer) = g.renderer else { return };
 
+    if let Some(ref s) = g.loaded_scene_settings {
+        renderer.apply_scene_settings(s.clone());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        g.egui = Some(egui_shell::EguiShell::new(
+            g.window.as_ref(),
+            &renderer.device,
+            renderer.surface_format(),
+        ));
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     {
         let root = g
@@ -255,7 +382,7 @@ fn finish_renderer_setup(g: &mut SandboxInner) {
     }
 }
 
-fn bootstrap_world(world: &mut ECSWorld) -> (Option<SceneEntities>, Option<PathBuf>) {
+fn bootstrap_world(world: &mut ECSWorld) -> (Option<SceneEntities>, Option<PathBuf>, Option<SceneSettings>) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let candidate = std::env::args()
@@ -269,22 +396,28 @@ fn bootstrap_world(world: &mut ECSWorld) -> (Option<SceneEntities>, Option<PathB
         if let Some(p) = candidate {
             let root = p.parent().map(PathBuf::from);
             let path_str = p.to_string_lossy();
-            match load_scene_file(path_str.as_ref()).and_then(|data| {
-                load_scene_into_world(world, &data, true).map_err(|e| e)
-            }) {
-                Ok(_) => {
-                    log::info!("Loaded scene from {}", path_str);
-                    return (None, root);
+            match load_scene_file(path_str.as_ref()) {
+                Ok(data) => {
+                    let settings = data.settings.clone();
+                    match load_scene_into_world(world, &data, true) {
+                        Ok(_) => {
+                            log::info!("Loaded scene from {}", path_str);
+                            return (None, root, Some(settings));
+                        }
+                        Err(e) => {
+                            log::warn!("Scene instantiate failed ({e}) — using built-in primitive demo");
+                            world.clear();
+                        }
+                    }
                 }
                 Err(e) => {
                     log::warn!("Scene load failed ({e}) — using built-in primitive demo");
-                    world.clear();
                 }
             }
         }
     }
 
-    (Some(setup_scene(world)), None)
+    (Some(setup_scene(world)), None, None)
 }
 
 // ── Scene setup ────────────────────────────────────────────────────────────────
@@ -348,6 +481,22 @@ fn setup_scene(world: &mut ECSWorld) -> SceneEntities {
         t.dirty    = true;
         world.add_component(ground, t);
         world.add_component(ground, MeshRenderer::from_primitive(PrimitiveType::Plane));
+    }
+
+    let sparks = world.spawn(Some("ParticleEmitter"));
+    {
+        let mut t = Transform::new();
+        t.position = Vec3::new(0.0, 0.2, 0.0);
+        t.dirty = true;
+        world.add_component(sparks, t);
+        let mut pe = ParticleEmitter::default();
+        pe.spawn_per_second = 48.0;
+        pe.max_particles = 512;
+        pe.start_speed = 1.8;
+        pe.lifetime = 1.4;
+        pe.color = [0.9, 0.85, 0.3, 0.85];
+        pe.size = 0.06;
+        world.add_component(sparks, pe);
     }
 
     TransformSystem::update(world);
@@ -426,6 +575,18 @@ impl ApplicationHandler for SandboxApp {
         let SandboxApp::Running(rc) = self else { return };
         let mut state = rc.borrow_mut();
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let egui_consumed = {
+            let win = state.window.clone();
+            state
+                .egui
+                .as_mut()
+                .map(|e| e.on_window_event(win.as_ref(), &event).consumed)
+                .unwrap_or(false)
+        };
+        #[cfg(target_arch = "wasm32")]
+        let egui_consumed = false;
+
         match event {
             WindowEvent::CloseRequested => {
                 log::info!("Window close requested — exiting");
@@ -439,6 +600,9 @@ impl ApplicationHandler for SandboxApp {
                         return;
                     }
                 }
+                if egui_consumed {
+                    return;
+                }
                 if let PhysicalKey::Code(code) = key_ev.physical_key {
                     let name = format!("{:?}", code);
                     state.input.set_key_down(&name, key_ev.state == ElementState::Pressed);
@@ -446,10 +610,16 @@ impl ApplicationHandler for SandboxApp {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
+                if egui_consumed {
+                    return;
+                }
                 state.input.set_mouse_position(position.x as f32, position.y as f32);
             }
 
             WindowEvent::MouseInput { state: btn_state, button, .. } => {
+                if egui_consumed {
+                    return;
+                }
                 let pressed = btn_state == ElementState::Pressed;
                 let (mut l, mut m, mut r) = (
                     state.input.mouse_left(),
@@ -466,6 +636,9 @@ impl ApplicationHandler for SandboxApp {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
+                if egui_consumed {
+                    return;
+                }
                 match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
                         state.input.add_scroll(x * 32.0, y * 32.0);

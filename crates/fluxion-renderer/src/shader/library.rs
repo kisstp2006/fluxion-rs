@@ -43,3 +43,6 @@ pub const SSAO_BLUR: &str = include_str!("../../../../assets/shaders/ssao_blur.w
 
 /// Skybox — renders a cubemap or procedural sky behind all geometry.
 pub const SKYBOX: &str = include_str!("../../../../assets/shaders/skybox.wgsl");
+
+/// Instanced billboard particles (overlay, alpha blend).
+pub const PARTICLES: &str = include_str!("../../../../assets/shaders/particles.wgsl");

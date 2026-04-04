@@ -20,23 +20,24 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
-use glam::Mat4;
+use glam::{Mat4, Vec3};
 use winit::window::Window;
 use wgpu::SurfaceError;
 
 use fluxion_core::{
     ECSWorld, EntityId,
     assets,
-    components::{Camera, Light, MeshRenderer},
+    components::{Camera, Light, MeshRenderer, ParticleEmitter},
     components::light::LightType,
+    scene::SceneSettings,
     transform::Transform,
     time::Time,
 };
 
 use crate::{
     render_graph::{RenderGraph, PassSlot, RenderContext, RenderResources},
-    render_graph::context::{FrameData, CameraData, MeshDrawCall},
-    passes::{GeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass},
+    render_graph::context::{FrameData, CameraData, MeshDrawCall, SkyParams, ParticleInstance},
+    passes::{GeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, ParticleOverlayPass},
     lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT},
     material::MaterialRegistry,
     mesh::{GpuMesh, MeshRegistry},
@@ -69,6 +70,12 @@ pub struct FluxionRenderer {
 
     /// When set, [`Self::add_material`] resolves texture paths through this source (FluxionJS-style relative paths).
     pub asset_source: Option<Arc<dyn assets::AssetSource>>,
+
+    /// From loaded `.scene` ([`SceneSettings`]); drives ambient, fog, sky tint, and [`Self::physics_gravity`].
+    pub scene_settings: SceneSettings,
+
+    /// Reserved: cubemap / equirect path from `scene_settings.skybox` once texture sky is implemented.
+    pub skybox_asset_path: Option<String>,
 
     /// The BindGroupLayout used by all PBR materials (group 2 in geometry pass).
     /// Stored here so `add_material()` can create new materials after init.
@@ -201,6 +208,7 @@ impl FluxionRenderer {
         render_graph.add_pass("ssao",      PassSlot::Ssao,      Box::new(SsaoPass::new()));
         render_graph.add_pass("bloom",     PassSlot::Bloom,     Box::new(bloom));
         render_graph.add_pass("tonemap",   PassSlot::Tonemap,   Box::new(tonemap));
+        render_graph.add_pass("particles", PassSlot::Overlay,   Box::new(ParticleOverlayPass::new(surface_format)));
         render_graph.prepare(&device, &resources);
 
         Ok(Self {
@@ -210,6 +218,8 @@ impl FluxionRenderer {
             mat_bgl,
             light_buffer,
             asset_source: None,
+            scene_settings: SceneSettings::default(),
+            skybox_asset_path: None,
             width: w, height: h,
         })
     }
@@ -219,6 +229,17 @@ impl FluxionRenderer {
     /// Set the asset root for texture loads in [`Self::add_material`] (and optional WASM scene materials).
     pub fn set_asset_source(&mut self, src: Option<Arc<dyn assets::AssetSource>>) {
         self.asset_source = src;
+    }
+
+    /// Apply global scene file settings (ambient, fog, gravity vector, skybox path placeholder).
+    pub fn apply_scene_settings(&mut self, settings: SceneSettings) {
+        self.skybox_asset_path = settings.skybox.clone();
+        self.scene_settings = settings;
+    }
+
+    /// Scene gravity from the last applied [`SceneSettings`] (for physics integration).
+    pub fn physics_gravity(&self) -> Vec3 {
+        Vec3::from_array(self.scene_settings.physics_gravity)
     }
 
     /// Compile external `.wgsl` from an [`assets::AssetSource`] (custom materials / hot reload).
@@ -604,26 +625,45 @@ impl FluxionRenderer {
         self.render_graph.resize(&self.device, width, height);
     }
 
+    /// Swapchain format (sRGB), for UI backends (`egui-wgpu`, etc.).
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
+
     /// Render one frame from the current ECS world state.
     ///
     /// Returns `Err(SurfaceError::Outdated)` if the window was resized between
     /// this call and the last `resize()` — just call `resize()` and retry.
     pub fn render(&mut self, world: &ECSWorld, time: &Time) -> Result<(), SurfaceError> {
-        // ── Acquire surface texture ───────────────────────────────────────────
+        self.render_with(world, time, |_, _, _, _| Vec::new())
+    }
+
+    /// Like [`Self::render`], then run `after` on the same encoder before submit (e.g. egui paint).
+    /// Return extra command buffers to submit before the main frame encoder (egui-wgpu callbacks).
+    pub fn render_with(
+        &mut self,
+        world: &ECSWorld,
+        time: &Time,
+        after: impl FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView) -> Vec<wgpu::CommandBuffer>,
+    ) -> Result<(), SurfaceError> {
         let surface_texture = self.surface.get_current_texture()?;
         let surface_view    = surface_texture.texture.create_view(&Default::default());
 
-        // ── Extract scene data from ECS ───────────────────────────────────────
         let frame = self.extract_frame_data(world, time);
 
-        // ── Upload light buffer to GPU ────────────────────────────────────────
         let mut light_data = LightBufferData::new();
         for light in &frame.lights {
             light_data.push(*light);
         }
+        let s = &self.scene_settings;
+        light_data.ambient_color = s.ambient_color;
+        light_data.ambient_intensity = s.ambient_intensity;
+        light_data.fog_color = s.fog_color;
+        light_data.fog_density = s.fog_density;
+        light_data.fog_enabled = u32::from(s.fog_enabled);
+        light_data._fog_pad = [0; 3];
         self.light_buffer.upload(&self.queue, &light_data);
 
-        // ── Record commands ───────────────────────────────────────────────────
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("frame_encoder"),
         });
@@ -642,8 +682,10 @@ impl FluxionRenderer {
 
         self.render_graph.execute(&mut ctx);
 
-        // ── Submit ────────────────────────────────────────────────────────────
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let user_bufs = after(&self.device, &self.queue, &mut encoder, &surface_view);
+
+        self.queue
+            .submit(user_bufs.into_iter().chain(std::iter::once(encoder.finish())));
         surface_texture.present();
         Ok(())
     }
@@ -709,13 +751,59 @@ impl FluxionRenderer {
             });
         });
 
+        let sky = Self::compute_sky_params(&self.scene_settings, &lights);
+
+        let mut particles: Vec<ParticleInstance> = Vec::new();
+        const MAX_DRAW: usize = 4096;
+        world.query_active::<&ParticleEmitter, _>(|_, emitter| {
+            for p in &emitter.particles {
+                if particles.len() >= MAX_DRAW {
+                    return;
+                }
+                particles.push(ParticleInstance {
+                    position: p.position.to_array(),
+                    size:     p.size,
+                    color:    p.color,
+                });
+            }
+        });
+
         FrameData {
             camera,
             draw_calls,
             lights,
             viewport: (self.width, self.height),
             time: time.elapsed,
+            sky,
+            particles,
         }
+    }
+
+    fn compute_sky_params(settings: &SceneSettings, lights: &[LightUniform]) -> SkyParams {
+        let mut sky = SkyParams::default();
+        let t = settings.ambient_intensity.max(0.0);
+        let a = settings.ambient_color;
+        sky.horizon_color = [
+            (0.55_f32 + a[0] * t * 1.5).clamp(0.08, 1.0),
+            (0.65_f32 + a[1] * t * 1.5).clamp(0.08, 1.0),
+            (0.95_f32 + a[2] * t * 1.2).clamp(0.15, 1.0),
+        ];
+        sky.zenith_color = [
+            (0.08_f32 + a[0] * t).clamp(0.02, 1.0),
+            (0.22_f32 + a[1] * t).clamp(0.05, 1.0),
+            (0.55_f32 + a[2] * t).clamp(0.08, 1.0),
+        ];
+        for lu in lights {
+            if lu.light_type == LIGHT_DIRECTIONAL {
+                sky.sun_direction = lu.direction;
+                break;
+            }
+        }
+        let d = Vec3::from_array(sky.sun_direction);
+        if d.length_squared() > 1e-8 {
+            sky.sun_direction = d.normalize().to_array();
+        }
+        sky
     }
 
     fn extract_camera(&self, world: &ECSWorld) -> CameraData {

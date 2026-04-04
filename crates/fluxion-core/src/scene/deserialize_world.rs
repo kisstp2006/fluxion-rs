@@ -19,7 +19,7 @@ use crate::ecs::world::ECSWorld;
 use crate::transform::Transform;
 use crate::transform::system::TransformSystem;
 
-use super::{SceneFileData, SerializedComponent};
+use super::{SceneFileData, SerializedComponent, SerializedEntity};
 
 /// Load scene entities into `world`. When `clear_first` is true, removes all existing roots first.
 /// Returns a map from serialized file entity id → runtime [`EntityId`].
@@ -32,9 +32,23 @@ pub fn load_scene_into_world(
         world.clear();
     }
 
+    let id_map = instantiate_entities(world, &data.entities)?;
+
+    ensure_active_camera(world);
+    TransformSystem::update(world);
+
+    Ok(id_map)
+}
+
+/// Spawn a topo-sorted list of serialized entities (scene slice or prefab). Does not clear the world.
+/// File `id` values are only used for parenting inside this batch; they need not match existing ECS ids.
+pub fn instantiate_entities(
+    world: &mut ECSWorld,
+    entities: &[SerializedEntity],
+) -> Result<HashMap<u32, EntityId>, String> {
     let mut id_map: HashMap<u32, EntityId> = HashMap::new();
 
-    for ent in &data.entities {
+    for ent in entities {
         let eid = world.spawn(Some(ent.name.as_str()));
         id_map.insert(ent.id, eid);
 
@@ -45,8 +59,7 @@ pub fn load_scene_into_world(
         }
     }
 
-    // Parents after all entities exist (file is topo-sorted; map may still need second pass)
-    for ent in &data.entities {
+    for ent in entities {
         if let Some(pid) = ent.parent {
             let Some(&child) = id_map.get(&ent.id) else { continue };
             let parent = id_map.get(&pid).copied();
@@ -54,9 +67,7 @@ pub fn load_scene_into_world(
         }
     }
 
-    ensure_active_camera(world);
     TransformSystem::update(world);
-
     Ok(id_map)
 }
 

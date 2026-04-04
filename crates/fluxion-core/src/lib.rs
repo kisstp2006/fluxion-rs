@@ -28,6 +28,8 @@ pub mod components;
 pub mod input;
 pub mod facade;
 pub mod assets;
+pub mod particles;
+pub mod debug_draw;
 
 // Re-export the most commonly used types at the crate root so users
 // can write `use fluxion_core::ECSWorld` instead of the full path.
@@ -39,7 +41,12 @@ pub use event::{EventBus, EventHandle, EngineEvent};
 pub use time::Time;
 pub use input::InputState;
 pub use facade::GameObject;
-pub use scene::{load_scene_from_bytes, load_scene_into_world};
+pub use scene::{
+    instantiate_entities, load_scene_from_bytes, load_scene_into_world, parse_prefab_json,
+    spawn_prefab_into_world, PrefabFileData,
+};
+pub use particles::step_particle_emitters;
+pub use debug_draw::{DebugDraw, DebugLine};
 
 // WASM entry-point: sets up the browser panic hook so Rust panics appear
 // as readable messages in the browser console instead of "unreachable".

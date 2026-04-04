@@ -1,0 +1,10 @@
+[package]
+name        = "fluxion-audio"
+version     = "0.1.0"
+edition     = "2021"
+description = "Native audio via cpal; WASM should use a Web Audio bridge (not wired here)."
+
+[dependencies]
+anyhow = { workspace = true }
+log    = { workspace = true }
+cpal   = { workspace = true }

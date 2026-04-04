@@ -1,0 +1,10 @@
+[package]
+name        = "fluxion-physics"
+version     = "0.1.0"
+edition     = "2021"
+description = "Rapier3D wrapper for FluxionRS (scene collider schema can extend later)."
+
+[dependencies]
+glam     = { workspace = true }
+log      = { workspace = true }
+rapier3d = { workspace = true }

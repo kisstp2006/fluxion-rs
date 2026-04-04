@@ -46,6 +46,13 @@ const Engine = {
 
     pause()  { Engine.paused = true;  if (typeof __engine_pause  === "function") __engine_pause();  },
     resume() { Engine.paused = false; if (typeof __engine_resume === "function") __engine_resume(); },
+
+    // Debug lines for native egui panel (Rust drains `lines` each frame after scripts).
+    ui: {
+        lines: [],
+        pushLine(s) { Engine.ui.lines.push(String(s)); },
+        clearLines() { Engine.ui.lines.length = 0; },
+    },
 };
 
 // ── Time global ───────────────────────────────────────────────────────────────
@@ -68,6 +75,7 @@ const Input = {
     _mousePos: { x: 0, y: 0 },
     _mouseDelta: { x: 0, y: 0 },
     _mouseButtons: { left: false, middle: false, right: false },
+    _gamepad: { connected: false, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0, buttons: 0 },
 
     isKeyDown(key)    { return !!Input._keys[key]; },
     getAxis(neg, pos) { return (Input._keys[pos] ? 1 : 0) - (Input._keys[neg] ? 1 : 0); },
@@ -81,6 +89,13 @@ const Input = {
         if (i === 2) return Input._mouseButtons.right;
         return false;
     },
+
+    get gamepadConnected() { return Input._gamepad.connected; },
+    get gamepadLeftStick() { return { x: Input._gamepad.lx, y: Input._gamepad.ly }; },
+    get gamepadRightStick() { return { x: Input._gamepad.rx, y: Input._gamepad.ry }; },
+    get gamepadLeftTrigger() { return Input._gamepad.lt; },
+    get gamepadRightTrigger() { return Input._gamepad.rt; },
+    get gamepadButtons() { return Input._gamepad.buttons; },
 };
 "#;
 
@@ -158,13 +173,47 @@ pub fn update_input_global(vm: &JsVm, input: &fluxion_core::InputState) -> anyho
     let ml = input.mouse_left();
     let mm = input.mouse_middle();
     let mr = input.mouse_right();
+    let gc = input.gamepad_connected;
+    let (lx, ly) = input.gamepad_left_stick;
+    let (rx, ry) = input.gamepad_right_stick;
+    let lt = input.gamepad_left_trigger;
+    let rt = input.gamepad_right_trigger;
+    let gb = input.gamepad_buttons;
     vm.eval(
         &format!(
             "Input._keys = {keys_json}; \
              Input._mousePos = {{ x: {mx}, y: {my} }}; \
              Input._mouseDelta = {{ x: {mdx}, y: {mdy} }}; \
-             Input._mouseButtons = {{ left: {ml}, middle: {mm}, right: {mr} }};",
+             Input._mouseButtons = {{ left: {ml}, middle: {mm}, right: {mr} }}; \
+             Input._gamepad = {{ connected: {gc}, lx: {lx}, ly: {ly}, rx: {rx}, ry: {ry}, lt: {lt}, rt: {rt}, buttons: {gb} }};",
         ),
         "<input-update>",
     )
+}
+
+/// Copy `Engine.ui.lines` into Rust and reset the JS array (native QuickJS only).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn drain_ui_debug_lines(vm: &JsVm) -> Vec<String> {
+    vm.ctx
+        .with(|ctx| -> Result<Vec<String>, rquickjs::Error> {
+            let g = ctx.globals();
+            let engine: rquickjs::Object = g.get("Engine")?;
+            let ui: rquickjs::Object = engine.get("ui")?;
+            let arr: rquickjs::Array = ui.get("lines")?;
+            let n = arr.len();
+            let mut out = Vec::with_capacity(n as usize);
+            for i in 0..n {
+                let s: String = arr.get(i)?;
+                out.push(s);
+            }
+            let fresh = rquickjs::Array::new(ctx.clone())?;
+            ui.set("lines", fresh)?;
+            Ok(out)
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn drain_ui_debug_lines(_vm: &JsVm) -> Vec<String> {
+    Vec::new()
 }

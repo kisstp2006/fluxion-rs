@@ -5,6 +5,8 @@
 // fluxion-core Rust bridge, with the same JSON format so existing
 // .scene files remain compatible.
 //
+// For 1:1 TS field comparison, keep FluxionJsV3/src (engine runtime) alongside this repo when available.
+//
 // Key operations:
 //   parse_and_sort_scene()  — parse JSON + topo-sort entities (parents first)
 //   serialize_scene()       — serialize SceneFileData back to JSON
@@ -191,5 +193,7 @@ pub fn save_scene_file(path: &str, scene: &SceneFileData) -> Result<(), String> 
 }
 
 mod deserialize_world;
+mod prefab;
 
-pub use deserialize_world::load_scene_into_world;
+pub use deserialize_world::{instantiate_entities, load_scene_into_world};
+pub use prefab::{parse_prefab_json, spawn_prefab_into_world, PrefabFileData};

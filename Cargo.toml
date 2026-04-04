@@ -3,6 +3,8 @@ members = [
     "crates/fluxion-core",
     "crates/fluxion-renderer",
     "crates/fluxion-scripting",
+    "crates/fluxion-physics",
+    "crates/fluxion-audio",
     "crates/fluxion-sandbox",
 ]
 resolver = "2"
@@ -21,3 +23,8 @@ hecs        = "0.10"
 wgpu        = { version = "22", features = ["wgsl"] }
 winit       = "0.30"
 image       = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rapier3d    = { version = "0.22", features = ["simd-stable"] }
+cpal        = "0.15"
+egui        = "0.29"
+egui-wgpu   = "0.29"
+egui-winit  = "0.29"

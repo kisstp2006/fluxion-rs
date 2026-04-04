@@ -40,3 +40,4 @@ pub mod script_transform_sync;
 pub use vm::JsVm;
 pub use render_pass::JsRenderPass;
 pub use script_transform_sync::{apply_transforms_from_scripts_to_world, sync_transforms_from_world_to_scripts};
+pub use bindings::drain_ui_debug_lines;

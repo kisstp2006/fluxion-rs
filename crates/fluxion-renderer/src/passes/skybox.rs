@@ -5,37 +5,9 @@
 // direction are configurable at runtime.
 // ============================================================
 
-use bytemuck::{Pod, Zeroable};
+pub use crate::render_graph::SkyParams;
 use crate::render_graph::{RenderPass, RenderContext, RenderResources};
 use crate::shader::library as shaders;
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub struct SkyParams {
-    pub horizon_color: [f32; 3],
-    pub _pad0:         f32,
-    pub zenith_color:  [f32; 3],
-    pub _pad1:         f32,
-    pub sun_direction: [f32; 3],
-    pub sun_intensity: f32,
-    pub sun_size:      f32,
-    pub _pad2:         f32,
-    pub _pad3:         f32,
-    pub _pad4:         f32,
-}
-
-impl Default for SkyParams {
-    fn default() -> Self {
-        Self {
-            horizon_color: [0.6, 0.75, 1.0],
-            zenith_color:  [0.1, 0.3, 0.8],
-            sun_direction: [0.5, 0.8, 0.3],
-            sun_intensity: 20.0,
-            sun_size:      0.02,
-            _pad0: 0.0, _pad1: 0.0, _pad2: 0.0, _pad3: 0.0, _pad4: 0.0,
-        }
-    }
-}
 
 pub struct SkyboxPass {
     pub params: SkyParams,
@@ -133,7 +105,7 @@ impl RenderPass for SkyboxPass {
         let camera_buf = match self.camera_buf.as_ref()  { Some(b) => b, None => return };
         let bind_group = match self.bind_group.as_ref()  { Some(g) => g, None => return };
 
-        ctx.queue.write_buffer(sky_buf, 0, bytemuck::bytes_of(&self.params));
+        ctx.queue.write_buffer(sky_buf, 0, bytemuck::bytes_of(&ctx.frame.sky));
 
         // Upload camera matrices + position
         #[repr(C)] #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

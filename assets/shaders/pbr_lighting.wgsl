@@ -61,6 +61,12 @@ struct LightBuffer {
     ambient_color:     vec3<f32>,
     ambient_intensity: f32,
     lights:            array<LightData, 64>,
+    fog_color:         vec3<f32>,
+    fog_density:       f32,
+    fog_enabled:       u32,
+    _fog_p0:           u32,
+    _fog_p1:           u32,
+    _fog_p2:           u32,
 }
 
 @group(1) @binding(0) var<uniform> light_buf: LightBuffer;
@@ -242,7 +248,11 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
     // ── Final composition ─────────────────────────────────────────────────────
     var color = ambient + total_radiance + emission;
 
-    // DEBUG: normals as color (red=+X, green=+Y, blue=+Z)
-    // Restore to: return vec4<f32>(color, 1.0);
-    return vec4<f32>(n * 0.5 + 0.5, 1.0);
+    if (light_buf.fog_enabled != 0u) {
+        let dist = length(camera.camera_position - world_pos);
+        let fog_t = 1.0 - exp(-light_buf.fog_density * dist);
+        color = mix(color, light_buf.fog_color, fog_t);
+    }
+
+    return vec4<f32>(color, 1.0);
 }

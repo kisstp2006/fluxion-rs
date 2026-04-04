@@ -54,6 +54,12 @@ class Spinner extends FluxionBehaviour {
         }
         const dq = quat_rotate_y(this.speed * Mathf.DEG2RAD * dt);
         this.transform.rotation = quat_normalize(quat_mul(r, dq));
+
+        if (typeof Engine !== "undefined" && Engine.ui && Engine.ui.pushLine) {
+            if (Time.frameCount % 45 === 0) {
+                Engine.ui.pushLine("Cube spin | dt=" + dt.toFixed(4) + " | frame " + Time.frameCount);
+            }
+        }
     }
 }
 

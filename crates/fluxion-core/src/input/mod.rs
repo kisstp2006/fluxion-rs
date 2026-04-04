@@ -21,6 +21,16 @@ pub struct InputState {
     mouse_left: bool,
     mouse_middle: bool,
     mouse_right: bool,
+
+    /// First connected gamepad (gilrs / winit backends fill this each frame).
+    pub gamepad_connected: bool,
+    pub gamepad_left_stick:  (f32, f32),
+    pub gamepad_right_stick: (f32, f32),
+    pub gamepad_left_trigger:  f32,
+    pub gamepad_right_trigger: f32,
+    /// Bitmask: bit0 South, 1 East, 2 North, 3 West, 4 LB, 5 RB, 6 Select, 7 Start,
+    /// 8 DUp, 9 DDown, 10 DLeft, 11 DRight.
+    pub gamepad_buttons: u32,
 }
 
 impl Default for InputState {
@@ -34,6 +44,12 @@ impl Default for InputState {
             mouse_left: false,
             mouse_middle: false,
             mouse_right: false,
+            gamepad_connected: false,
+            gamepad_left_stick:  (0.0, 0.0),
+            gamepad_right_stick: (0.0, 0.0),
+            gamepad_left_trigger:  0.0,
+            gamepad_right_trigger: 0.0,
+            gamepad_buttons: 0,
         }
     }
 }
@@ -48,6 +64,32 @@ impl InputState {
     pub fn begin_frame(&mut self) {
         self.mouse_delta = (0.0, 0.0);
         self.scroll_delta = (0.0, 0.0);
+    }
+
+    /// Reset gamepad snapshot (call at frame start; backend overwrites if a pad is active).
+    pub fn clear_gamepad(&mut self) {
+        self.gamepad_connected = false;
+        self.gamepad_left_stick = (0.0, 0.0);
+        self.gamepad_right_stick = (0.0, 0.0);
+        self.gamepad_left_trigger = 0.0;
+        self.gamepad_right_trigger = 0.0;
+        self.gamepad_buttons = 0;
+    }
+
+    pub fn set_gamepad_snapshot(
+        &mut self,
+        left_stick: (f32, f32),
+        right_stick: (f32, f32),
+        left_trigger: f32,
+        right_trigger: f32,
+        buttons: u32,
+    ) {
+        self.gamepad_connected = true;
+        self.gamepad_left_stick = left_stick;
+        self.gamepad_right_stick = right_stick;
+        self.gamepad_left_trigger = left_trigger.clamp(0.0, 1.0);
+        self.gamepad_right_trigger = right_trigger.clamp(0.0, 1.0);
+        self.gamepad_buttons = buttons;
     }
 
     pub fn is_key_down(&self, code: &str) -> bool {

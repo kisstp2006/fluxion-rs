@@ -403,6 +403,19 @@ impl ECSWorld {
         }
     }
 
+    /// Mutable query over **active** entities only (skips inactive / `SetActive(false)`).
+    pub fn query_active_mut<Q, F>(&mut self, mut f: F)
+    where
+        Q: hecs::Query,
+        F: FnMut(EntityId, Q::Item<'_>),
+    {
+        for (e, item) in self.inner.query_mut::<Q>() {
+            if !self.inactive.contains(&e) {
+                f(EntityId(e), item);
+            }
+        }
+    }
+
     /// Total number of alive entities.
     pub fn entity_count(&self) -> usize {
         self.all_entities.len()
