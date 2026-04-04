@@ -346,9 +346,14 @@ impl RuneVm {
         let result = vm.execute(fn_path, args);
         match result {
             Ok(mut exec) => {
-                let val = exec.complete().into_result()
-                    .context("Rune function panicked")?;
-                Ok(Some(val))
+                match exec.complete().into_result() {
+                    Ok(val) => Ok(Some(val)),
+                    Err(e)  => {
+                        // Log the full Rune error with source location if available.
+                        log::error!("Rune VM error: {:?}", e);
+                        Err(anyhow::anyhow!("Rune function panicked: {}", e))
+                    }
+                }
             }
             Err(e) => {
                 let msg = format!("{e:?}");
@@ -399,6 +404,20 @@ impl RuneVm {
     /// Run `on_hot_reload()` — called after the script is reloaded.
     pub fn on_hot_reload_hook(&self) -> anyhow::Result<()> {
         self.call_fn(&["on_hot_reload"], ())?;
+        Ok(())
+    }
+
+    /// Run `on_collision_enter(entity_a_id, entity_b_id)` — Unity-style collision callback.
+    /// Called for every collision start event this frame.
+    pub fn on_collision_enter(&self, entity_a: i64, entity_b: i64) -> anyhow::Result<()> {
+        self.call_fn(&["on_collision_enter"], (entity_a, entity_b))?;
+        Ok(())
+    }
+
+    /// Run `on_collision_exit(entity_a_id, entity_b_id)` — Unity-style collision callback.
+    /// Called for every collision stop event this frame.
+    pub fn on_collision_exit(&self, entity_a: i64, entity_b: i64) -> anyhow::Result<()> {
+        self.call_fn(&["on_collision_exit"], (entity_a, entity_b))?;
         Ok(())
     }
 

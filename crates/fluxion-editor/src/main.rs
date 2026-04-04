@@ -458,8 +458,10 @@ impl EditorInner {
             self.new_scene();
         }
 
-        // _world_ctx drops here, clearing the thread-locals.
+        // _world_ctx drops here, clearing world thread-locals.
         drop(_world_ctx);
+        // Clear physics context pointer after every frame.
+        self.host.clear_rune_context();
 
         match result {
             Ok(()) => {}

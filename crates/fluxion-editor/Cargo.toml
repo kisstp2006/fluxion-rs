@@ -11,7 +11,8 @@ path = "src/main.rs"
 [dependencies]
 fluxion-core           = { path = "../fluxion-core" }
 fluxion-renderer       = { path = "../fluxion-renderer" }
-fluxion-physics        = { path = "../fluxion-physics" }
+fluxion-physics        = { path = "../fluxion-physics", features = ["rune-scripting"] }
+fluxion-audio          = { path = "../fluxion-audio", features = ["rune-scripting"] }
 fluxion-rune-scripting = { path = "../fluxion-rune-scripting" }
 
 glam       = { workspace = true }

@@ -7,5 +7,14 @@ description = "Rapier3D wrapper for FluxionRS (scene collider schema can extend 
 [dependencies]
 glam         = { workspace = true }
 log          = { workspace = true }
+anyhow       = { workspace = true }
 rapier3d     = { workspace = true }
+crossbeam    = { version = "0.8", features = ["crossbeam-channel"] }
 fluxion-core = { path = "../fluxion-core" }
+
+[dependencies.rune]
+version  = "0.14"
+optional = true
+
+[features]
+rune-scripting = ["rune"]

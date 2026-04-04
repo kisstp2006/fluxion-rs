@@ -29,6 +29,9 @@ use crate::lighting::LightUniform;
 use crate::mesh::MeshRegistry;
 use crate::material::MaterialRegistry;
 
+/// Default shadow map resolution (pixels per side). Power of two.
+pub const SHADOW_MAP_SIZE: u32 = 2048;
+
 /// GPU layout for [`SkyboxPass`](crate::passes::SkyboxPass); uploaded from [`FrameData::sky`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -121,6 +124,11 @@ pub struct FrameData {
     pub particles:   Vec<ParticleInstance>,
     /// Debug line segments drained from `fluxion_core::drain_debug_lines()` each frame.
     pub debug_lines: Vec<DebugLine>,
+    /// Light-space view-projection matrix for the first shadow-casting directional light.
+    /// [`Mat4::IDENTITY`] when no shadow-casting light is active.
+    pub shadow_view_proj: Mat4,
+    /// Whether at least one light with `cast_shadow = true` is present this frame.
+    pub has_shadow_caster: bool,
 }
 
 // ── Shared GPU render targets ─────────────────────────────────────────────────
@@ -159,6 +167,10 @@ pub struct RenderResources {
     pub bloom_blur_a: GpuTexture, // blur ping
     pub bloom_blur_b: GpuTexture, // blur pong
 
+    // ── Shadow map ────────────────────────────────────────────────────────────
+    /// Depth texture rendered from the first directional shadow-casting light.
+    pub shadow_map: GpuTexture,
+
     pub width:  u32,
     pub height: u32,
 }
@@ -186,6 +198,8 @@ impl RenderResources {
             bloom_bright:   rth("bloom_bright",   Rgba16Float),
             bloom_blur_a:   rth("bloom_blur_a",   Rgba16Float),
             bloom_blur_b:   rth("bloom_blur_b",   Rgba16Float),
+
+            shadow_map: GpuTexture::depth(device, "shadow_map", SHADOW_MAP_SIZE, SHADOW_MAP_SIZE),
 
             width,
             height,

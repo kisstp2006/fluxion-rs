@@ -10,8 +10,6 @@ pub mod console {
 
 pub fn panel() {
     // Toolbar row: line count + Clear button.
-    // Use log_generation() as a cheap proxy for the count label — avoids
-    // cloning the full Vec just to get len().
     let gen = fluxion::world::log_generation();
     fluxion::ui::label(`Log  (gen ${gen})`);
     fluxion::ui::separator();
@@ -30,10 +28,11 @@ pub fn panel() {
 
     let i = 0;
     while i < lines.len() {
-        let line = lines[i];
-        if line.starts_with("[ERROR]") {
+        let line = lines[i].clone();
+        // Clone before each starts_with check — Rune snapshots String on method call.
+        if line.clone().starts_with("[ERROR]") {
             fluxion::ui::colored_label(line, 1.0, 0.35, 0.35);
-        } else if line.starts_with("[WARN]") {
+        } else if line.clone().starts_with("[WARN]") {
             fluxion::ui::colored_label(line, 1.0, 0.85, 0.2);
         } else {
             fluxion::ui::small(line);

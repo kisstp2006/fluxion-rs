@@ -451,6 +451,10 @@ impl ComponentRegistry {
             use crate::components::rigid_body::RigidBody;
             self.register_reflect::<RigidBody>("RigidBody");
         }
+        {
+            use crate::components::camera_controller::CameraController;
+            self.register_reflect::<CameraController>("CameraController");
+        }
     }
 }
 

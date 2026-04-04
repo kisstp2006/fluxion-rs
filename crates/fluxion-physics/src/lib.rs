@@ -19,6 +19,21 @@ use fluxion_core::transform::Transform;
 
 pub use rapier3d::prelude::RigidBodyHandle;
 
+#[cfg(feature = "rune-scripting")]
+pub mod rune_module;
+#[cfg(feature = "rune-scripting")]
+pub use rune_module::{build_physics_rune_module, set_physics_context, clear_physics_context};
+
+// ── Collision event types ─────────────────────────────────────────────────────
+
+/// A resolved collision event between two ECS entities.
+#[derive(Clone, Debug)]
+pub struct PhysicsCollisionEvent {
+    pub entity_a: EntityId,
+    pub entity_b: EntityId,
+    pub started:  bool,  // true = OnCollisionEnter, false = OnCollisionExit
+}
+
 // ── Low-level Rapier wrapper (unchanged API) ───────────────────────────────────
 
 /// Owns Rapier sets + pipeline. Step once per frame with [`Self::step`].
@@ -117,20 +132,39 @@ struct EntityEntry {
 /// # Typical per-frame usage
 /// ```text
 /// physics.sync_from_ecs(&world);   // register new RigidBody entities, remove despawned
-/// physics.step(dt);                // simulate
+/// physics.step(dt);                // simulate, collision events collected internally
 /// physics.sync_to_ecs(&world);     // write Rapier positions back to Transform (Dynamic only)
+/// physics.drain_collision_events() // take collected events for dispatch
 /// TransformSystem::update(&mut world); // propagate dirty flags through hierarchy
 /// ```
+/// Result of a `Physics.Raycast` query.
+#[derive(Clone, Debug)]
+pub struct RaycastHit {
+    pub entity:   EntityId,
+    pub point:    Vec3,
+    pub normal:   Vec3,
+    pub distance: f32,
+}
+
 pub struct PhysicsEcsWorld {
-    inner:      PhysicsWorld,
-    entity_map: HashMap<EntityId, EntityEntry>,
+    inner:          PhysicsWorld,
+    entity_map:     HashMap<EntityId, EntityEntry>,
+    /// handle → EntityId reverse lookup (rebuilt in sync_from_ecs)
+    handle_to_entity: HashMap<RigidBodyHandle, EntityId>,
+    /// Collision events collected during the last step().
+    pending_events: Vec<PhysicsCollisionEvent>,
+    /// Query pipeline for raycasts and shape queries (updated after each step).
+    query_pipeline: QueryPipeline,
 }
 
 impl PhysicsEcsWorld {
     pub fn new(gravity: Vec3) -> Self {
         Self {
-            inner:      PhysicsWorld::new(gravity),
-            entity_map: HashMap::new(),
+            inner:            PhysicsWorld::new(gravity),
+            entity_map:       HashMap::new(),
+            handle_to_entity: HashMap::new(),
+            pending_events:   Vec::new(),
+            query_pipeline:   QueryPipeline::new(),
         }
     }
 
@@ -149,6 +183,7 @@ impl PhysicsEcsWorld {
             .collect();
         for eid in stale {
             if let Some(entry) = self.entity_map.remove(&eid) {
+                self.handle_to_entity.remove(&entry.body_handle);
                 self.inner.bodies.remove(
                     entry.body_handle,
                     &mut self.inner.island_manager,
@@ -170,13 +205,66 @@ impl PhysicsEcsWorld {
 
         for (eid, rb, pos, rot) in to_add {
             let entry = self.create_body_for(&rb, pos, rot);
+            self.handle_to_entity.insert(entry.body_handle, eid);
             self.entity_map.insert(eid, entry);
         }
     }
 
     /// Advance the simulation by `dt` seconds (fixed timestep recommended).
+    /// Collision events are collected and available via [`Self::drain_collision_events`].
     pub fn step(&mut self, dt: f32) {
-        self.inner.step(dt);
+        use rapier3d::pipeline::ChannelEventCollector;
+        use crossbeam::channel::unbounded;
+
+        let (collision_send, collision_recv) = unbounded();
+        let (contact_force_send, _contact_force_recv) = unbounded();
+        let event_handler = ChannelEventCollector::new(collision_send, contact_force_send);
+
+        self.inner.integration_parameters.dt = dt;
+        self.inner.physics_pipeline.step(
+            &self.inner.gravity,
+            &self.inner.integration_parameters,
+            &mut self.inner.island_manager,
+            &mut self.inner.broad_phase,
+            &mut self.inner.narrow_phase,
+            &mut self.inner.bodies,
+            &mut self.inner.colliders,
+            &mut self.inner.impulse_joints,
+            &mut self.inner.multibody_joints,
+            &mut self.inner.ccd_solver,
+            None,
+            &(),
+            &event_handler,
+        );
+
+        // Update query pipeline so raycasts see the latest collider positions.
+        self.query_pipeline.update(&self.inner.colliders);
+
+        // Drain collision events into pending_events, resolving handles → EntityIds.
+        while let Ok(evt) = collision_recv.try_recv() {
+            let col_a = evt.collider1();
+            let col_b = evt.collider2();
+            let handle_a = self.inner.colliders.get(col_a).and_then(|c| c.parent());
+            let handle_b = self.inner.colliders.get(col_b).and_then(|c| c.parent());
+            if let (Some(ha), Some(hb)) = (handle_a, handle_b) {
+                if let (Some(&ea), Some(&eb)) = (
+                    self.handle_to_entity.get(&ha),
+                    self.handle_to_entity.get(&hb),
+                ) {
+                    self.pending_events.push(PhysicsCollisionEvent {
+                        entity_a: ea,
+                        entity_b: eb,
+                        started:  evt.started(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Take all collision events collected since the last call.
+    /// The internal buffer is cleared.
+    pub fn drain_collision_events(&mut self) -> Vec<PhysicsCollisionEvent> {
+        std::mem::take(&mut self.pending_events)
     }
 
     /// Copy simulated body positions/rotations back to ECS [`Transform`] components.
@@ -211,6 +299,93 @@ impl PhysicsEcsWorld {
 
     /// Read-only access to the inner [`PhysicsWorld`] (e.g. for debug draw).
     pub fn inner(&self) -> &PhysicsWorld { &self.inner }
+
+    /// Mutable access to the Rapier rigid-body set (for scripting force/velocity).
+    pub fn bodies_mut(&mut self) -> &mut RigidBodySet { &mut self.inner.bodies }
+
+    // ── Glam-friendly high-level API (used by editor scripting layer) ──────────
+
+    /// Add a continuous world-space force (Newtons) to an entity's rigid body.
+    pub fn add_force(&mut self, entity: EntityId, force: Vec3) {
+        if let Some(handle) = self.body_handle(entity) {
+            if let Some(body) = self.inner.bodies.get_mut(handle) {
+                body.add_force(vector![force.x, force.y, force.z], true);
+            }
+        }
+    }
+
+    /// Apply an instantaneous world-space impulse (kg·m/s) to an entity's rigid body.
+    pub fn add_impulse(&mut self, entity: EntityId, impulse: Vec3) {
+        if let Some(handle) = self.body_handle(entity) {
+            if let Some(body) = self.inner.bodies.get_mut(handle) {
+                body.apply_impulse(vector![impulse.x, impulse.y, impulse.z], true);
+            }
+        }
+    }
+
+    /// Set the linear velocity of an entity's rigid body.
+    pub fn set_linear_velocity(&mut self, entity: EntityId, vel: Vec3) {
+        if let Some(handle) = self.body_handle(entity) {
+            if let Some(body) = self.inner.bodies.get_mut(handle) {
+                body.set_linvel(vector![vel.x, vel.y, vel.z], true);
+            }
+        }
+    }
+
+    /// Get the linear velocity of an entity's rigid body. Returns `Vec3::ZERO` if not found.
+    pub fn get_linear_velocity(&self, entity: EntityId) -> Vec3 {
+        if let Some(handle) = self.body_handle(entity) {
+            if let Some(body) = self.inner.bodies.get(handle) {
+                let v = body.linvel();
+                return Vec3::new(v.x, v.y, v.z);
+            }
+        }
+        Vec3::ZERO
+    }
+
+    /// Set the gravity scale multiplier for an entity's rigid body.
+    pub fn set_gravity_scale(&mut self, entity: EntityId, scale: f32) {
+        if let Some(handle) = self.body_handle(entity) {
+            if let Some(body) = self.inner.bodies.get_mut(handle) {
+                body.set_gravity_scale(scale, true);
+            }
+        }
+    }
+
+    /// Cast a ray from `origin` in `direction` up to `max_dist` meters.
+    /// Returns the closest hit, if any.
+    pub fn raycast(&self, origin: Vec3, direction: Vec3, max_dist: f32) -> Option<RaycastHit> {
+        use rapier3d::geometry::Ray;
+        use rapier3d::pipeline::QueryFilter;
+
+        let ray = Ray::new(
+            rapier3d::na::Point3::new(origin.x, origin.y, origin.z),
+            vector![direction.x, direction.y, direction.z],
+        );
+
+        let (col_handle, intersection) = self.query_pipeline.cast_ray_and_get_normal(
+            &self.inner.bodies,
+            &self.inner.colliders,
+            &ray,
+            max_dist,
+            true,
+            QueryFilter::default(),
+        )?;
+
+        let collider = self.inner.colliders.get(col_handle)?;
+        let rb_handle = collider.parent()?;
+        let entity = *self.handle_to_entity.get(&rb_handle)?;
+
+        let hit_point = ray.point_at(intersection.time_of_impact);
+        let normal    = intersection.normal;
+
+        Some(RaycastHit {
+            entity,
+            point:    Vec3::new(hit_point.x, hit_point.y, hit_point.z),
+            normal:   Vec3::new(normal.x, normal.y, normal.z),
+            distance: intersection.time_of_impact,
+        })
+    }
 
     // ── Internal helpers ───────────────────────────────────────────────────────
 
@@ -261,6 +436,7 @@ impl PhysicsEcsWorld {
         let collider = col_builder
             .restitution(rb.restitution)
             .friction(rb.friction)
+            .active_events(ActiveEvents::COLLISION_EVENTS)
             .build();
 
         let collider_handle = self.inner.colliders

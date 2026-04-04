@@ -80,6 +80,56 @@ struct LightBuffer {
 @group(2) @binding(4) var gbuf_depth:     texture_depth_2d;
 @group(2) @binding(5) var gbuf_sampler:   sampler;
 
+// ── Shadow map ────────────────────────────────────────────────────────────────
+
+struct ShadowUniforms {
+    light_view_proj: mat4x4<f32>,
+    has_shadow:      u32,
+    _pad0:           u32,
+    _pad1:           u32,
+    _pad2:           u32,
+}
+
+@group(3) @binding(0) var<uniform> shadow_uni:     ShadowUniforms;
+@group(3) @binding(1) var          shadow_map:     texture_depth_2d;
+@group(3) @binding(2) var          shadow_sampler: sampler_comparison;
+
+// PCF shadow test — 3×3 kernel, returns [0..1] where 1 = fully lit.
+fn shadow_pcf(world_pos: vec3<f32>) -> f32 {
+    if shadow_uni.has_shadow == 0u { return 1.0; }
+
+    let light_clip = shadow_uni.light_view_proj * vec4<f32>(world_pos, 1.0);
+    // Perspective divide → NDC
+    var proj = light_clip.xyz / light_clip.w;
+    // Map NDC [-1,1] → UV [0,1]; flip Y for wgpu convention
+    let shadow_uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
+    let depth     = proj.z;
+
+    // Outside the shadow frustum → fully lit
+    if shadow_uv.x < 0.0 || shadow_uv.x > 1.0 ||
+       shadow_uv.y < 0.0 || shadow_uv.y > 1.0 ||
+       depth < 0.0 || depth > 1.0 {
+        return 1.0;
+    }
+
+    let tex_size = vec2<f32>(textureDimensions(shadow_map));
+    let texel    = 1.0 / tex_size;
+    var shadow   = 0.0;
+
+    // 3×3 PCF
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            let offset = vec2<f32>(f32(dx), f32(dy)) * texel;
+            shadow += textureSampleCompare(
+                shadow_map, shadow_sampler,
+                shadow_uv + offset,
+                depth - 0.005,  // small bias to prevent acne
+            );
+        }
+    }
+    return shadow / 9.0;
+}
+
 // ── Vertex input (from fullscreen.vert.wgsl) ──────────────────────────────────
 
 struct FragInput {
@@ -215,7 +265,8 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
         if light.light_type == LIGHT_DIRECTIONAL {
             // Directional: light direction is constant across the scene
             l           = -light.direction;
-            attenuation = 1.0;
+            // First directional light uses the shadow map; others are unshadowed.
+            attenuation = select(1.0, shadow_pcf(world_pos), i == 0u);
 
         } else if light.light_type == LIGHT_POINT {
             let to_light = light.position - world_pos;

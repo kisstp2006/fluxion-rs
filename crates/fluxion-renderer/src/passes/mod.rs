@@ -10,6 +10,7 @@ pub mod ssao;
 pub mod tonemap;
 pub mod particles;
 pub mod debug_lines;
+pub mod shadow;
 
 pub use geometry::GeometryPass;
 pub use lighting::LightingPass;
@@ -19,3 +20,4 @@ pub use ssao::SsaoPass;
 pub use tonemap::TonemapPass;
 pub use particles::ParticleOverlayPass;
 pub use debug_lines::DebugLinePass;
+pub use shadow::ShadowPass;

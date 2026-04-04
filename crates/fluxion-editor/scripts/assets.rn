@@ -8,11 +8,12 @@
 pub mod assets {
 
 fn file_icon(name) {
-    if name.ends_with(".fluxscene") { return "[SCN]"; }
-    if name.ends_with(".obj") || name.ends_with(".gltf") || name.ends_with(".glb") { return "[MDL]"; }
-    if name.ends_with(".png") || name.ends_with(".jpg") || name.ends_with(".jpeg") || name.ends_with(".webp") { return "[TEX]"; }
-    if name.ends_with(".rn")  { return " [RN]"; }
-    if name.ends_with(".wav") || name.ends_with(".ogg") || name.ends_with(".mp3")  { return "[SND]"; }
+    // name is passed by value; .ends_with() snapshots it — use clone between calls.
+    if name.clone().ends_with(".fluxscene") { return "[SCN]"; }
+    if name.clone().ends_with(".obj") || name.clone().ends_with(".gltf") || name.clone().ends_with(".glb") { return "[MDL]"; }
+    if name.clone().ends_with(".png") || name.clone().ends_with(".jpg") || name.clone().ends_with(".jpeg") || name.clone().ends_with(".webp") { return "[TEX]"; }
+    if name.clone().ends_with(".rn")  { return " [RN]"; }
+    if name.clone().ends_with(".wav") || name.clone().ends_with(".ogg") || name.clone().ends_with(".mp3")  { return "[SND]"; }
     "[   ]"
 }
 
@@ -26,8 +27,8 @@ pub fn panel() {
         if fluxion::ui::collapsing_begin("/ (root)") {
             let i = 0;
             while i < root_files.len() {
-                let f    = root_files[i];
-                let icon = file_icon(f);
+                let f    = root_files[i].clone();
+                let icon = file_icon(f.clone());
                 fluxion::ui::label(`${icon} ${f}`);
                 i += 1;
             }
@@ -39,16 +40,16 @@ pub fn panel() {
     let dirs = fluxion::world::list_asset_dirs();
     let di = 0;
     while di < dirs.len() {
-        let dir = dirs[di];
-        if fluxion::ui::collapsing_begin(dir) {
-            let files = fluxion::world::list_assets(dir);
+        let dir = dirs[di].clone();
+        if fluxion::ui::collapsing_begin(dir.clone()) {
+            let files = fluxion::world::list_assets(dir.clone());
             let fi = 0;
             while fi < files.len() {
-                let f    = files[fi];
-                let icon = file_icon(f);
+                let f     = files[fi].clone();
+                let icon  = file_icon(f.clone());
                 let label = `${icon} ${f}`;
                 if fluxion::ui::button(label) {
-                    if f.ends_with(".fluxscene") {
+                    if f.clone().ends_with(".fluxscene") {
                         fluxion::world::log(`[Assets] Load scene: ${dir}/${f}`);
                     }
                 }

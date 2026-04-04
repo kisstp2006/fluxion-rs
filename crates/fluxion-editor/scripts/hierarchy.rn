@@ -11,11 +11,12 @@ pub mod hierarchy {
 fn entity_icon(id) {
     let comps = fluxion::world::component_types(id);
     for c in comps {
-        if c == "Camera"          { return "[CAM]"; }
-        if c == "Light"           { return "[LGT]"; }
-        if c == "MeshRenderer"    { return "[MSH]"; }
-        if c == "ParticleEmitter" { return "[FX] "; }
-        if c == "RigidBody"       { return "[RB] "; }
+        // Clone before each comparison — Rune snapshots Strings on == use.
+        if c.clone() == "Camera"          { return "[CAM]"; }
+        if c.clone() == "Light"           { return "[LGT]"; }
+        if c.clone() == "MeshRenderer"    { return "[MSH]"; }
+        if c.clone() == "ParticleEmitter" { return "[FX] "; }
+        if c.clone() == "RigidBody"       { return "[RB] "; }
     }
     "[   ]"
 }
@@ -31,15 +32,16 @@ fn draw_entity_row(id, depth, sel) {
 
     let action = fluxion::ui::selectable_with_menu(label, sel == id, ["Rename", "Duplicate", "Delete", "Unparent"]);
 
-    if action == "select" {
+    // Clone before each comparison — Rune snapshots Strings on == use.
+    if action.clone() == "select" {
         fluxion::world::set_selected(id);
-    } else if action == "Delete" {
+    } else if action.clone() == "Delete" {
         fluxion::world::despawn(id);
-    } else if action == "Duplicate" {
+    } else if action.clone() == "Duplicate" {
         fluxion::world::duplicate_entity(id);
-    } else if action == "Rename" {
+    } else if action.clone() == "Rename" {
         fluxion::world::set_selected(id);
-    } else if action == "Unparent" {
+    } else if action.clone() == "Unparent" {
         fluxion::world::set_parent(id, -1);
     }
 

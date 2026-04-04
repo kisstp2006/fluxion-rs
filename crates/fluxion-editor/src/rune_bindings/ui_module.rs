@@ -76,8 +76,8 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         with_ui(|ui| { ui.separator(); });
     }).build()?;
 
-    m.function("space", |pixels: f64| {
-        with_ui(|ui| { ui.add_space(pixels as f32); });
+    m.function("space", |pixels: i64| {
+        with_ui(|ui| { ui.add_space(pixels.max(0) as f32); });
     }).build()?;
 
     // ── Interactive widgets ───────────────────────────────────────────────────
@@ -283,13 +283,6 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 });
             chosen
         }).unwrap_or_default()
-    }).build()?;
-
-    // ── Spacing / indent ──────────────────────────────────────────────────────
-    m.function("space", |pixels: i64| {
-        with_ui(|ui| {
-            ui.add_space(pixels.max(0) as f32);
-        });
     }).build()?;
 
     // ── Size query ────────────────────────────────────────────────────────────

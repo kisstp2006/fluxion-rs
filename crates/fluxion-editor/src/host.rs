@@ -16,7 +16,7 @@ use fluxion_core::{
     ComponentRegistry, ECSWorld, InputState, Time,
     transform::Transform,
     transform::system::TransformSystem,
-    components::{Camera, Light, LightType},
+    components::{Camera, Light, LightType, CameraControllerSystem},
 };
 use glam::{Quat, Vec3};
 use fluxion_rune_scripting::RuneVm;
@@ -25,6 +25,9 @@ use crate::rune_bindings::{
     all_editor_modules,
     drain_pending_edits, get_selected_id,
     set_world_context, WorldContextGuard,
+    set_physics_context, clear_physics_context,
+    set_audio_context, clear_audio_context,
+    set_input_context, clear_input_context,
 };
 use crate::rune_bindings::world_module::push_log;
 use crate::undo::UndoStack;
@@ -38,6 +41,7 @@ pub struct EditorHost {
     pub input:    InputState,
     pub vm:       RuneVm,
     pub physics:  Option<fluxion_physics::PhysicsEcsWorld>,
+    pub audio:    Option<fluxion_audio::AudioEngine>,
     pub undo:     UndoStack,
 
     /// Scripts directory — watched for hot reload.
@@ -89,6 +93,8 @@ impl EditorHost {
             glam::Vec3::new(0.0, -9.81, 0.0),
         ));
 
+        let audio = fluxion_audio::AudioEngine::try_new();
+
         Ok(Self {
             world,
             registry,
@@ -96,6 +102,7 @@ impl EditorHost {
             input:       InputState::new(),
             vm,
             physics,
+            audio,
             undo:        UndoStack::new(),
             scripts_dir,
         })
@@ -154,8 +161,15 @@ impl EditorHost {
             }
         }
 
+        // Camera controllers (play mode only)
+        let dt = self.time.dt;
+        CameraControllerSystem::update(&mut self.world, &self.input, dt);
+
         // Transform propagation
         TransformSystem::update(&mut self.world);
+
+        // Dispatch collision events to Rune scripts (Unity-style callbacks).
+        self.dispatch_collision_events();
 
         // Hot reload poll
         self.vm.poll_hot_reload();
@@ -180,8 +194,22 @@ impl EditorHost {
 
     /// Set thread-locals so the Rune world module can access ECS data this frame.
     /// Returns a `WorldContextGuard`; thread-locals are cleared when it drops.
-    pub fn push_world_context(&self) -> WorldContextGuard {
+    pub fn push_world_context(&mut self) -> WorldContextGuard {
+        if let Some(ref mut phys) = self.physics {
+            set_physics_context(phys);
+        }
+        if let Some(ref mut audio) = self.audio {
+            set_audio_context(audio);
+        }
+        set_input_context(&mut self.input);
         set_world_context(&self.world, &self.registry)
+    }
+
+    /// Clear all Rune context pointers (called after every Rune panel tick).
+    pub fn clear_rune_context(&mut self) {
+        clear_physics_context();
+        clear_audio_context();
+        clear_input_context();
     }
 
     /// Apply queued field mutations produced by Rune inspector panels.
@@ -281,6 +309,29 @@ impl EditorHost {
                             self.undo.push(label, vec![inv]);
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// Drain collision events from physics and call Rune on_collision_enter / on_collision_exit.
+    fn dispatch_collision_events(&mut self) {
+        let events = match self.physics {
+            Some(ref mut phys) => phys.drain_collision_events(),
+            None => return,
+        };
+        if events.is_empty() { return; }
+
+        for evt in events {
+            let id_a = evt.entity_a.to_bits() as i64;
+            let id_b = evt.entity_b.to_bits() as i64;
+            if evt.started {
+                if let Err(e) = self.vm.on_collision_enter(id_a, id_b) {
+                    log::warn!("[collision] on_collision_enter error: {e}");
+                }
+            } else {
+                if let Err(e) = self.vm.on_collision_exit(id_a, id_b) {
+                    log::warn!("[collision] on_collision_exit error: {e}");
                 }
             }
         }

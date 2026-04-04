@@ -29,6 +29,7 @@ winit       = "0.30"
 image       = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 rapier3d    = { version = "0.22", features = ["simd-stable"] }
 cpal        = "0.15"
+symphonia   = { version = "0.5", features = ["mp3", "ogg", "wav", "aac"] }
 egui        = "0.29"
 egui-wgpu   = "0.29"
 egui-winit  = "0.29"

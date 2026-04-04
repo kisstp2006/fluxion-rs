@@ -2,6 +2,8 @@ pub mod ui_module;
 pub mod world_module;
 pub mod viewport_module;
 pub mod gizmo_module;
+pub mod physics_module;
+pub mod input_module;
 
 use anyhow::Result;
 use rune::Module;
@@ -14,6 +16,9 @@ pub use world_module::{
 };
 pub use viewport_module::set_viewport_texture;
 pub use gizmo_module::clear_gizmo_frame;
+pub use physics_module::{set_physics_context, clear_physics_context};
+pub use fluxion_audio::{set_audio_context, clear_audio_context};
+pub use input_module::{set_input_context, clear_input_context};
 
 pub fn all_editor_modules() -> Result<Vec<Module>> {
     Ok(vec![
@@ -21,5 +26,8 @@ pub fn all_editor_modules() -> Result<Vec<Module>> {
         world_module::build_world_module()?,
         viewport_module::build_viewport_module()?,
         gizmo_module::build_gizmo_module()?,
+        fluxion_physics::build_physics_rune_module()?,
+        fluxion_audio::build_audio_rune_module()?,
+        input_module::build_input_module()?,
     ])
 }

@@ -58,6 +58,7 @@ pub use reflect::{ParameterDescriptor, MethodDescriptor, MethodType, MethodVisib
 #[doc(hidden)]
 pub use fluxion_reflect_derive::Reflect as DeriveReflect;
 pub use components::{RigidBody, PhysicsShape, BodyType};
+pub use components::{CameraController, ControllerType, CameraControllerSystem};
 pub use particles::step_particle_emitters;
 pub use color::Color;
 pub use project::{ProjectConfig, ProjectSettings, ProjectPhysicsSettings,

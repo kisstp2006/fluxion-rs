@@ -41,7 +41,7 @@ use crate::{
     config::RendererConfig,
     render_graph::{RenderGraph, PassSlot, RenderContext, RenderResources},
     render_graph::context::{FrameData, CameraData, MeshDrawCall, SkyParams, ParticleInstance},
-    passes::{GeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, ParticleOverlayPass, DebugLinePass},
+    passes::{GeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, ParticleOverlayPass, DebugLinePass, ShadowPass},
     lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT, MAX_LIGHTS},
     material::MaterialRegistry,
     mesh::{GpuMesh, MeshRegistry},
@@ -232,6 +232,7 @@ impl FluxionRenderer {
         let max_lights = config.max_lights.min(MAX_LIGHTS);
 
         let mut render_graph = RenderGraph::new();
+        render_graph.add_pass("shadow",    PassSlot::Shadow,   Box::new(ShadowPass::new()));
         render_graph.add_pass("geometry",  PassSlot::Geometry, Box::new(GeometryPass::new()));
         render_graph.add_pass("lighting",  PassSlot::Lighting, Box::new(LightingPass::new()));
         render_graph.add_pass("skybox",    PassSlot::Skybox,   Box::new(SkyboxPass::new()));
@@ -955,6 +956,28 @@ impl FluxionRenderer {
         }
         let debug_lines = debug_draw::drain_debug_lines();
 
+        // ── Shadow view-projection (first directional cast_shadow light) ──────
+        let mut shadow_view_proj  = Mat4::IDENTITY;
+        let mut has_shadow_caster = false;
+        'shadow: for light in &lights {
+            if light.light_type == LIGHT_DIRECTIONAL {
+                // Only compute for the first directional light (shadow index 0).
+                let dir = glam::Vec3::from_array(light.direction);
+                // Orthographic frustum: 50m half-size, depth range 0..500m.
+                let half  = 50.0f32;
+                let depth = 500.0f32;
+                // Light view: look from above along the light direction.
+                let eye    = -dir * (depth * 0.5);
+                let target = glam::Vec3::ZERO;
+                let up     = if dir.y.abs() > 0.99 { glam::Vec3::X } else { glam::Vec3::Y };
+                let light_view = Mat4::look_at_rh(eye, target, up);
+                let light_proj = Mat4::orthographic_rh(-half, half, -half, half, 0.0, depth);
+                shadow_view_proj  = light_proj * light_view;
+                has_shadow_caster = true;
+                break 'shadow;
+            }
+        }
+
         FrameData {
             camera,
             draw_calls,
@@ -964,6 +987,8 @@ impl FluxionRenderer {
             sky,
             particles,
             debug_lines,
+            shadow_view_proj,
+            has_shadow_caster,
         }
     }
 
