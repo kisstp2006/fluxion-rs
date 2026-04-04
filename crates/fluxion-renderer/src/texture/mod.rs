@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use fluxion_core::assets::AssetSource;
 use wgpu::{Device, Queue, TextureFormat};
 
 /// A GPU-resident texture with its default view and a reusable sampler.
@@ -171,6 +172,31 @@ impl TextureCache {
         Ok(arc)
     }
 
+    /// Load a texture via [`AssetSource`] (FluxionJS-style path keys in `.fluxmat`).
+    pub fn get_or_load_source(
+        &mut self,
+        device: &Device,
+        queue:  &Queue,
+        logical_path: &str,
+        source: &dyn AssetSource,
+    ) -> anyhow::Result<Arc<GpuTexture>> {
+        if let Some(cached) = self.entries.get(logical_path) {
+            return Ok(cached.clone());
+        }
+
+        let bytes = source
+            .read(logical_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let label = std::path::Path::new(logical_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(logical_path);
+        let texture = load_texture_memory(device, queue, label, &bytes)?;
+        let arc = Arc::new(texture);
+        self.entries.insert(logical_path.to_string(), arc.clone());
+        Ok(arc)
+    }
+
     /// Insert an already-created texture into the cache.
     pub fn insert(&mut self, path: &str, texture: GpuTexture) -> Arc<GpuTexture> {
         let arc = Arc::new(texture);
@@ -191,22 +217,28 @@ impl TextureCache {
 
 impl Default for TextureCache { fn default() -> Self { Self::new() } }
 
-// ── File loading ───────────────────────────────────────────────────────────────
+// ── File / memory loading ─────────────────────────────────────────────────────
+
+/// Decode image bytes (PNG, JPEG, …) and upload as RGBA8 sRGB.
+pub fn load_texture_memory(
+    device: &Device,
+    queue:  &Queue,
+    label:  &str,
+    bytes:  &[u8],
+) -> anyhow::Result<GpuTexture> {
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to decode texture '{label}': {e}"))?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    Ok(GpuTexture::from_rgba8(device, queue, label, w, h, &rgba))
+}
 
 fn load_texture_file(device: &Device, queue: &Queue, path: &str) -> anyhow::Result<GpuTexture> {
     let file_data = std::fs::read(path)
         .map_err(|e| anyhow::anyhow!("Failed to read texture '{}': {}", path, e))?;
-
-    let img = image::load_from_memory(&file_data)
-        .map_err(|e| anyhow::anyhow!("Failed to decode texture '{}': {}", path, e))?;
-
-    let rgba = img.to_rgba8();
-    let (w, h) = rgba.dimensions();
-
     let label = std::path::Path::new(path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(path);
-
-    Ok(GpuTexture::from_rgba8(device, queue, label, w, h, &rgba))
+    load_texture_memory(device, queue, label, &file_data)
 }

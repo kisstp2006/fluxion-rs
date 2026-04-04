@@ -12,7 +12,8 @@ pub mod gltf_loader;
 #[cfg(not(target_arch = "wasm32"))]
 pub use gltf_loader::{load_gltf_path, load_gltf_path_full};
 pub use gltf_loader::{
-    load_gltf_slice, load_gltf_slice_full, GltfHierarchyNode, GltfLoadOutput, GltfPrimitiveData,
+    load_gltf_slice, load_gltf_slice_full, load_gltf_slice_full_with_resolver, GltfHierarchyNode,
+    GltfLoadOutput, GltfPrimitiveData,
 };
 
 use wgpu::Device;

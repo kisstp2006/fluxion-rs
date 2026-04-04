@@ -16,7 +16,7 @@
 //   - async init is driven by pollster on native, wasm-bindgen-futures on web
 // ============================================================
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -26,6 +26,7 @@ use wgpu::SurfaceError;
 
 use fluxion_core::{
     ECSWorld, EntityId,
+    assets,
     components::{Camera, Light, MeshRenderer},
     components::light::LightType,
     transform::Transform,
@@ -65,6 +66,9 @@ pub struct FluxionRenderer {
     pub meshes:    MeshRegistry,
     pub textures:  TextureCache,
     pub shaders:   ShaderCache,
+
+    /// When set, [`Self::add_material`] resolves texture paths through this source (FluxionJS-style relative paths).
+    pub asset_source: Option<Arc<dyn assets::AssetSource>>,
 
     /// The BindGroupLayout used by all PBR materials (group 2 in geometry pass).
     /// Stored here so `add_material()` can create new materials after init.
@@ -205,16 +209,39 @@ impl FluxionRenderer {
             materials, meshes, textures, shaders: ShaderCache::new(),
             mat_bgl,
             light_buffer,
+            asset_source: None,
             width: w, height: h,
         })
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────
 
+    /// Set the asset root for texture loads in [`Self::add_material`] (and optional WASM scene materials).
+    pub fn set_asset_source(&mut self, src: Option<Arc<dyn assets::AssetSource>>) {
+        self.asset_source = src;
+    }
+
+    /// Compile external `.wgsl` from an [`assets::AssetSource`] (custom materials / hot reload).
+    pub fn load_shader_module_from_source(
+        &mut self,
+        source: &dyn assets::AssetSource,
+        wgsl_path: &str,
+        module_name: &str,
+    ) -> anyhow::Result<&wgpu::ShaderModule> {
+        let text = assets::read_text(source, wgsl_path).map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(self.shaders.get_or_compile(&self.device, module_name, &text))
+    }
+
     /// Create a material from a descriptor and register it. Returns the handle.
     pub fn add_material(&mut self, asset: &crate::material::MaterialAsset) -> anyhow::Result<u32> {
+        let src = self.asset_source.as_deref();
         let mat = crate::material::PbrMaterial::from_asset(
-            &self.device, &self.queue, asset, &self.mat_bgl, &mut self.textures,
+            &self.device,
+            &self.queue,
+            asset,
+            &self.mat_bgl,
+            &mut self.textures,
+            src,
         )?;
         Ok(self.materials.add(mat))
     }
@@ -231,15 +258,41 @@ impl FluxionRenderer {
         }
     }
 
-    /// Resolve `scene_inline_material` and on-disk `.fluxmat` paths into GPU materials.
+    /// Resolve `scene_inline_material` and `.fluxmat` paths into GPU materials (FluxionJS parity).
     ///
-    /// Runs after [`Self::hydrate_mesh_paths`]. Scene `.fluxmat` / inline JSON overrides glTF
-    /// materials when present (FluxionJsV3 parity). Direct children that only have GPU mesh
-    /// handles from glTF sub-meshes get the same material as the root.
+    /// Native: reads under `project_root` (or current directory). WASM: uses [`Self::asset_source`]
+    /// if set; otherwise skips file-backed materials.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn hydrate_scene_materials(
         &mut self,
         world: &mut ECSWorld,
         project_root: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        let root = project_root
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let disk = assets::DiskAssetSource::new(root);
+        self.hydrate_scene_materials_from_source(world, &disk, None)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn hydrate_scene_materials(
+        &mut self,
+        world: &mut ECSWorld,
+        _project_root: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        let Some(src) = self.asset_source.clone() else {
+            return Ok(());
+        };
+        self.hydrate_scene_materials_from_source(world, src.as_ref(), None)
+    }
+
+    /// Same as [`Self::hydrate_scene_materials`] but uses any [`assets::AssetSource`] (disk, memory, fetch).
+    pub fn hydrate_scene_materials_from_source(
+        &mut self,
+        world: &mut ECSWorld,
+        source: &dyn assets::AssetSource,
+        base: Option<&str>,
     ) -> anyhow::Result<()> {
         let entities: Vec<EntityId> = world.all_entities().collect();
         for id in entities {
@@ -257,17 +310,19 @@ impl FluxionRenderer {
                 continue;
             }
             if let Some(rel) = mr.material_path.clone() {
-                let p: PathBuf = project_root.map(|r| r.join(&rel)).unwrap_or_else(|| PathBuf::from(&rel));
-                if p.is_file() {
-                    let p_str = p.to_str().context("material path is not valid UTF-8")?;
-                    let asset = crate::material::MaterialAsset::load_from_file(p_str)?;
-                    let h = self.add_material(&asset)?;
-                    mr.material_handle = Some(h);
-                    drop(mr);
-                    Self::propagate_scene_material_to_gltf_children(world, id, h);
+                let logical = assets::join_logical(base, &rel);
+                if !source.exists(&logical) && !source.exists(&rel) {
                     continue;
                 }
-                continue;
+                let bytes = source
+                    .read(&logical)
+                    .or_else(|_| source.read(&rel))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let asset = crate::material::MaterialAsset::from_json_bytes(&bytes, &logical)?;
+                let h = self.add_material(&asset)?;
+                mr.material_handle = Some(h);
+                drop(mr);
+                Self::propagate_scene_material_to_gltf_children(world, id, h);
             }
         }
         Ok(())
@@ -286,19 +341,19 @@ impl FluxionRenderer {
     }
 
     /// `true` if scene inline / resolvable `.fluxmat` should replace per-primitive glTF materials.
-    fn scene_material_overrides_gltf(mr: &MeshRenderer, asset_base: Option<&Path>) -> bool {
+    fn scene_material_overrides_gltf(
+        mr: &MeshRenderer,
+        source: &dyn assets::AssetSource,
+        base: Option<&str>,
+    ) -> bool {
         if mr.scene_inline_material.is_some() {
             return true;
         }
         let Some(rel) = mr.material_path.as_ref() else {
             return false;
         };
-        if let Some(base) = asset_base {
-            if base.join(rel).is_file() {
-                return true;
-            }
-        }
-        Path::new(rel).is_file()
+        let full = assets::join_logical(base, rel);
+        source.exists(&full) || source.exists(rel)
     }
 
     fn upload_gltf_textures(&mut self, uploads: &[crate::mesh::gltf_loader::GltfTextureUpload]) {
@@ -416,57 +471,26 @@ impl FluxionRenderer {
         Ok(())
     }
 
-    /// Upload `.glb` / `.gltf` meshes referenced by `MeshRenderer.mesh_path` (relative to `base`).
+    /// Native: load glTF paths relative to `base` (or current working directory).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn hydrate_mesh_paths(
         &mut self,
         world: &mut ECSWorld,
         base: Option<&Path>,
     ) -> anyhow::Result<()> {
-        use fluxion_core::components::MeshRenderer;
-
-        let entities: Vec<EntityId> = world.all_entities().collect();
-        for id in entities {
-            let Some(mr) = world.get_component_mut::<MeshRenderer>(id) else {
-                continue;
-            };
-            if mr.mesh_handle.is_some() {
-                continue;
-            }
-            let Some(rel_owned) = mr.mesh_path.clone() else {
-                continue;
-            };
-            let ext = Path::new(&rel_owned)
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_ascii_lowercase());
-            if !matches!(ext.as_deref(), Some("glb") | Some("gltf")) {
-                continue;
-            }
-
-            let path: PathBuf = base
-                .map(|b| b.join(&rel_owned))
-                .unwrap_or_else(|| PathBuf::from(&rel_owned));
-            if !path.is_file() {
-                log::warn!("[gltf] file not found: {}", path.display());
-                continue;
-            }
-
-            let skip_mat = Self::scene_material_overrides_gltf(&mr, base);
-            drop(mr);
-            let out = crate::mesh::gltf_loader::load_gltf_path_full(&path)?;
-            let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("gltf");
-            self.apply_gltf_load_output(world, id, out, label, skip_mat)?;
-        }
-        Ok(())
+        let root = base
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let disk = assets::DiskAssetSource::new(root);
+        self.hydrate_mesh_paths_from_source(world, &disk, None)
     }
 
-    /// WASM: call after fetching bytes (e.g. `fetch` + `.bytes()`), same semantics as [`hydrate_mesh_paths`](Self::hydrate_mesh_paths).
-    #[cfg(target_arch = "wasm32")]
-    pub fn hydrate_mesh_paths_from_memory(
+    /// Upload `.glb` / `.gltf` meshes using a FluxionJS-style logical path and any [`assets::AssetSource`].
+    pub fn hydrate_mesh_paths_from_source(
         &mut self,
         world: &mut ECSWorld,
-        resolve: impl Fn(&str) -> Option<Vec<u8>>,
+        source: &dyn assets::AssetSource,
+        base: Option<&str>,
     ) -> anyhow::Result<()> {
         use fluxion_core::components::MeshRenderer;
 
@@ -488,13 +512,36 @@ impl FluxionRenderer {
             if !matches!(ext.as_deref(), Some("glb") | Some("gltf")) {
                 continue;
             }
-            let skip_mat = Self::scene_material_overrides_gltf(&mr, None);
+
+            let logical = assets::join_logical(base, &rel_owned);
+            let rel_lower = rel_owned.to_ascii_lowercase();
+
+            let skip_mat = Self::scene_material_overrides_gltf(&mr, source, base);
             drop(mr);
-            let Some(bytes) = resolve(&rel_owned) else {
-                log::warn!("[gltf] no bytes for {rel_owned}");
-                continue;
+
+            let out = if rel_lower.ends_with(".gltf") {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    if let Some(root) = source.native_project_root() {
+                        let path = assets::resolve_under_root(root, &logical)
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        crate::mesh::gltf_loader::load_gltf_path_full(&path)?
+                    } else {
+                        Self::load_gltf_bytes_with_uri_resolver(source, &logical, &rel_owned)?
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    Self::load_gltf_bytes_with_uri_resolver(source, &logical, &rel_owned)?
+                }
+            } else {
+                let bytes = source
+                    .read(&logical)
+                    .or_else(|_| source.read(&rel_owned))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                crate::mesh::gltf_loader::load_gltf_slice_full(&bytes)?
             };
-            let out = crate::mesh::gltf_loader::load_gltf_slice_full(&bytes)?;
+
             let label = Path::new(&rel_owned)
                 .file_name()
                 .and_then(|s| s.to_str())
@@ -502,6 +549,47 @@ impl FluxionRenderer {
             self.apply_gltf_load_output(world, id, out, label, skip_mat)?;
         }
         Ok(())
+    }
+
+    /// WASM helper: `resolve` returns bytes per logical path (same as [`assets::FnAssetSource`]).
+    #[cfg(target_arch = "wasm32")]
+    pub fn hydrate_mesh_paths_from_memory(
+        &mut self,
+        world: &mut ECSWorld,
+        resolve: impl Fn(&str) -> Option<Vec<u8>> + Send + Sync + 'static,
+    ) -> anyhow::Result<()> {
+        let src = assets::FnAssetSource::new(move |p| {
+            resolve(p).ok_or_else(|| assets::AssetError::NotFound(p.to_string()))
+        });
+        self.hydrate_mesh_paths_from_source(world, &src, None)
+    }
+
+    fn load_gltf_bytes_with_uri_resolver(
+        source: &dyn assets::AssetSource,
+        logical: &str,
+        rel_owned: &str,
+    ) -> anyhow::Result<crate::mesh::gltf_loader::GltfLoadOutput> {
+        let bytes = source
+            .read(logical)
+            .or_else(|_| source.read(rel_owned))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let dir_prefix = Path::new(logical)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("");
+        let mut resolve_uri = |uri: &str| -> anyhow::Result<Vec<u8>> {
+            let u = uri.replace('\\', "/");
+            let key = if dir_prefix.is_empty() {
+                u.clone()
+            } else {
+                format!("{dir_prefix}/{u}")
+            };
+            source
+                .read(&key)
+                .or_else(|_| source.read(&u))
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        };
+        crate::mesh::gltf_loader::load_gltf_slice_full_with_resolver(&bytes, &mut resolve_uri)
     }
 
     /// Call when the window is resized.

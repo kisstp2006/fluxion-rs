@@ -26,6 +26,8 @@ pub mod lighting;
 pub mod shader;
 
 pub use renderer::FluxionRenderer;
+/// Re-export asset pipeline types (FluxionJS-style logical paths).
+pub use fluxion_core::assets;
 pub use render_graph::{RenderGraph, RenderPass, PassSlot};
 pub use material::{MaterialAsset, PbrMaterial};
 pub use texture::{GpuTexture, TextureCache};

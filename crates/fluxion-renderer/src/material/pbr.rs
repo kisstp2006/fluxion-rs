@@ -14,6 +14,8 @@ use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use wgpu::{Device, Queue, BindGroupLayout};
 
+use fluxion_core::assets::AssetSource;
+
 use super::material_asset::MaterialAsset;
 use crate::texture::{GpuTexture, TextureCache};
 
@@ -83,6 +85,7 @@ impl PbrMaterial {
         asset:    &MaterialAsset,
         layout:   &BindGroupLayout,
         textures: &mut TextureCache,
+        asset_source: Option<&dyn AssetSource>,
     ) -> anyhow::Result<Self> {
         use wgpu::util::DeviceExt;
 
@@ -92,9 +95,18 @@ impl PbrMaterial {
 
         let mut load_or = |path: &Option<String>, fallback: &Arc<GpuTexture>| -> Arc<GpuTexture> {
             match path {
-                Some(p) => textures.get_or_load(device, queue, p)
-                    .unwrap_or_else(|e| { log::warn!("Texture load failed: {e}"); fallback.clone() }),
-                None    => fallback.clone(),
+                Some(p) => {
+                    let r = if let Some(src) = asset_source {
+                        textures.get_or_load_source(device, queue, p, src)
+                    } else {
+                        textures.get_or_load(device, queue, p)
+                    };
+                    r.unwrap_or_else(|e| {
+                        log::warn!("Texture load failed: {e}");
+                        fallback.clone()
+                    })
+                }
+                None => fallback.clone(),
             }
         };
 
@@ -183,7 +195,7 @@ impl MaterialRegistry {
         // Slot 0: built-in default grey PBR material
         let default_asset = MaterialAsset::default();
         let mut tex_cache = TextureCache::new();
-        let default_mat = PbrMaterial::from_asset(device, queue, &default_asset, layout, &mut tex_cache)
+        let default_mat = PbrMaterial::from_asset(device, queue, &default_asset, layout, &mut tex_cache, None)
             .expect("default material creation should never fail");
         reg.materials.push(Some(default_mat));
         reg

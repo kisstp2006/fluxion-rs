@@ -195,13 +195,19 @@ impl MaterialAsset {
         m
     }
 
+    /// Parse `.fluxmat` JSON from bytes (native disk, WASM memory, fetch).
+    pub fn from_json_bytes(data: &[u8], label: &str) -> anyhow::Result<Self> {
+        let raw = std::str::from_utf8(data)
+            .map_err(|e| anyhow::anyhow!("Material '{label}' is not valid UTF-8: {e}"))?;
+        serde_json::from_str(raw)
+            .map_err(|e| anyhow::anyhow!("Failed to parse material '{label}': {e}"))
+    }
+
     /// Load a .fluxmat JSON file from disk.
     pub fn load_from_file(path: &str) -> anyhow::Result<Self> {
-        let raw  = std::fs::read_to_string(path)
+        let raw = std::fs::read(path)
             .map_err(|e| anyhow::anyhow!("Failed to read material '{}': {}", path, e))?;
-        let mat: MaterialAsset = serde_json::from_str(&raw)
-            .map_err(|e| anyhow::anyhow!("Failed to parse material '{}': {}", path, e))?;
-        Ok(mat)
+        Self::from_json_bytes(&raw, path)
     }
 
     /// Save to a .fluxmat JSON file.

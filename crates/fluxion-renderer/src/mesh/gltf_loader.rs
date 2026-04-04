@@ -16,6 +16,7 @@
 // ============================================================
 
 use std::collections::HashSet;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use anyhow::Context;
@@ -68,17 +69,35 @@ pub fn load_gltf_path_full(path: &Path) -> anyhow::Result<GltfLoadOutput> {
     let path_str = path.to_str().context("path must be UTF-8")?;
     let (doc, buffers, _gltf_images) =
         gltf::import(path_str).with_context(|| format!("gltf::import({path_str})"))?;
-    let base = path.parent();
+    let parent = path.parent().map(|p| p.to_path_buf());
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("gltf");
     let prefix = format!("gltf:{stem}");
-    load_document_full(&doc, &buffers, base, &prefix)
+    let mut resolve_uri = |uri: &str| -> anyhow::Result<Vec<u8>> {
+        let base = parent.as_ref().context("glTF path has no parent directory")?;
+        let p = base.join(uri);
+        std::fs::read(&p).with_context(|| format!("read glTF URI {}", p.display()))
+    };
+    load_document_full(&doc, &buffers, &mut resolve_uri, &prefix)
 }
 
 /// In-memory `.glb` (embedded buffers only; external `uri` images error without a base path).
 pub fn load_gltf_slice_full(data: &[u8]) -> anyhow::Result<GltfLoadOutput> {
+    let mut bail = |uri: &str| {
+        anyhow::bail!(
+            "glTF references external URI '{uri}' — use .glb, disk import, or load_gltf_slice_full_with_resolver"
+        )
+    };
+    load_gltf_slice_full_with_resolver(data, &mut bail)
+}
+
+/// Same as [`load_gltf_slice_full`], but resolves external buffer/image `uri` strings (e.g. multi-part `.gltf` packs).
+pub fn load_gltf_slice_full_with_resolver(
+    data: &[u8],
+    resolve_uri: &mut impl FnMut(&str) -> anyhow::Result<Vec<u8>>,
+) -> anyhow::Result<GltfLoadOutput> {
     let (doc, buffers, _) = gltf::import_slice(data).context("gltf::import_slice")?;
     let prefix = "gltf:embedded";
-    load_document_full(&doc, &buffers, None, prefix)
+    load_document_full(&doc, &buffers, resolve_uri, prefix)
 }
 
 /// Legacy: merged geometry of the first mesh (no materials). Prefer [`load_gltf_path_full`].
@@ -112,10 +131,10 @@ fn merge_primitives(out: &GltfLoadOutput) -> anyhow::Result<(Vec<Vertex>, Vec<u3
 fn load_document_full(
     doc: &gltf::Document,
     buffers: &[gltf::buffer::Data],
-    base: Option<&Path>,
+    resolve_uri: &mut impl FnMut(&str) -> anyhow::Result<Vec<u8>>,
     prefix: &str,
 ) -> anyhow::Result<GltfLoadOutput> {
-    let decoded = decode_all_images(doc, buffers, base)?;
+    let decoded = decode_all_images(doc, buffers, resolve_uri)?;
     let n_declared = doc.materials().len();
     let n_slots = n_declared.max(1);
     let mut materials = vec![default_gltf_material(0); n_slots];
@@ -324,7 +343,7 @@ fn default_gltf_material(i: usize) -> MaterialAsset {
 fn decode_all_images(
     doc: &gltf::Document,
     buffers: &[gltf::buffer::Data],
-    base: Option<&Path>,
+    resolve_uri: &mut impl FnMut(&str) -> anyhow::Result<Vec<u8>>,
 ) -> anyhow::Result<Vec<Option<RgbaImage>>> {
     let mut out = vec![None; doc.images().len()];
     for img in doc.images() {
@@ -340,10 +359,9 @@ fn decode_all_images(
                     .to_rgba8()
             }
             gltf::image::Source::Uri { uri, .. } => {
-                let base = base.context("glTF image uses external URI — need file directory (use .gltf not bare slice, or embed in .glb)")?;
-                let path = base.join(uri);
-                image::open(&path)
-                    .with_context(|| format!("open image URI {}", path.display()))?
+                let data = resolve_uri(uri).with_context(|| format!("resolve glTF image URI {uri}"))?;
+                image::load_from_memory(&data)
+                    .with_context(|| format!("decode image URI {uri}"))?
                     .to_rgba8()
             }
         };

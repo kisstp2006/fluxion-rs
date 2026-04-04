@@ -104,6 +104,12 @@ pub fn parse_and_sort_scene(json: &str) -> Result<SceneFileData, String> {
     Ok(scene)
 }
 
+/// Load a `.scene` from raw bytes (native + WASM). Same JSON as [`parse_and_sort_scene`].
+pub fn load_scene_from_bytes(data: &[u8]) -> Result<SceneFileData, String> {
+    let text = std::str::from_utf8(data).map_err(|e| format!("Scene file is not valid UTF-8: {e}"))?;
+    parse_and_sort_scene(text)
+}
+
 /// Serialize a SceneFileData to a pretty-printed JSON string.
 pub fn serialize_scene(scene: &SceneFileData) -> Result<String, String> {
     serde_json::to_string_pretty(scene)

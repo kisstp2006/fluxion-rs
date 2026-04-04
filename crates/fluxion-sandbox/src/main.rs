@@ -226,13 +226,25 @@ fn finish_renderer_setup(g: &mut SandboxInner) {
     let Some(ref mut renderer) = g.renderer else { return };
 
     #[cfg(not(target_arch = "wasm32"))]
-    if let Err(e) = renderer.hydrate_mesh_paths(&mut g.world, g.asset_root.as_deref()) {
-        log::warn!("hydrate_mesh_paths: {e}");
+    {
+        let root = g
+            .asset_root
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let disk = std::sync::Arc::new(fluxion_core::assets::DiskAssetSource::new(root));
+        renderer.set_asset_source(Some(disk.clone()));
+        if let Err(e) = renderer.hydrate_mesh_paths_from_source(&mut g.world, disk.as_ref(), None) {
+            log::warn!("hydrate_mesh_paths: {e}");
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
-    if let Err(e) = renderer.hydrate_mesh_paths_from_memory(&mut g.world, |_| None) {
-        log::warn!("hydrate_mesh_paths_from_memory: {e}");
+    {
+        let mem = std::sync::Arc::new(fluxion_core::assets::MemoryAssetSource::default());
+        renderer.set_asset_source(Some(mem.clone()));
+        if let Err(e) = renderer.hydrate_mesh_paths_from_source(&mut g.world, mem.as_ref(), None) {
+            log::warn!("hydrate_mesh_paths: {e}");
+        }
     }
 
     if let Some(ref demo) = g.pending_demo {
