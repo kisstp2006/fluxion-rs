@@ -10,8 +10,10 @@ pub mod primitives;
 pub mod gltf_loader;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use gltf_loader::load_gltf_path;
-pub use gltf_loader::load_gltf_slice;
+pub use gltf_loader::{load_gltf_path, load_gltf_path_full};
+pub use gltf_loader::{
+    load_gltf_slice, load_gltf_slice_full, GltfHierarchyNode, GltfLoadOutput, GltfPrimitiveData,
+};
 
 use wgpu::Device;
 use bytemuck::{Pod, Zeroable};

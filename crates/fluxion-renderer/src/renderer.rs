@@ -344,9 +344,6 @@ impl FluxionRenderer {
         let layer = mr.layer;
         drop(mr);
 
-        let prims = out.primitives;
-        anyhow::ensure!(!prims.is_empty(), "[gltf] no triangle primitives");
-
         let n_mat = mat_handles.len();
         let mat_idx = |i: usize| -> Option<u32> {
             if skip_gltf_materials || n_mat == 0 {
@@ -355,42 +352,65 @@ impl FluxionRenderer {
             Some(mat_handles[i.min(n_mat.saturating_sub(1))])
         };
 
-        let p0 = &prims[0];
-        let gpu0 = GpuMesh::upload(&self.device, label, &p0.vertices, &p0.indices);
-        let h0 = self.meshes.add(gpu0);
-        let mut mr = world.get_component_mut::<MeshRenderer>(root).unwrap();
-        mr.mesh_handle = Some(h0);
-        mr.primitive = None;
-        mr.material_handle = mat_idx(p0.material_index);
-        drop(mr);
-
-        for (si, p) in prims.iter().enumerate().skip(1) {
-            let child = world.spawn(Some("gltf_submesh"));
-            world.add_component(child, Transform::new());
-            world.set_parent(child, Some(root), false);
-            let sub_label = format!("{label}_sub{si}");
-            let gpu = GpuMesh::upload(&self.device, &sub_label, &p.vertices, &p.indices);
-            let hm = self.meshes.add(gpu);
-            world.add_component(
-                child,
-                MeshRenderer {
-                    mesh_path: None,
-                    material_path: None,
-                    primitive: None,
-                    cast_shadow,
-                    receive_shadow,
-                    layer,
-                    mesh_handle: Some(hm),
-                    material_handle: mat_idx(p.material_index),
-                    scene_inline_material: None,
-                },
-            );
+        // Root entity keeps scene placement; geometry lives under a glTF node hierarchy.
+        {
+            let mut mr = world.get_component_mut::<MeshRenderer>(root).unwrap();
+            mr.mesh_handle = None;
+            mr.material_handle = None;
+            mr.primitive = None;
         }
 
-        let total_verts: usize = prims.iter().map(|p| p.vertices.len()).sum();
+        let mut entity_by_idx: Vec<EntityId> = Vec::with_capacity(out.nodes.len());
+        let mut prim_count = 0usize;
+        let mut vert_count = 0usize;
+
+        for (ni, node) in out.nodes.iter().enumerate() {
+            let parent_entity = node
+                .parent_idx
+                .and_then(|p| entity_by_idx.get(p).copied())
+                .unwrap_or(root);
+
+            let e = world.spawn(Some(node.name.as_str()));
+            let mut t = Transform::new();
+            t.position = node.position;
+            t.rotation = node.rotation;
+            t.scale = node.scale;
+            t.dirty = true;
+            t.world_dirty = true;
+            world.add_component(e, t);
+            world.set_parent(e, Some(parent_entity), false);
+            entity_by_idx.push(e);
+
+            for (pi, prim) in node.mesh_primitives.iter().enumerate() {
+                let child_name = format!("{}_p{pi}_{label}", node.name);
+                let child = world.spawn(Some(child_name.as_str()));
+                world.add_component(child, Transform::new());
+                world.set_parent(child, Some(e), false);
+                let sub_label = format!("{label}_n{ni}_p{pi}");
+                let gpu = GpuMesh::upload(&self.device, &sub_label, &prim.vertices, &prim.indices);
+                let hm = self.meshes.add(gpu);
+                world.add_component(
+                    child,
+                    MeshRenderer {
+                        mesh_path: None,
+                        material_path: None,
+                        primitive: None,
+                        cast_shadow,
+                        receive_shadow,
+                        layer,
+                        mesh_handle: Some(hm),
+                        material_handle: mat_idx(prim.material_index),
+                        scene_inline_material: None,
+                    },
+                );
+                prim_count += 1;
+                vert_count += prim.vertices.len();
+            }
+        }
+
         log::info!(
-            "[gltf] {label}: {} primitives, {total_verts} vertices, {} materials",
-            prims.len(),
+            "[gltf] {label}: {} nodes, {prim_count} primitives, {vert_count} vertices, {} materials",
+            out.nodes.len(),
             out.materials.len()
         );
         Ok(())

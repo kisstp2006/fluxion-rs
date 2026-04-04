@@ -1,6 +1,11 @@
 // ============================================================
 // fluxion-renderer — glTF / glB mesh + PBR materials
 //
+// Loads the **default scene** (or the first scene): full node hierarchy with
+// local TRS (matrix or decomposed). Each node may reference a mesh; triangle
+// primitives become GPU sub-meshes parented under that node. If the file has
+// no scenes, falls back to listing all meshes as roots (identity transform).
+//
 // Geometry matches our deferred `Vertex` layout. Materials map to
 // `MaterialAsset` / `PbrMaterial` the same way FluxionJsV3 treats
 // MeshStandardMaterial: baseColor + metallicRoughness + normal +
@@ -14,7 +19,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Context;
-use glam::{Vec2, Vec3};
+use glam::{Quat, Vec2, Vec3};
 use image::RgbaImage;
 
 use crate::material::material_asset::{AlphaMode, MaterialAsset};
@@ -30,13 +35,25 @@ pub struct GltfPrimitiveData {
     pub material_index: usize,
 }
 
-/// CPU-side result of loading a glTF file (meshes + Fluxion-compatible materials).
+/// One glTF scene node: local TRS + optional mesh (all triangle primitives on that node).
+/// `parent_idx == None` → attach under the entity that owns `mesh_path` (scene placement root).
+#[derive(Debug)]
+pub struct GltfHierarchyNode {
+    pub parent_idx: Option<usize>,
+    pub name:       String,
+    pub position:   Vec3,
+    pub rotation:   Quat,
+    pub scale:      Vec3,
+    pub mesh_primitives: Vec<GltfPrimitiveData>,
+}
+
+/// CPU-side result of loading a glTF file (scene graph + materials + textures).
 #[derive(Debug)]
 pub struct GltfLoadOutput {
-    pub primitives: Vec<GltfPrimitiveData>,
-    pub materials:  Vec<MaterialAsset>,
+    pub nodes:     Vec<GltfHierarchyNode>,
+    pub materials: Vec<MaterialAsset>,
     /// Upload these to `TextureCache` (keys must match `MaterialAsset` texture fields).
-    pub textures:   Vec<GltfTextureUpload>,
+    pub textures: Vec<GltfTextureUpload>,
 }
 
 #[derive(Debug)]
@@ -79,11 +96,13 @@ pub fn load_gltf_slice(data: &[u8]) -> anyhow::Result<(Vec<Vertex>, Vec<u32>)> {
 fn merge_primitives(out: &GltfLoadOutput) -> anyhow::Result<(Vec<Vertex>, Vec<u32>)> {
     let mut v = Vec::new();
     let mut i = Vec::new();
-    for p in &out.primitives {
-        let base = v.len() as u32;
-        v.extend_from_slice(&p.vertices);
-        for &ix in &p.indices {
-            i.push(base + ix);
+    for node in &out.nodes {
+        for p in &node.mesh_primitives {
+            let base = v.len() as u32;
+            v.extend_from_slice(&p.vertices);
+            for &ix in &p.indices {
+                i.push(base + ix);
+            }
         }
     }
     anyhow::ensure!(!v.is_empty() && !i.is_empty(), "empty glTF geometry");
@@ -111,97 +130,186 @@ fn load_document_full(
         }
     }
 
-    let mesh = doc.meshes().next().context("glTF contains no meshes")?;
-    let mut primitives = Vec::new();
+    let mat_slots = materials.len().max(1);
+    let mut nodes = Vec::new();
+    let mut name_seq = 0u32;
 
-    for prim in mesh.primitives() {
-        if prim.mode() != gltf::mesh::Mode::Triangles {
-            log::warn!(
-                "[gltf] Skipping primitive with mode {:?} (only Triangles supported)",
-                prim.mode()
-            );
-            continue;
+    if let Some(scene) = doc.default_scene().or_else(|| doc.scenes().next()) {
+        for root in scene.nodes() {
+            visit_gltf_node(root, None, buffers, mat_slots, &mut name_seq, &mut nodes)?;
         }
-
-        let reader = prim.reader(|buffer| buffers.get(buffer.index()).map(|d| d.as_ref()));
-
-        let positions: Vec<[f32; 3]> = reader
-            .read_positions()
-            .context("primitive missing POSITION")?
-            .collect();
-
-        if positions.is_empty() {
-            continue;
-        }
-
-        let count = positions.len();
-
-        let indices: Vec<u32> = if let Some(iter) = reader.read_indices() {
-            iter.into_u32().collect()
-        } else {
-            (0..count as u32).collect()
-        };
-
-        let normals: Vec<[f32; 3]> = if let Some(iter) = reader.read_normals() {
-            let v: Vec<_> = iter.collect();
-            if v.len() != count {
-                anyhow::bail!("NORMAL count {} != POSITION count {}", v.len(), count);
-            }
-            v
-        } else {
-            compute_vertex_normals(&positions, &indices)
-        };
-
-        let uvs: Vec<[f32; 2]> = if let Some(tc) = reader.read_tex_coords(0) {
-            let v: Vec<_> = tc.into_f32().map(|[u, v]| [u, v]).collect();
-            if v.len() != count {
-                anyhow::bail!("TEXCOORD_0 count {} != POSITION count {}", v.len(), count);
-            }
-            v
-        } else {
-            vec![[0.0, 0.0]; count]
-        };
-
-        let tangents: Vec<[f32; 4]> = if let Some(iter) = reader.read_tangents() {
-            let v: Vec<_> = iter.collect();
-            if v.len() != count {
-                anyhow::bail!("TANGENT count {} != POSITION count {}", v.len(), count);
-            }
-            v
-        } else {
-            compute_tangents(&positions, &normals, &uvs, &indices)
-        };
-
-        let mut vertices = Vec::with_capacity(count);
-        for i in 0..count {
-            vertices.push(Vertex {
-                position: positions[i],
-                normal:   normals[i],
-                tangent:  tangents[i],
-                uv:       uvs[i],
-            });
-        }
-
-        let material_index = prim
-            .material()
-            .index()
-            .unwrap_or(0)
-            .min(materials.len().saturating_sub(1));
-
-        primitives.push(GltfPrimitiveData {
-            vertices,
-            indices,
-            material_index,
-        });
     }
 
-    anyhow::ensure!(!primitives.is_empty(), "glTF mesh produced no triangle geometry");
+    if nodes.is_empty() {
+        log::info!("[gltf] no scene graph — falling back to flat mesh list");
+        for (mi, mesh) in doc.meshes().enumerate() {
+            let prims = extract_mesh_primitives(&mesh, buffers, mat_slots)?;
+            if prims.is_empty() {
+                continue;
+            }
+            nodes.push(GltfHierarchyNode {
+                parent_idx: None,
+                name:       format!("mesh_{mi}"),
+                position:   Vec3::ZERO,
+                rotation:   Quat::IDENTITY,
+                scale:      Vec3::ONE,
+                mesh_primitives: prims,
+            });
+        }
+    }
+
+    let total_prims: usize = nodes.iter().map(|n| n.mesh_primitives.len()).sum();
+    anyhow::ensure!(total_prims > 0, "glTF produced no triangle geometry");
 
     Ok(GltfLoadOutput {
-        primitives,
+        nodes,
         materials,
         textures: uploads,
     })
+}
+
+fn visit_gltf_node(
+    node: gltf::Node<'_>,
+    parent_vec_idx: Option<usize>,
+    buffers: &[gltf::buffer::Data],
+    materials_len: usize,
+    name_seq: &mut u32,
+    out: &mut Vec<GltfHierarchyNode>,
+) -> anyhow::Result<()> {
+    let my_idx = out.len();
+    let (t_arr, r_arr, s_arr) = node.transform().decomposed();
+    let position = Vec3::new(t_arr[0], t_arr[1], t_arr[2]);
+    let rotation = Quat::from_xyzw(r_arr[0], r_arr[1], r_arr[2], r_arr[3]).normalize();
+    let scale = Vec3::new(s_arr[0], s_arr[1], s_arr[2]);
+
+    let name = node
+        .name()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            let n = format!("gltf_n{}", *name_seq);
+            *name_seq += 1;
+            n
+        });
+
+    let mesh_primitives = if let Some(mesh) = node.mesh() {
+        extract_mesh_primitives(&mesh, buffers, materials_len)?
+    } else {
+        Vec::new()
+    };
+
+    out.push(GltfHierarchyNode {
+        parent_idx: parent_vec_idx,
+        name,
+        position,
+        rotation,
+        scale,
+        mesh_primitives,
+    });
+
+    for child in node.children() {
+        visit_gltf_node(child, Some(my_idx), buffers, materials_len, name_seq, out)?;
+    }
+    Ok(())
+}
+
+fn extract_mesh_primitives(
+    mesh: &gltf::Mesh,
+    buffers: &[gltf::buffer::Data],
+    materials_len: usize,
+) -> anyhow::Result<Vec<GltfPrimitiveData>> {
+    let mut out = Vec::new();
+    for prim in mesh.primitives() {
+        if let Some(p) = extract_triangle_primitive(prim, buffers, materials_len)? {
+            out.push(p);
+        }
+    }
+    Ok(out)
+}
+
+fn extract_triangle_primitive(
+    prim: gltf::Primitive<'_>,
+    buffers: &[gltf::buffer::Data],
+    materials_len: usize,
+) -> anyhow::Result<Option<GltfPrimitiveData>> {
+    if prim.mode() != gltf::mesh::Mode::Triangles {
+        log::warn!(
+            "[gltf] Skipping primitive with mode {:?} (only Triangles supported)",
+            prim.mode()
+        );
+        return Ok(None);
+    }
+
+    let reader = prim.reader(|buffer| buffers.get(buffer.index()).map(|d| d.as_ref()));
+
+    let positions: Vec<[f32; 3]> = reader
+        .read_positions()
+        .context("primitive missing POSITION")?
+        .collect();
+
+    if positions.is_empty() {
+        return Ok(None);
+    }
+
+    let count = positions.len();
+
+    let indices: Vec<u32> = if let Some(iter) = reader.read_indices() {
+        iter.into_u32().collect()
+    } else {
+        (0..count as u32).collect()
+    };
+
+    let normals: Vec<[f32; 3]> = if let Some(iter) = reader.read_normals() {
+        let v: Vec<_> = iter.collect();
+        if v.len() != count {
+            anyhow::bail!("NORMAL count {} != POSITION count {}", v.len(), count);
+        }
+        v
+    } else {
+        compute_vertex_normals(&positions, &indices)
+    };
+
+    let uvs: Vec<[f32; 2]> = if let Some(tc) = reader.read_tex_coords(0) {
+        let v: Vec<_> = tc.into_f32().map(|[u, v]| [u, v]).collect();
+        if v.len() != count {
+            anyhow::bail!("TEXCOORD_0 count {} != POSITION count {}", v.len(), count);
+        }
+        v
+    } else {
+        vec![[0.0, 0.0]; count]
+    };
+
+    let tangents: Vec<[f32; 4]> = if let Some(iter) = reader.read_tangents() {
+        let v: Vec<_> = iter.collect();
+        if v.len() != count {
+            anyhow::bail!("TANGENT count {} != POSITION count {}", v.len(), count);
+        }
+        v
+    } else {
+        compute_tangents(&positions, &normals, &uvs, &indices)
+    };
+
+    let mut vertices = Vec::with_capacity(count);
+    for i in 0..count {
+        vertices.push(Vertex {
+            position: positions[i],
+            normal:   normals[i],
+            tangent:  tangents[i],
+            uv:       uvs[i],
+        });
+    }
+
+    let material_index = prim
+        .material()
+        .index()
+        .unwrap_or(0)
+        .min(materials_len.saturating_sub(1));
+
+    Ok(Some(GltfPrimitiveData {
+        vertices,
+        indices,
+        material_index,
+    }))
 }
 
 fn default_gltf_material(i: usize) -> MaterialAsset {
