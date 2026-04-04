@@ -178,6 +178,7 @@ impl SsaoPass {
 
 impl RenderPass for SsaoPass {
     fn name(&self) -> &str { "ssao" }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn prepare(&mut self, device: &wgpu::Device, resources: &RenderResources) {
         use wgpu::util::DeviceExt;

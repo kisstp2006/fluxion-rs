@@ -44,6 +44,7 @@ impl ParticleOverlayPass {
 
 impl RenderPass for ParticleOverlayPass {
     fn name(&self) -> &str { "particles_overlay" }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn prepare(&mut self, device: &wgpu::Device, _resources: &RenderResources) {
         use wgpu::util::DeviceExt;

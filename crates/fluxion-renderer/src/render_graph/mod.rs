@@ -112,6 +112,20 @@ impl RenderGraph {
         self.passes.iter().map(|e| e.name.as_str()).collect()
     }
 
+    /// Get a mutable reference to a specific pass by name, downcast to `T`.
+    ///
+    /// Returns `None` if no pass with that name exists, or if the pass is not
+    /// of type `T`. Used by `FluxionRenderer::apply_config` to update pass
+    /// settings without recreating GPU resources.
+    pub fn get_pass_mut<T: RenderPass + 'static>(&mut self, name: &str) -> Option<&mut T> {
+        self.passes
+            .iter_mut()
+            .find(|e| e.name == name)?
+            .pass
+            .as_any_mut()
+            .downcast_mut::<T>()
+    }
+
     /// Prepare all passes (called once after device creation, before first frame).
     pub fn prepare(&mut self, device: &wgpu::Device, resources: &RenderResources) {
         for entry in &mut self.passes {

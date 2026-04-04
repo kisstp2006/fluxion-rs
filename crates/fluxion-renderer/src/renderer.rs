@@ -35,10 +35,11 @@ use fluxion_core::{
 };
 
 use crate::{
+    config::RendererConfig,
     render_graph::{RenderGraph, PassSlot, RenderContext, RenderResources},
     render_graph::context::{FrameData, CameraData, MeshDrawCall, SkyParams, ParticleInstance},
     passes::{GeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, ParticleOverlayPass},
-    lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT},
+    lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT, MAX_LIGHTS},
     material::MaterialRegistry,
     mesh::{GpuMesh, MeshRegistry},
     texture::{GpuTexture, TextureCache},
@@ -57,8 +58,8 @@ use crate::{
 pub struct FluxionRenderer {
     pub device:  wgpu::Device,
     pub queue:   wgpu::Queue,
-    surface:     wgpu::Surface<'static>,
-    config:      wgpu::SurfaceConfiguration,
+    surface:        wgpu::Surface<'static>,
+    surface_config: wgpu::SurfaceConfiguration,
 
     pub render_graph: RenderGraph,
     pub resources:    RenderResources,
@@ -83,6 +84,13 @@ pub struct FluxionRenderer {
 
     light_buffer: LightBuffer,
 
+    /// Active renderer configuration. Can be mutated at runtime.
+    /// Call `apply_config()` after changing to push updates to passes.
+    pub config: RendererConfig,
+
+    /// Runtime max lights (clamped to MAX_LIGHTS).
+    max_lights: usize,
+
     pub width:  u32,
     pub height: u32,
 }
@@ -93,7 +101,7 @@ impl FluxionRenderer {
     /// This is `async` because wgpu device creation is asynchronous.
     /// On native: wrap with `pollster::block_on(...)`.
     /// On WASM:   `await` inside an `async fn`.
-    pub async fn new(window: Arc<Window>) -> anyhow::Result<Self> {
+    pub async fn new(window: Arc<Window>, config: RendererConfig) -> anyhow::Result<Self> {
         let size = window.inner_size();
         let (w, h) = (size.width.max(1), size.height.max(1));
 
@@ -146,7 +154,7 @@ impl FluxionRenderer {
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
-        let config = wgpu::SurfaceConfiguration {
+        let surface_config = wgpu::SurfaceConfiguration {
             usage:         wgpu::TextureUsages::RENDER_ATTACHMENT,
             format:        surface_format,
             width:         w,
@@ -156,7 +164,7 @@ impl FluxionRenderer {
             view_formats:  vec![],
             desired_maximum_frame_latency: 2,
         };
-        surface.configure(&device, &config);
+        surface.configure(&device, &surface_config);
 
         // ── GPU resources ─────────────────────────────────────────────────────
         let resources = RenderResources::new(&device, w, h);
@@ -189,30 +197,49 @@ impl FluxionRenderer {
         let meshes        = MeshRegistry::new(&device);
         let light_buffer  = LightBuffer::new(&device);
 
-        // ── Render graph ──────────────────────────────────────────────────────
+        // ── Render graph — built from config ─────────────────────────────────
         let mut bloom = BloomPass::new();
-        bloom.config.threshold  = 1.2;  // only very bright pixels (sun disc, emissives)
-        bloom.config.strength   = 0.25;
-        bloom.config.blur_passes = 4;
+        bloom.config.enabled     = config.bloom.enabled;
+        bloom.config.threshold   = config.bloom.threshold;
+        bloom.config.soft_knee   = config.bloom.soft_knee;
+        bloom.config.strength    = config.bloom.strength;
+        bloom.config.blur_passes = config.bloom.blur_passes;
 
         let mut tonemap = TonemapPass::new(surface_format);
-        tonemap.config.exposure           = 0.7;   // reduce from 1.0 — scene is very bright
-        tonemap.config.vignette_intensity = 0.25;
-        tonemap.config.film_grain         = 0.01;
-        tonemap.config.chromatic_aberration = 0.3;
+        tonemap.config.exposure             = config.tonemap.exposure;
+        tonemap.config.vignette_intensity   = config.tonemap.vignette_intensity;
+        tonemap.config.vignette_roundness   = config.tonemap.vignette_roundness;
+        tonemap.config.chromatic_aberration = config.tonemap.chromatic_aberration;
+        tonemap.config.film_grain           = config.tonemap.film_grain;
+
+        let mut ssao = SsaoPass::new();
+        ssao.enabled   = config.ssao.enabled;
+        ssao.radius    = config.ssao.radius;
+        ssao.bias      = config.ssao.bias;
+        ssao.intensity = config.ssao.intensity;
+
+        let max_lights = config.max_lights.min(MAX_LIGHTS);
 
         let mut render_graph = RenderGraph::new();
-        render_graph.add_pass("geometry",  PassSlot::Geometry,  Box::new(GeometryPass::new()));
-        render_graph.add_pass("lighting",  PassSlot::Lighting,  Box::new(LightingPass::new()));
-        render_graph.add_pass("skybox",    PassSlot::Skybox,    Box::new(SkyboxPass::new()));
-        render_graph.add_pass("ssao",      PassSlot::Ssao,      Box::new(SsaoPass::new()));
-        render_graph.add_pass("bloom",     PassSlot::Bloom,     Box::new(bloom));
-        render_graph.add_pass("tonemap",   PassSlot::Tonemap,   Box::new(tonemap));
-        render_graph.add_pass("particles", PassSlot::Overlay,   Box::new(ParticleOverlayPass::new(surface_format)));
+        render_graph.add_pass("geometry",  PassSlot::Geometry, Box::new(GeometryPass::new()));
+        render_graph.add_pass("lighting",  PassSlot::Lighting, Box::new(LightingPass::new()));
+        render_graph.add_pass("skybox",    PassSlot::Skybox,   Box::new(SkyboxPass::new()));
+        render_graph.add_pass("ssao",      PassSlot::Ssao,     Box::new(ssao));
+        render_graph.add_pass("bloom",     PassSlot::Bloom,    Box::new(bloom));
+        render_graph.add_pass("tonemap",   PassSlot::Tonemap,  Box::new(tonemap));
+        render_graph.add_pass("particles", PassSlot::Overlay,  Box::new(ParticleOverlayPass::new(surface_format)));
+
+        // Apply per-pass enable flags from config.
+        render_graph.set_enabled("skybox",    config.passes.skybox);
+        render_graph.set_enabled("ssao",      config.passes.ssao);
+        render_graph.set_enabled("bloom",     config.passes.bloom);
+        render_graph.set_enabled("particles", config.passes.particles);
+
         render_graph.prepare(&device, &resources);
 
         Ok(Self {
-            device, queue, surface, config,
+            device, queue, surface,
+            surface_config,
             render_graph, resources,
             materials, meshes, textures, shaders: ShaderCache::new(),
             mat_bgl,
@@ -220,6 +247,8 @@ impl FluxionRenderer {
             asset_source: None,
             scene_settings: SceneSettings::default(),
             skybox_asset_path: None,
+            config,
+            max_lights,
             width: w, height: h,
         })
     }
@@ -229,6 +258,44 @@ impl FluxionRenderer {
     /// Set the asset root for texture loads in [`Self::add_material`] (and optional WASM scene materials).
     pub fn set_asset_source(&mut self, src: Option<Arc<dyn assets::AssetSource>>) {
         self.asset_source = src;
+    }
+
+    /// Apply a new [`RendererConfig`] at runtime.
+    ///
+    /// Updates all pass configs and enable flags without recreating GPU resources.
+    /// Call this after loading or hot-reloading `renderer.config.json`.
+    pub fn apply_config(&mut self, config: RendererConfig) {
+        use crate::passes::{BloomPass, TonemapPass, SsaoPass};
+
+        self.max_lights = config.max_lights.min(MAX_LIGHTS);
+
+        if let Some(bloom) = self.render_graph.get_pass_mut::<BloomPass>("bloom") {
+            bloom.config.enabled     = config.bloom.enabled;
+            bloom.config.threshold   = config.bloom.threshold;
+            bloom.config.soft_knee   = config.bloom.soft_knee;
+            bloom.config.strength    = config.bloom.strength;
+            bloom.config.blur_passes = config.bloom.blur_passes;
+        }
+        if let Some(tonemap) = self.render_graph.get_pass_mut::<TonemapPass>("tonemap") {
+            tonemap.config.exposure             = config.tonemap.exposure;
+            tonemap.config.vignette_intensity   = config.tonemap.vignette_intensity;
+            tonemap.config.vignette_roundness   = config.tonemap.vignette_roundness;
+            tonemap.config.chromatic_aberration = config.tonemap.chromatic_aberration;
+            tonemap.config.film_grain           = config.tonemap.film_grain;
+        }
+        if let Some(ssao) = self.render_graph.get_pass_mut::<SsaoPass>("ssao") {
+            ssao.enabled   = config.ssao.enabled;
+            ssao.radius    = config.ssao.radius;
+            ssao.bias      = config.ssao.bias;
+            ssao.intensity = config.ssao.intensity;
+        }
+
+        self.render_graph.set_enabled("skybox",    config.passes.skybox);
+        self.render_graph.set_enabled("ssao",      config.passes.ssao);
+        self.render_graph.set_enabled("bloom",     config.passes.bloom);
+        self.render_graph.set_enabled("particles", config.passes.particles);
+
+        self.config = config;
     }
 
     /// Apply global scene file settings (ambient, fog, gravity vector, skybox path placeholder).
@@ -618,16 +685,16 @@ impl FluxionRenderer {
         if width == 0 || height == 0 { return; }
         self.width  = width;
         self.height = height;
-        self.config.width  = width;
-        self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
+        self.surface_config.width  = width;
+        self.surface_config.height = height;
+        self.surface.configure(&self.device, &self.surface_config);
         self.resources.resize(&self.device, width, height);
         self.render_graph.resize(&self.device, width, height);
     }
 
     /// Swapchain format (sRGB), for UI backends (`egui-wgpu`, etc.).
     pub fn surface_format(&self) -> wgpu::TextureFormat {
-        self.config.format
+        self.surface_config.format
     }
 
     /// Render one frame from the current ECS world state.

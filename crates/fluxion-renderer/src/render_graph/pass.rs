@@ -51,6 +51,11 @@ pub trait RenderPass: RenderPassBounds {
     /// Unique name for this pass. Used for enable/disable and debug output.
     fn name(&self) -> &str;
 
+    /// Returns `self` as `&mut dyn Any` for downcasting in [`super::RenderGraph::get_pass_mut`].
+    ///
+    /// Implement this in every concrete pass as `fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }`.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
     /// Called once after the device is created and shared render targets are ready.
     /// Create pipelines, bind group layouts, and other one-time GPU objects here.
     ///

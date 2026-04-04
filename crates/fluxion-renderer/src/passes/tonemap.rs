@@ -69,6 +69,7 @@ impl TonemapPass {
 
 impl RenderPass for TonemapPass {
     fn name(&self) -> &str { "tonemap" }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn prepare(&mut self, device: &wgpu::Device, resources: &RenderResources) {
         use wgpu::util::DeviceExt;

@@ -24,8 +24,12 @@ pub mod texture;
 pub mod mesh;
 pub mod lighting;
 pub mod shader;
+pub mod config;
 
 pub use renderer::FluxionRenderer;
+pub use config::RendererConfig;
+#[cfg(not(target_arch = "wasm32"))]
+pub use config::{load_renderer_config, save_renderer_config};
 /// Re-export asset pipeline types (FluxionJS-style logical paths).
 pub use fluxion_core::assets;
 pub use render_graph::{RenderGraph, RenderPass, PassSlot};

@@ -27,6 +27,7 @@ impl SkyboxPass {
 
 impl RenderPass for SkyboxPass {
     fn name(&self) -> &str { "skybox" }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn prepare(&mut self, device: &wgpu::Device, _resources: &RenderResources) {
         use wgpu::util::DeviceExt;

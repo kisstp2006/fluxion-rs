@@ -62,6 +62,7 @@ impl JsRenderPass {
 
 impl RenderPass for JsRenderPass {
     fn name(&self) -> &str { &self.pass_name }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn execute(&mut self, _ctx: &mut RenderContext) {
         // TODO: call the JS execute function via the VM.

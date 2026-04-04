@@ -61,6 +61,7 @@ impl GeometryPass {
 
 impl RenderPass for GeometryPass {
     fn name(&self) -> &str { "geometry" }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn prepare(&mut self, device: &wgpu::Device, _resources: &RenderResources) {
         // wgpu requires dynamic uniform offsets to be aligned to

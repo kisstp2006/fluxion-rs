@@ -55,6 +55,7 @@ impl LightingPass {
 
 impl RenderPass for LightingPass {
     fn name(&self) -> &str { "lighting" }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
 
     fn prepare(&mut self, device: &wgpu::Device, resources: &RenderResources) {
         let vert = device.create_shader_module(wgpu::ShaderModuleDescriptor {

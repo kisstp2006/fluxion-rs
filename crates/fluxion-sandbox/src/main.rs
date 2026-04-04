@@ -44,7 +44,9 @@ use fluxion_core::{
 #[cfg(not(target_arch = "wasm32"))]
 use fluxion_core::scene::{load_scene_file, load_scene_into_world};
 use fluxion_core::ComponentRegistry;
-use fluxion_renderer::{FluxionRenderer, MaterialAsset};
+use fluxion_renderer::{FluxionRenderer, MaterialAsset, RendererConfig};
+#[cfg(not(target_arch = "wasm32"))]
+use fluxion_renderer::load_renderer_config;
 use fluxion_scripting::{
     JsVm, bindings,
     apply_transforms_from_scripts_to_world, sync_transforms_from_world_to_scripts,
@@ -308,7 +310,9 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let r = pollster::block_on(FluxionRenderer::new(window.clone())).expect("Renderer init failed");
+        let renderer_config = load_renderer_config("renderer.config.json")
+            .unwrap_or_else(|e| { log::warn!("renderer.config.json: {e}"); RendererConfig::default() });
+        let r = pollster::block_on(FluxionRenderer::new(window.clone(), renderer_config)).expect("Renderer init failed");
         inner.borrow_mut().renderer = Some(r);
         finish_renderer_setup(&mut inner.borrow_mut());
     }
@@ -318,7 +322,7 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
         let win = window.clone();
         let weak = Rc::downgrade(&inner);
         wasm_bindgen_futures::spawn_local(async move {
-            match FluxionRenderer::new(win).await {
+            match FluxionRenderer::new(win, RendererConfig::default()).await {
                 Ok(r) => {
                     if let Some(cell) = weak.upgrade() {
                         cell.borrow_mut().renderer = Some(r);
