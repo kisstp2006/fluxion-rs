@@ -10,7 +10,9 @@
 // ============================================================
 
 use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// A scriptable shader parameter value.
 /// Scripts can set these by name to modify materials at runtime.
@@ -127,6 +129,72 @@ impl Default for MaterialAsset {
 }
 
 impl MaterialAsset {
+    /// Build from a FluxionJS `MeshRenderer` embedded `material` JSON object.
+    pub fn from_fluxionjs_mesh_material(v: &Value, name: impl Into<String>) -> Self {
+        let mut m = MaterialAsset::default();
+        m.name = name.into();
+        if let Some(arr) = v.get("color").and_then(|c| c.as_array()) {
+            if arr.len() >= 3 {
+                m.color[0] = arr[0].as_f64().unwrap_or(1.0) as f32;
+                m.color[1] = arr[1].as_f64().unwrap_or(1.0) as f32;
+                m.color[2] = arr[2].as_f64().unwrap_or(1.0) as f32;
+            }
+        }
+        m.roughness = v.get("roughness").and_then(|x| x.as_f64()).unwrap_or(0.6) as f32;
+        m.metalness = v.get("metalness").and_then(|x| x.as_f64()).unwrap_or(0.1) as f32;
+        if let Some(arr) = v.get("emissive").and_then(|c| c.as_array()) {
+            if arr.len() >= 3 {
+                m.emissive[0] = arr[0].as_f64().unwrap_or(0.0) as f32;
+                m.emissive[1] = arr[1].as_f64().unwrap_or(0.0) as f32;
+                m.emissive[2] = arr[2].as_f64().unwrap_or(0.0) as f32;
+                m.emissive_intensity = v
+                    .get("emissiveIntensity")
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(1.0) as f32;
+            }
+        }
+        if v.get("transparent").and_then(|x| x.as_bool()).unwrap_or(false) {
+            m.color[3] = v.get("opacity").and_then(|x| x.as_f64()).unwrap_or(1.0) as f32;
+            m.alpha_mode = AlphaMode::Blend;
+        }
+        if v.get("doubleSided").and_then(|x| x.as_bool()).unwrap_or(false) {
+            m.double_sided = true;
+        }
+        if v.get("wireframe").and_then(|x| x.as_bool()).unwrap_or(false) {
+            m.wireframe = true;
+        }
+        if let Some(at) = v.get("alphaTest").and_then(|x| x.as_f64()) {
+            m.alpha_mode = AlphaMode::Mask(at as f32);
+        }
+        m.normal_scale = v
+            .get("normalScale")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(1.0) as f32;
+        m.ao_intensity = v
+            .get("aoIntensity")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(1.0) as f32;
+        if let Some(s) = v.get("albedoMap").and_then(|x| x.as_str()) {
+            m.albedo_map = Some(s.to_string());
+        }
+        if let Some(s) = v.get("normalMap").and_then(|x| x.as_str()) {
+            m.normal_map = Some(s.to_string());
+        }
+        if let Some(s) = v.get("roughnessMap").and_then(|x| x.as_str()) {
+            m.roughness_map = Some(s.to_string());
+        }
+        if let Some(s) = v.get("metalnessMap").and_then(|x| x.as_str()) {
+            m.metalness_map = Some(s.to_string());
+        }
+        if let Some(s) = v.get("aoMap").and_then(|x| x.as_str()) {
+            m.ao_map = Some(s.to_string());
+        }
+        if let Some(s) = v.get("emissiveMap").and_then(|x| x.as_str()) {
+            m.emissive_map = Some(s.to_string());
+        }
+        m
+    }
+
     /// Load a .fluxmat JSON file from disk.
     pub fn load_from_file(path: &str) -> anyhow::Result<Self> {
         let raw  = std::fs::read_to_string(path)

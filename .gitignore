@@ -1,0 +1,33 @@
+# Cargo / Rust build output
+/target/
+**/target/
+
+# Backup files from rustfmt or editors
+**/*.rs.bk
+*.pdb
+
+# Profiling / debug
+*.prof*
+flamegraph.svg
+
+# Environment / secrets (uncomment if you use local env files)
+# .env
+# .env.local
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE (optional — remove a line if you want to commit shared settings)
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# wasm-pack / wasm-bindgen generated (if you add them later)
+/pkg/
+dist/

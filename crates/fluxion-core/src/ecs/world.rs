@@ -407,6 +407,14 @@ impl ECSWorld {
     pub fn entity_count(&self) -> usize {
         self.all_entities.len()
     }
+
+    /// Despawn every root entity (and subtrees). Clears the whole scene graph.
+    pub fn clear(&mut self) {
+        let roots: Vec<EntityId> = self.root_entities().collect();
+        for r in roots {
+            self.despawn(r);
+        }
+    }
 }
 
 impl Default for ECSWorld {

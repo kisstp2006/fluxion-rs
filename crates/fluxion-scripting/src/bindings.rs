@@ -67,6 +67,7 @@ const Input = {
     _keys: {},
     _mousePos: { x: 0, y: 0 },
     _mouseDelta: { x: 0, y: 0 },
+    _mouseButtons: { left: false, middle: false, right: false },
 
     isKeyDown(key)    { return !!Input._keys[key]; },
     getAxis(neg, pos) { return (Input._keys[pos] ? 1 : 0) - (Input._keys[neg] ? 1 : 0); },
@@ -74,6 +75,12 @@ const Input = {
     get vertical()    { return Input.getAxis("KeyS", "KeyW"); },
     get mousePosition() { return Input._mousePos; },
     get mouseDelta()    { return Input._mouseDelta; },
+    getMouseButton(i) {
+        if (i === 0) return Input._mouseButtons.left;
+        if (i === 1) return Input._mouseButtons.middle;
+        if (i === 2) return Input._mouseButtons.right;
+        return false;
+    },
 };
 "#;
 
@@ -132,5 +139,28 @@ pub fn update_time_global(vm: &JsVm, dt: f32, elapsed: f32, fixed_dt: f32, frame
             "Time.dt = {dt}; Time.elapsed = {elapsed}; Time.fixedDt = {fixed_dt}; Time.frameCount = {frame};",
         ),
         "<time-update>",
+    )
+}
+
+/// Push [`fluxion_core::InputState`] into the JS `Input` global for script reads.
+pub fn update_input_global(vm: &JsVm, input: &fluxion_core::InputState) -> anyhow::Result<()> {
+    let mut map = serde_json::Map::new();
+    for k in input.keys_down_iter() {
+        map.insert(k.to_string(), serde_json::Value::Bool(true));
+    }
+    let keys_json = serde_json::Value::Object(map).to_string();
+    let (mx, my) = input.mouse_position();
+    let (mdx, mdy) = input.mouse_delta();
+    let ml = input.mouse_left();
+    let mm = input.mouse_middle();
+    let mr = input.mouse_right();
+    vm.eval(
+        &format!(
+            "Input._keys = {keys_json}; \
+             Input._mousePos = {{ x: {mx}, y: {my} }}; \
+             Input._mouseDelta = {{ x: {mdx}, y: {mdy} }}; \
+             Input._mouseButtons = {{ left: {ml}, middle: {mm}, right: {mr} }};",
+        ),
+        "<input-update>",
     )
 }

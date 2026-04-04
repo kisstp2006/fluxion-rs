@@ -40,6 +40,12 @@ impl<'de> Deserialize<'de> for EntityId {
 }
 
 impl EntityId {
+    /// Stable packed bits for this handle (logging, material names, etc.).
+    #[inline]
+    pub fn to_bits(self) -> u64 {
+        self.0.to_bits().get()
+    }
+
     /// A guaranteed-invalid sentinel value. Useful as a "no entity" default.
     /// Equivalent to `null` in C# or `entt::null` in EnTT.
     pub const INVALID: EntityId = EntityId(hecs::Entity::DANGLING);

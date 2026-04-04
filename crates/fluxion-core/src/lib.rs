@@ -6,7 +6,9 @@
 //   - Transform hierarchy
 //   - Event bus
 //   - Time / fixed-timestep
-//   - Scene serialization
+//   - Scene serialization + instantiate into ECSWorld (FluxionJS-compatible)
+//   - Input snapshot (platform-agnostic)
+//   - Unity-style facade (GameObject)
 //   - Built-in components (Transform, MeshRenderer, Camera, Light)
 //
 // This crate has NO wgpu / rendering dependency.
@@ -23,6 +25,8 @@ pub mod event;
 pub mod time;
 pub mod scene;
 pub mod components;
+pub mod input;
+pub mod facade;
 
 // Re-export the most commonly used types at the crate root so users
 // can write `use fluxion_core::ECSWorld` instead of the full path.
@@ -32,6 +36,9 @@ pub use ecs::component::Component;
 pub use transform::Transform;
 pub use event::{EventBus, EventHandle, EngineEvent};
 pub use time::Time;
+pub use input::InputState;
+pub use facade::GameObject;
+pub use scene::load_scene_into_world;
 
 // WASM entry-point: sets up the browser panic hook so Rust panics appear
 // as readable messages in the browser console instead of "unreachable".

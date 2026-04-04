@@ -183,3 +183,7 @@ pub fn save_scene_file(path: &str, scene: &SceneFileData) -> Result<(), String> 
         .map_err(|e| format!("Failed to rename scene file: {e}"))?;
     Ok(())
 }
+
+mod deserialize_world;
+
+pub use deserialize_world::load_scene_into_world;

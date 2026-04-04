@@ -242,6 +242,7 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
     // ── Final composition ─────────────────────────────────────────────────────
     var color = ambient + total_radiance + emission;
 
-    // Output is LINEAR HDR — tonemapping happens in the tonemap pass.
-    return vec4<f32>(color, 1.0);
+    // DEBUG: normals as color (red=+X, green=+Y, blue=+Z)
+    // Restore to: return vec4<f32>(color, 1.0);
+    return vec4<f32>(n * 0.5 + 0.5, 1.0);
 }

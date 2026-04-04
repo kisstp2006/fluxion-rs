@@ -9,6 +9,7 @@
 // ============================================================
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::ecs::component::Component;
 
@@ -73,6 +74,10 @@ pub struct MeshRenderer {
     /// Handle into the renderer's MaterialRegistry. None until loaded.
     #[serde(skip)]
     pub material_handle: Option<u32>,
+
+    /// Embedded PBR blob from FluxionJS scene files (`material` on `MeshRenderer`). Hydrated by the renderer.
+    #[serde(skip)]
+    pub scene_inline_material: Option<Value>,
 }
 
 impl MeshRenderer {
@@ -96,6 +101,7 @@ impl Default for MeshRenderer {
             layer:           0,
             mesh_handle:     None,
             material_handle: None,
+            scene_inline_material: None,
         }
     }
 }
@@ -106,5 +112,6 @@ impl Component for MeshRenderer {
         // resources when reference count hits zero.
         self.mesh_handle     = None;
         self.material_handle = None;
+        self.scene_inline_material = None;
     }
 }

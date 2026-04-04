@@ -16,6 +16,7 @@
 //   - async init is driven by pollster on native, wasm-bindgen-futures on web
 // ============================================================
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -24,7 +25,7 @@ use winit::window::Window;
 use wgpu::SurfaceError;
 
 use fluxion_core::{
-    ECSWorld,
+    ECSWorld, EntityId,
     components::{Camera, Light, MeshRenderer},
     components::light::LightType,
     transform::Transform,
@@ -228,6 +229,41 @@ impl FluxionRenderer {
         if let Some(mut mr) = world.get_component_mut::<fluxion_core::components::MeshRenderer>(entity) {
             mr.material_handle = Some(handle);
         }
+    }
+
+    /// Resolve `scene_inline_material` and on-disk `.fluxmat` paths into GPU materials.
+    pub fn hydrate_scene_materials(
+        &mut self,
+        world: &mut ECSWorld,
+        project_root: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        let entities: Vec<EntityId> = world.all_entities().collect();
+        for id in entities {
+            let Some(mut mr) = world.get_component_mut::<MeshRenderer>(id) else {
+                continue;
+            };
+            if mr.material_handle.is_some() {
+                continue;
+            }
+            if let Some(v) = mr.scene_inline_material.take() {
+                let name = format!("scene_inline_{:x}", id.to_bits());
+                let asset =
+                    crate::material::MaterialAsset::from_fluxionjs_mesh_material(&v, name);
+                let h = self.add_material(&asset)?;
+                mr.material_handle = Some(h);
+                continue;
+            }
+            if let Some(rel) = mr.material_path.clone() {
+                let p: PathBuf = project_root.map(|r| r.join(&rel)).unwrap_or_else(|| PathBuf::from(&rel));
+                if p.is_file() {
+                    let p_str = p.to_str().context("material path is not valid UTF-8")?;
+                    let asset = crate::material::MaterialAsset::load_from_file(p_str)?;
+                    let h = self.add_material(&asset)?;
+                    mr.material_handle = Some(h);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Call when the window is resized.
