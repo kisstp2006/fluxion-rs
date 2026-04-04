@@ -143,6 +143,9 @@ pub struct RuneVm {
     unit:    SharedUnit,
     /// Paths of loaded source files (for incremental recompile).
     source_paths: Vec<PathBuf>,
+    /// Compile context — includes all installed modules (engine + editor extras).
+    /// Stored so `poll_hot_reload` recompiles with the same module set.
+    compile_ctx: Option<Arc<rune::Context>>,
     /// Watches .rn files for changes (native only; None = hot reload disabled).
     watcher: Option<HotReloadWatcher>,
     /// Hooks called after every successful hot reload.
@@ -171,6 +174,7 @@ impl RuneVm {
             runtime,
             unit:         Arc::new(RwLock::new(Arc::new(unit))),
             source_paths: paths,
+            compile_ctx:  None,
             watcher:      None,
             reload_hooks: Vec::new(),
             last_error:   None,
@@ -212,6 +216,7 @@ impl RuneVm {
             runtime,
             unit:         Arc::new(RwLock::new(Arc::new(unit))),
             source_paths: paths,
+            compile_ctx:  Some(Arc::new(compile_ctx)),
             watcher:      None,
             reload_hooks: Vec::new(),
             last_error:   None,
@@ -262,7 +267,11 @@ impl RuneVm {
                 self.source_paths.push(path.clone());
             }
 
-            match Self::compile_paths(&self.source_paths) {
+            let compile_result = match &self.compile_ctx {
+                Some(ctx) => Self::compile_paths_with_ctx(&self.source_paths, ctx),
+                None      => Self::compile_paths(&self.source_paths),
+            };
+            match compile_result {
                 Ok(unit) => {
                     *self.unit.write().unwrap() = Arc::new(unit);
                 }

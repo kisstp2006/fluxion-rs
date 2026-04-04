@@ -90,6 +90,9 @@ struct EditorInner {
     editor_mode:    EditorMode,
     transform_tool: TransformTool,
     modifiers:      ModifiersState,
+
+    // Applied once on the first frame; egui theme is static for the session.
+    theme_applied:  bool,
 }
 
 // ── ApplicationHandler impl ───────────────────────────────────────────────────
@@ -271,6 +274,7 @@ impl EditorApp {
             editor_mode:    EditorMode::Editing,
             transform_tool: TransformTool::Translate,
             modifiers:      ModifiersState::empty(),
+            theme_applied:  false,
         };
 
         *self = EditorApp::Running(Rc::new(RefCell::new(inner)));
@@ -321,6 +325,7 @@ impl EditorInner {
         let vm              = &mut self.host.vm;
         let editor_mode     = &mut self.editor_mode;
         let transform_tool  = &mut self.transform_tool;
+        let theme_applied   = &mut self.theme_applied;
         let project         = &self.project;
         let scene_path      = &self.scene_path;
         let scene_dirty     = self.scene_dirty;
@@ -346,7 +351,10 @@ impl EditorInner {
 
         let result = self.renderer.render_ui_only(|device, queue, encoder, view| {
             ui_shell.paint(&window, device, queue, encoder, view, w, h, |ctx| {
-                theme::apply_theme(ctx);
+                if !*theme_applied {
+                    theme::apply_theme(ctx);
+                    *theme_applied = true;
+                }
 
                 // ── Menu bar ────────────────────────────────────────────────
                 egui::TopBottomPanel::top("editor_menu")

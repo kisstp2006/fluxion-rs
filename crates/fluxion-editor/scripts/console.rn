@@ -9,24 +9,26 @@
 pub mod console {
 
 pub fn panel() {
-    let lines = fluxion::world::log_lines();
-
-    // Toolbar row: line count + Clear button
-    fluxion::ui::label(`${lines.len()} messages`);
+    // Toolbar row: line count + Clear button.
+    // Use log_generation() as a cheap proxy for the count label — avoids
+    // cloning the full Vec just to get len().
+    let gen = fluxion::world::log_generation();
+    fluxion::ui::label(`Log  (gen ${gen})`);
     fluxion::ui::separator();
     if fluxion::ui::button("🗑 Clear") {
         fluxion::world::clear_log();
     }
     fluxion::ui::separator();
 
+    // Only clone the last 200 entries — avoids O(N) clone of the full log.
+    let lines = fluxion::world::log_lines_tail(200);
+
     if lines.is_empty() {
         fluxion::ui::small("(no messages)");
         return;
     }
 
-    // Show last 200 lines to avoid overwhelming the UI.
-    let start = if lines.len() > 200 { lines.len() - 200 } else { 0 };
-    let i = start;
+    let i = 0;
     while i < lines.len() {
         let line = lines[i];
         if line.starts_with("[ERROR]") {

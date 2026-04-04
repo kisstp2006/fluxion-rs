@@ -9,6 +9,7 @@
 // ============================================================
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ptr::NonNull;
 
 use rune::Module;
@@ -27,6 +28,11 @@ thread_local! {
     static SELECTED:     RefCell<Option<EntityId>>               = RefCell::new(None);
     static PENDING:      RefCell<Vec<PendingEdit>>               = RefCell::new(Vec::new());
     static LOG_LINES:    RefCell<Vec<String>>                    = RefCell::new(Vec::new());
+    /// Per-frame cache: entity bits → EntityId. Rebuilt each frame in set_world_context.
+    static ENTITY_CACHE: RefCell<HashMap<u64, EntityId>>         = RefCell::new(HashMap::new());
+    /// Monotonic counter incremented on every push_log / clear_log call.
+    /// Rune panels compare against their last-seen value to skip redundant clones.
+    static LOG_GENERATION: Cell<u64> = Cell::new(0);
 }
 
 /// A deferred field mutation queued by Rune, applied after the panel call.
@@ -40,16 +46,25 @@ pub struct PendingEdit {
 // ── Public host API ────────────────────────────────────────────────────────────
 
 /// Set world + registry pointers before a Rune panel call.
+/// Also rebuilds the entity ID cache for O(1) lookups this frame.
 /// # Safety: pointers must remain valid until `clear_world_context()` is called.
 pub fn set_world_context(world: &ECSWorld, registry: &ComponentRegistry) {
     WORLD_PTR.with(|c| c.set(Some(NonNull::from(world))));
     REG_PTR  .with(|c| c.set(Some(NonNull::from(registry))));
+    ENTITY_CACHE.with(|cache| {
+        let mut map = cache.borrow_mut();
+        map.clear();
+        for e in world.all_entities() {
+            map.insert(e.to_bits(), e);
+        }
+    });
 }
 
 /// Clear world + registry pointers after the Rune panel call.
 pub fn clear_world_context() {
     WORLD_PTR.with(|c| c.set(None));
     REG_PTR  .with(|c| c.set(None));
+    ENTITY_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
 /// Drain queued mutations for the host to apply with &mut ECSWorld.
@@ -60,6 +75,7 @@ pub fn drain_pending_edits() -> Vec<PendingEdit> {
 /// Append a log line from Rust host code.
 pub fn push_log(line: String) {
     LOG_LINES.with(|l| l.borrow_mut().push(line));
+    LOG_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
 }
 
 /// Get the currently selected entity (may be None).
@@ -80,9 +96,9 @@ fn entity_to_id(id: EntityId) -> i64 {
     id.to_bits() as i64
 }
 
-fn id_to_entity(world: &ECSWorld, id: i64) -> Option<EntityId> {
+fn id_to_entity(_world: &ECSWorld, id: i64) -> Option<EntityId> {
     let bits = id as u64;
-    world.all_entities().find(|e| e.to_bits() == bits)
+    ENTITY_CACHE.with(|cache| cache.borrow().get(&bits).copied())
 }
 
 fn get_descriptor<'a>(
@@ -419,6 +435,19 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     m.function("clear_log", || {
         LOG_LINES.with(|l| l.borrow_mut().clear());
+        LOG_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
+    }).build()?;
+
+    m.function("log_generation", || -> i64 {
+        LOG_GENERATION.with(|g| g.get() as i64)
+    }).build()?;
+
+    m.function("log_lines_tail", |n: i64| -> Vec<String> {
+        LOG_LINES.with(|l| {
+            let lines = l.borrow();
+            let n = (n.max(0) as usize).min(lines.len());
+            lines[lines.len() - n..].to_vec()
+        })
     }).build()?;
 
     m.function("log_with_level", |level: String, msg: String| {
