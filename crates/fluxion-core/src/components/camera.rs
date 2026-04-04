@@ -10,6 +10,7 @@
 // ============================================================
 
 use serde::{Deserialize, Serialize};
+use fluxion_reflect_derive::Reflect;
 
 use crate::ecs::component::Component;
 
@@ -26,18 +27,21 @@ pub enum ProjectionMode {
 ///
 /// Attach to an entity that also has a `Transform`. The entity's world
 /// position and rotation become the camera's eye position and look direction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 pub struct Camera {
     /// Vertical field of view in degrees. Only used for Perspective mode.
     /// Typical values: 60–90. Default: 70.
+    #[reflect(range(min = 1.0, max = 180.0))]
     pub fov: f32,
 
     /// Near clipping plane distance (meters). Objects closer than this are clipped.
     /// Default: 0.1 (10 cm).
+    #[reflect(range(min = 0.001, max = 100.0))]
     pub near: f32,
 
     /// Far clipping plane distance (meters). Objects further than this are clipped.
     /// Default: 1000.0 (1 km).
+    #[reflect(range(min = 1.0, max = 100000.0))]
     pub far: f32,
 
     /// Projection mode. Default: Perspective.
@@ -45,6 +49,7 @@ pub struct Camera {
 
     /// Half-height of the orthographic view volume. Only used in Orthographic mode.
     /// The width is derived from this and the viewport aspect ratio.
+    #[reflect(range(min = 0.1, max = 1000.0))]
     pub ortho_size: f32,
 
     /// If `true`, this camera is the active camera used for rendering the scene.

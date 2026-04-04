@@ -32,7 +32,7 @@ pub mod particles;
 pub mod debug_draw;
 pub mod registry;
 pub mod reflect;
-pub mod reflect_impls;
+// reflect_impls removed — Reflect is now derived via #[derive(Reflect)] on each component.
 
 // Re-export the most commonly used types at the crate root so users
 // can write `use fluxion_core::ECSWorld` instead of the full path.

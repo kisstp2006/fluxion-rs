@@ -6,6 +6,7 @@
 // ============================================================
 
 use glam::Vec3;
+use fluxion_reflect_derive::Reflect;
 
 use crate::ecs::component::Component;
 
@@ -21,18 +22,26 @@ pub struct Particle {
 }
 
 /// Spawns and holds particles for one emitter entity. Attach with [`Transform`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Reflect)]
 pub struct ParticleEmitter {
     pub max_particles:    usize,
+    #[reflect(range(min = 0.0, max = 1000.0))]
     pub spawn_per_second: f32,
+    #[reflect(range(min = 0.01, max = 30.0))]
     pub lifetime:         f32,
+    #[reflect(range(min = 0.0, max = 50.0))]
     pub start_speed:      f32,
     pub gravity:          Vec3,
     pub color:            [f32; 4],
+    #[reflect(range(min = 0.001, max = 5.0))]
     pub size:             f32,
+    #[reflect(range(min = 0.0, max = 180.0))]
     pub spread_degrees:   f32,
+    #[reflect(skip)]
     pub(crate) accumulator: f32,
+    #[reflect(skip)]
     pub particles:        Vec<Particle>,
+    #[reflect(skip)]
     rng_state:            u32,
 }
 

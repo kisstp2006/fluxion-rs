@@ -9,6 +9,7 @@
 // ============================================================
 
 use serde::{Deserialize, Serialize};
+use fluxion_reflect_derive::Reflect;
 
 use crate::ecs::component::Component;
 
@@ -44,7 +45,7 @@ pub enum LightType {
 ///     ..Light::default()
 /// });
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 pub struct Light {
     pub light_type: LightType,
 
@@ -55,18 +56,22 @@ pub struct Light {
     ///   - Directional: lux (lm/m²), typical sunlight ≈ 100 000 lux
     ///   - Point/Spot:  luminous power (lm), typical bulb ≈ 800 lm
     /// For game purposes, just tune until it looks right. Default: 1.0.
+    #[reflect(range(min = 0.0, max = 200.0))]
     pub intensity: f32,
 
     /// Maximum influence range in meters. Point/Spot only.
     /// Objects beyond this distance receive no light.
+    #[reflect(range(min = 0.0, max = 1000.0))]
     pub range: f32,
 
     /// Outer half-angle of the spotlight cone in degrees. Spot only.
     /// Default: 30 degrees.
+    #[reflect(range(min = 1.0, max = 89.0))]
     pub spot_angle: f32,
 
     /// Fraction of the cone that fades from full to zero brightness.
     /// 0.0 = hard edge, 1.0 = soft fully blended edge. Default: 0.15.
+    #[reflect(range(min = 0.0, max = 1.0))]
     pub spot_penumbra: f32,
 
     /// Whether this light casts real-time shadows. Shadow casting is
@@ -79,6 +84,7 @@ pub struct Light {
 
     /// Small depth bias to prevent "shadow acne" (self-shadowing artifacts).
     /// Increase if shadows show stripes on surfaces. Default: 0.005.
+    #[reflect(range(min = 0.0, max = 0.1))]
     pub shadow_bias: f32,
 }
 

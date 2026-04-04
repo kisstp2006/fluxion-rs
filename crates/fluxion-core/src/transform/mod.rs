@@ -24,6 +24,7 @@ pub mod system;
 
 use glam::{Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
+use fluxion_reflect_derive::Reflect;
 
 use crate::ecs::component::Component;
 
@@ -37,7 +38,7 @@ use crate::ecs::component::Component;
 /// t.position = Vec3::new(1.0, 2.0, 3.0);
 /// t.dirty = true; // tell TransformSystem to recompute matrices
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 pub struct Transform {
     // ── Local space (serialized — these are the values you author) ─────────────
     pub position: Vec3,
@@ -48,36 +49,43 @@ pub struct Transform {
     /// Set to `true` whenever position/rotation/scale changes.
     /// TransformSystem recomputes `local_matrix` and clears this.
     #[serde(skip)]
+    #[reflect(skip)]
     pub dirty: bool,
 
     /// Set to `true` when this entity's world matrix needs recomputing
     /// (either `dirty` is set, or the parent's world matrix changed).
     /// TransformSystem recomputes `world_matrix` and clears this.
     #[serde(skip)]
+    #[reflect(skip)]
     pub world_dirty: bool,
 
     // ── World-space cache (not serialized — computed by TransformSystem) ────────
     /// World-space position. Read-only for external code.
     /// Written exclusively by TransformSystem.
     #[serde(skip)]
+    #[reflect(read_only)]
     pub world_position: Vec3,
 
     /// World-space rotation.
     #[serde(skip)]
+    #[reflect(read_only)]
     pub world_rotation: Quat,
 
     /// World-space scale.
     #[serde(skip)]
+    #[reflect(read_only)]
     pub world_scale: Vec3,
 
     // ── Matrix cache (not serialized) ──────────────────────────────────────────
     /// Local TRS matrix. Computed from position/rotation/scale.
     #[serde(skip)]
+    #[reflect(skip)]
     pub(crate) local_matrix: Mat4,
 
     /// World matrix = parent_world * local_matrix.
     /// This is what the renderer uploads to the GPU.
     #[serde(skip)]
+    #[reflect(skip)]
     pub world_matrix: Mat4,
 }
 

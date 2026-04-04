@@ -10,6 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use fluxion_reflect_derive::Reflect;
 
 use crate::ecs::component::Component;
 
@@ -35,7 +36,7 @@ pub enum PrimitiveType {
 ///     ..MeshRenderer::default()
 /// });
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 pub struct MeshRenderer {
     // ── Asset references (serialized) ─────────────────────────────────────────
 
@@ -48,6 +49,7 @@ pub struct MeshRenderer {
     pub material_path: Option<String>,
 
     /// Use a built-in primitive shape. Ignored if `mesh_path` is set.
+    #[reflect(skip)]
     pub primitive: Option<PrimitiveType>,
 
     // ── Rendering options (serialized) ────────────────────────────────────────
@@ -69,14 +71,17 @@ pub struct MeshRenderer {
 
     /// Handle into the renderer's MeshRegistry. None until loaded.
     #[serde(skip)]
+    #[reflect(skip)]
     pub mesh_handle: Option<u32>,
 
     /// Handle into the renderer's MaterialRegistry. None until loaded.
     #[serde(skip)]
+    #[reflect(skip)]
     pub material_handle: Option<u32>,
 
     /// Embedded PBR blob from FluxionJS scene files (`material` on `MeshRenderer`). Hydrated by the renderer.
     #[serde(skip)]
+    #[reflect(skip)]
     pub scene_inline_material: Option<Value>,
 }
 

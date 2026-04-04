@@ -10,6 +10,7 @@
 // ============================================================
 
 use serde::{Deserialize, Serialize};
+use fluxion_reflect_derive::Reflect;
 
 use crate::ecs::component::Component;
 
@@ -97,7 +98,7 @@ impl BodyType {
 ///     "mass": 1.0, "restitution": 0.3, "friction": 0.5
 /// }}
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 #[serde(rename_all = "camelCase")]
 pub struct RigidBody {
     /// Collider shape.
@@ -105,18 +106,24 @@ pub struct RigidBody {
     /// Simulation mode.
     pub body_type: BodyType,
     /// Mass in kilograms. Ignored for Static bodies.
+    #[reflect(range(min = 0.001, max = 1000.0))]
     pub mass: f32,
     /// Linear velocity damping coefficient (air resistance). Range: [0, ∞).
+    #[reflect(range(min = 0.0, max = 10.0))]
     pub linear_damping: f32,
     /// Angular velocity damping coefficient. Range: [0, ∞).
+    #[reflect(range(min = 0.0, max = 10.0))]
     pub angular_damping: f32,
     /// Gravity multiplier. 0 = zero gravity, 1 = normal, negative = anti-gravity.
+    #[reflect(range(min = -2.0, max = 2.0))]
     pub gravity_scale: f32,
     /// Whether the body may sleep when at rest (reduces CPU load).
     pub can_sleep: bool,
     /// Bounciness coefficient. Range: [0, 1].
+    #[reflect(range(min = 0.0, max = 1.0))]
     pub restitution: f32,
     /// Friction coefficient. Range: [0, ∞); typically [0, 1].
+    #[reflect(range(min = 0.0, max = 2.0))]
     pub friction: f32,
 }
 
