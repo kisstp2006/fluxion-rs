@@ -76,13 +76,13 @@ fn with_ctx<R>(f: impl FnOnce(&ECSWorld, &ComponentRegistry) -> R) -> Option<R> 
     Some(unsafe { f(world.as_ref(), reg.as_ref()) })
 }
 
-fn entity_to_str(id: EntityId) -> String {
-    id.to_bits().to_string()
+fn entity_to_id(id: EntityId) -> i64 {
+    id.to_bits() as i64
 }
 
-fn str_to_entity(world: &ECSWorld, s: &str) -> Option<EntityId> {
-    let bits: u64 = s.parse().ok()?;
-    world.all_entities().find(|id| id.to_bits() == bits)
+fn id_to_entity(world: &ECSWorld, id: i64) -> Option<EntityId> {
+    let bits = id as u64;
+    world.all_entities().find(|e| e.to_bits() == bits)
 }
 
 fn get_descriptor<'a>(
@@ -105,36 +105,39 @@ pub fn build_world_module() -> anyhow::Result<Module> {
     let mut m = Module::with_crate_item("fluxion", ["world"])?;
 
     // ── Entity listing ────────────────────────────────────────────────────────
+    // Entity IDs are exposed as i64 (integer bit-cast of EntityId).
+    // Integers are Copy in Rune, so they can be passed to multiple functions
+    // without ownership issues.
 
-    m.function("entities", || -> Vec<String> {
+    m.function("entities", || -> Vec<i64> {
         with_ctx(|world, _| {
-            world.all_entities().map(entity_to_str).collect()
+            world.all_entities().map(entity_to_id).collect()
         }).unwrap_or_default()
     }).build()?;
 
-    m.function("entity_name", |id: String| -> String {
+    m.function("entity_name", |id: i64| -> String {
         with_ctx(|world, _| {
-            str_to_entity(world, &id)
+            id_to_entity(world, id)
                 .map(|e| world.get_name(e).to_string())
-                .unwrap_or_else(|| id.clone())
-        }).unwrap_or(id)
+                .unwrap_or_else(|| format!("?{id}"))
+        }).unwrap_or_default()
     }).build()?;
 
     // ── Selection ─────────────────────────────────────────────────────────────
 
-    m.function("selected", || -> String {
+    m.function("selected", || -> i64 {
         SELECTED.with(|s| {
-            s.borrow().map(entity_to_str).unwrap_or_default()
+            s.borrow().map(entity_to_id).unwrap_or(-1)
         })
     }).build()?;
 
-    m.function("set_selected", |id: String| {
-        if id.is_empty() {
+    m.function("set_selected", |id: i64| {
+        if id < 0 {
             SELECTED.with(|s| *s.borrow_mut() = None);
             return;
         }
         with_ctx(|world, _| {
-            if let Some(entity) = str_to_entity(world, &id) {
+            if let Some(entity) = id_to_entity(world, id) {
                 SELECTED.with(|s| *s.borrow_mut() = Some(entity));
             }
         });
@@ -142,9 +145,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     // ── Component listing ─────────────────────────────────────────────────────
 
-    m.function("component_types", |id: String| -> Vec<String> {
+    m.function("component_types", |id: i64| -> Vec<String> {
         with_ctx(|world, registry| {
-            if let Some(entity) = str_to_entity(world, &id) {
+            if let Some(entity) = id_to_entity(world, id) {
                 world.component_names(entity)
                     .iter()
                     .filter(|&&name| registry.has_reflect(name))
@@ -158,7 +161,8 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     // ── Field metadata ────────────────────────────────────────────────────────
 
-    m.function("fields", |_id: String, component: String| -> Vec<String> {
+    m.function("fields", |id: i64, component: String| -> Vec<String> {
+        let _ = id;
         with_ctx(|_, registry| {
             registry.component_fields(&component)
                 .map(|fields| fields.iter().map(|f| f.name.to_string()).collect())
@@ -166,7 +170,8 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).unwrap_or_default()
     }).build()?;
 
-    m.function("field_type", |_id: String, component: String, field: String| -> String {
+    m.function("field_type", |id: i64, component: String, field: String| -> String {
+        let _ = id;
         with_ctx(|_, registry| {
             get_descriptor(registry, &component, &field)
                 .map(|d| match d.field_type {
@@ -187,7 +192,8 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).unwrap_or_default()
     }).build()?;
 
-    m.function("field_range", |_id: String, component: String, field: String| -> Vec<f64> {
+    m.function("field_range", |id: i64, component: String, field: String| -> Vec<f64> {
+        let _ = id;
         with_ctx(|_, registry| {
             get_descriptor(registry, &component, &field)
                 .map(|d| {
@@ -199,7 +205,8 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).unwrap_or_else(|| vec![-1e9, 1e9])
     }).build()?;
 
-    m.function("field_readonly", |_id: String, component: String, field: String| -> bool {
+    m.function("field_readonly", |id: i64, component: String, field: String| -> bool {
+        let _ = id;
         with_ctx(|_, registry| {
             get_descriptor(registry, &component, &field)
                 .map(|d| d.read_only)
@@ -209,9 +216,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     // ── Typed getters ─────────────────────────────────────────────────────────
 
-    m.function("get_f32", |id: String, component: String, field: String| -> f64 {
+    m.function("get_f32", |id: i64, component: String, field: String| -> f64 {
         with_ctx(|world, registry| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let reflect = registry.get_reflect(&component, world, entity)?;
             match reflect.get_field(&field)? {
                 ReflectValue::F32(v) => Some(v as f64),
@@ -220,9 +227,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).flatten().unwrap_or(0.0)
     }).build()?;
 
-    m.function("get_bool", |id: String, component: String, field: String| -> bool {
+    m.function("get_bool", |id: i64, component: String, field: String| -> bool {
         with_ctx(|world, registry| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let reflect = registry.get_reflect(&component, world, entity)?;
             match reflect.get_field(&field)? {
                 ReflectValue::Bool(v) => Some(v),
@@ -231,9 +238,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).flatten().unwrap_or(false)
     }).build()?;
 
-    m.function("get_str", |id: String, component: String, field: String| -> String {
+    m.function("get_str", |id: i64, component: String, field: String| -> String {
         with_ctx(|world, registry| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let reflect = registry.get_reflect(&component, world, entity)?;
             match reflect.get_field(&field)? {
                 ReflectValue::Str(v)       => Some(v),
@@ -244,9 +251,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).flatten().unwrap_or_default()
     }).build()?;
 
-    m.function("get_vec3", |id: String, component: String, field: String| -> Vec<f64> {
+    m.function("get_vec3", |id: i64, component: String, field: String| -> Vec<f64> {
         with_ctx(|world, registry| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let reflect = registry.get_reflect(&component, world, entity)?;
             match reflect.get_field(&field)? {
                 ReflectValue::Vec3([x, y, z]) =>
@@ -256,9 +263,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).flatten().unwrap_or_else(|| vec![0.0, 0.0, 0.0])
     }).build()?;
 
-    m.function("get_quat", |id: String, component: String, field: String| -> Vec<f64> {
+    m.function("get_quat", |id: i64, component: String, field: String| -> Vec<f64> {
         with_ctx(|world, registry| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let reflect = registry.get_reflect(&component, world, entity)?;
             match reflect.get_field(&field)? {
                 ReflectValue::Quat([x, y, z, w]) =>
@@ -268,9 +275,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).flatten().unwrap_or_else(|| vec![0.0, 0.0, 0.0, 1.0])
     }).build()?;
 
-    m.function("get_color3", |id: String, component: String, field: String| -> Vec<f64> {
+    m.function("get_color3", |id: i64, component: String, field: String| -> Vec<f64> {
         with_ctx(|world, registry| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let reflect = registry.get_reflect(&component, world, entity)?;
             match reflect.get_field(&field)? {
                 ReflectValue::Color3([r, g, b]) =>
@@ -280,9 +287,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).flatten().unwrap_or_else(|| vec![1.0, 1.0, 1.0])
     }).build()?;
 
-    m.function("get_color4", |id: String, component: String, field: String| -> Vec<f64> {
+    m.function("get_color4", |id: i64, component: String, field: String| -> Vec<f64> {
         with_ctx(|world, registry| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let reflect = registry.get_reflect(&component, world, entity)?;
             match reflect.get_field(&field)? {
                 ReflectValue::Color4([r, g, b, a]) =>
@@ -292,9 +299,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).flatten().unwrap_or_else(|| vec![1.0, 1.0, 1.0, 1.0])
     }).build()?;
 
-    m.function("get_u32", |id: String, component: String, field: String| -> i64 {
+    m.function("get_u32", |id: i64, component: String, field: String| -> i64 {
         with_ctx(|world, registry| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let reflect = registry.get_reflect(&component, world, entity)?;
             match reflect.get_field(&field)? {
                 ReflectValue::U32(v)   => Some(v as i64),
@@ -307,21 +314,21 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     // ── Typed setters (queued — applied after panel call) ─────────────────────
 
-    m.function("set_f32", |id: String, component: String, field: String, val: f64| {
-        if let Some(e) = with_ctx(|world, _| str_to_entity(world, &id)).flatten() {
+    m.function("set_f32", |id: i64, component: String, field: String, val: f64| {
+        if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
             queue_edit(e, component, field, ReflectValue::F32(val as f32));
         }
     }).build()?;
 
-    m.function("set_bool", |id: String, component: String, field: String, val: bool| {
-        if let Some(e) = with_ctx(|world, _| str_to_entity(world, &id)).flatten() {
+    m.function("set_bool", |id: i64, component: String, field: String, val: bool| {
+        if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
             queue_edit(e, component, field, ReflectValue::Bool(val));
         }
     }).build()?;
 
-    m.function("set_str", |id: String, component: String, field: String, val: String| {
+    m.function("set_str", |id: i64, component: String, field: String, val: String| {
         let result = with_ctx(|world, reg| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let ft = get_descriptor(reg, &component, &field)?.field_type;
             let rv = match ft {
                 ReflectFieldType::OptionStr => ReflectValue::OptionStr(Some(val)),
@@ -334,36 +341,36 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         let _ = result;
     }).build()?;
 
-    m.function("set_vec3", |id: String, component: String, field: String, vals: Vec<f64>| {
+    m.function("set_vec3", |id: i64, component: String, field: String, vals: Vec<f64>| {
         if vals.len() >= 3 {
-            if let Some(e) = with_ctx(|world, _| str_to_entity(world, &id)).flatten() {
+            if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
                 queue_edit(e, component, field,
                     ReflectValue::Vec3([vals[0] as f32, vals[1] as f32, vals[2] as f32]));
             }
         }
     }).build()?;
 
-    m.function("set_color3", |id: String, component: String, field: String, vals: Vec<f64>| {
+    m.function("set_color3", |id: i64, component: String, field: String, vals: Vec<f64>| {
         if vals.len() >= 3 {
-            if let Some(e) = with_ctx(|world, _| str_to_entity(world, &id)).flatten() {
+            if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
                 queue_edit(e, component, field,
                     ReflectValue::Color3([vals[0] as f32, vals[1] as f32, vals[2] as f32]));
             }
         }
     }).build()?;
 
-    m.function("set_color4", |id: String, component: String, field: String, vals: Vec<f64>| {
+    m.function("set_color4", |id: i64, component: String, field: String, vals: Vec<f64>| {
         if vals.len() >= 4 {
-            if let Some(e) = with_ctx(|world, _| str_to_entity(world, &id)).flatten() {
+            if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
                 queue_edit(e, component, field,
                     ReflectValue::Color4([vals[0] as f32, vals[1] as f32, vals[2] as f32, vals[3] as f32]));
             }
         }
     }).build()?;
 
-    m.function("set_u32", |id: String, component: String, field: String, val: i64| {
+    m.function("set_u32", |id: i64, component: String, field: String, val: i64| {
         let result = with_ctx(|world, reg| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let ft = get_descriptor(reg, &component, &field)?.field_type;
             let rv = match ft {
                 ReflectFieldType::U8    => ReflectValue::U8(val.clamp(0, 255) as u8),
@@ -377,8 +384,6 @@ pub fn build_world_module() -> anyhow::Result<Module> {
     }).build()?;
 
     // ── Entity creation / deletion ────────────────────────────────────────────
-    // NOTE: spawn/despawn require &mut ECSWorld which we don't hold here.
-    // We queue a special SpawnPending / DespawnPending that host.rs applies.
 
     m.function("create_entity", |name: String| {
         PENDING.with(|p| p.borrow_mut().push(PendingEdit {
@@ -389,9 +394,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }));
     }).build()?;
 
-    m.function("despawn", |id: String| {
+    m.function("despawn", |id: i64| {
         with_ctx(|world, _| {
-            if let Some(entity) = str_to_entity(world, &id) {
+            if let Some(entity) = id_to_entity(world, id) {
                 PENDING.with(|p| p.borrow_mut().push(PendingEdit {
                     entity,
                     component: "__despawn__".to_string(),
@@ -428,9 +433,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     // ── Entity rename / duplicate ─────────────────────────────────────────────
 
-    m.function("rename_entity", |id: String, name: String| {
+    m.function("rename_entity", |id: i64, name: String| {
         with_ctx(|world, _| {
-            if let Some(entity) = str_to_entity(world, &id) {
+            if let Some(entity) = id_to_entity(world, id) {
                 PENDING.with(|p| p.borrow_mut().push(PendingEdit {
                     entity,
                     component: "__rename__".to_string(),
@@ -441,9 +446,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
-    m.function("duplicate_entity", |id: String| {
+    m.function("duplicate_entity", |id: i64| {
         with_ctx(|world, _| {
-            if let Some(entity) = str_to_entity(world, &id) {
+            if let Some(entity) = id_to_entity(world, id) {
                 PENDING.with(|p| p.borrow_mut().push(PendingEdit {
                     entity,
                     component: "__duplicate__".to_string(),
@@ -456,10 +461,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     // ── Euler angle helpers (degrees) ─────────────────────────────────────────
 
-    /// Returns [pitch_deg, yaw_deg, roll_deg] for a Quat field.
-    m.function("get_euler", |id: String, component: String, field: String| -> Vec<f64> {
+    m.function("get_euler", |id: i64, component: String, field: String| -> Vec<f64> {
         with_ctx(|world, registry| {
-            let entity = str_to_entity(world, &id)?;
+            let entity = id_to_entity(world, id)?;
             let reflect = registry.get_reflect(&component, world, entity)?;
             match reflect.get_field(&field)? {
                 ReflectValue::Quat([x, y, z, w]) => {
@@ -476,10 +480,9 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).flatten().unwrap_or_else(|| vec![0.0, 0.0, 0.0])
     }).build()?;
 
-    /// Queues a Quat set from [pitch_deg, yaw_deg, roll_deg].
-    m.function("set_euler", |id: String, component: String, field: String, vals: Vec<f64>| {
+    m.function("set_euler", |id: i64, component: String, field: String, vals: Vec<f64>| {
         if vals.len() >= 3 {
-            if let Some(e) = with_ctx(|world, _| str_to_entity(world, &id)).flatten() {
+            if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
                 let rx = (vals[0] as f32).to_radians();
                 let ry = (vals[1] as f32).to_radians();
                 let rz = (vals[2] as f32).to_radians();

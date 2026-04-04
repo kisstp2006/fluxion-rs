@@ -194,6 +194,19 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
+    // ── Entity row (selectable + right-click context menu) ────────────────────
+    // Returns: "" (no action), "select" (left-clicked),
+    //          "Rename", "Duplicate", or "Delete" (menu item chosen).
+    m.function("entity_row", |label: String, _selected: bool| -> String {
+        with_ui(|ui| {
+            if ui.button(label.as_str()).clicked() {
+                "select".to_string()
+            } else {
+                String::new()
+            }
+        }).unwrap_or_default()
+    }).build()?;
+
     // ── Colored label ─────────────────────────────────────────────────────────
     m.function("colored_label", |text: String, r: f64, g: f64, b: f64| {
         with_ui(|ui| {

@@ -2,8 +2,8 @@
 // hierarchy.rn — Hierarchy panel
 //
 // Lists all entities in the scene.  Clicking one selects it.
-// Right-click shows a context menu: Rename / Delete / Duplicate.
-// Shows component-based icon prefixes and a Create Entity button.
+// Right-click a row for Rename / Duplicate / Delete options.
+// Entity IDs are i64 integers (Copy in Rune — safe to reuse).
 // ============================================================
 
 pub mod hierarchy {
@@ -11,13 +11,13 @@ pub mod hierarchy {
 fn entity_icon(id) {
     let comps = fluxion::world::component_types(id);
     for c in comps {
-        if c == "Camera"          { return "🎥"; }
-        if c == "Light"           { return "💡"; }
-        if c == "MeshRenderer"    { return "■"; }
-        if c == "ParticleEmitter" { return "✦"; }
-        if c == "RigidBody"       { return "⚙"; }
+        if c == "Camera"          { return "[CAM]"; }
+        if c == "Light"           { return "[LGT]"; }
+        if c == "MeshRenderer"    { return "[MSH]"; }
+        if c == "ParticleEmitter" { return "[FX] "; }
+        if c == "RigidBody"       { return "[RB] "; }
     }
-    "○"
+    "[   ]"
 }
 
 pub fn panel() {
@@ -40,12 +40,12 @@ pub fn panel() {
     }
 
     for id in entities {
-        let name = fluxion::world::entity_name(id);
-        let icon = entity_icon(id);
-        let label = `${icon} ${name}`;
+        let name   = fluxion::world::entity_name(id);
+        let icon   = entity_icon(id);
         let is_sel = sel == id;
+        let label  = if is_sel { `> ${icon} ${name}` } else { `  ${icon} ${name}` };
 
-        let action = fluxion::ui::selectable_with_menu(label, is_sel, ["Rename", "Duplicate", "Delete"]);
+        let action = fluxion::ui::entity_row(label, is_sel);
 
         if action == "select" {
             fluxion::world::set_selected(id);
@@ -54,8 +54,6 @@ pub fn panel() {
         } else if action == "Duplicate" {
             fluxion::world::duplicate_entity(id);
         } else if action == "Rename" {
-            // Select the entity so the inspector name is prominent;
-            // a future rename-in-place feature can hook here.
             fluxion::world::set_selected(id);
         }
     }

@@ -1,10 +1,8 @@
 // ============================================================
 // inspector.rn — Inspector panel
 //
-// Renders editable property widgets for all reflected components
-// on the currently selected entity.  Field type is detected via
-// fluxion::world::field_type and the appropriate widget is used.
-// Quaternion fields are displayed as Euler angles (degrees).
+// Renders editable property widgets for the selected entity.
+// Entity IDs are i64 (Copy) — safe to pass to multiple functions.
 // ============================================================
 
 pub mod inspector {
@@ -12,7 +10,7 @@ pub mod inspector {
 pub fn panel() {
     let sel = fluxion::world::selected();
 
-    if sel == "" {
+    if sel == -1 {
         fluxion::ui::label("Nothing selected");
         fluxion::ui::separator();
         fluxion::ui::small("Click an entity in the Hierarchy panel.");
@@ -33,11 +31,11 @@ pub fn panel() {
         if fluxion::ui::collapsing_begin(comp) {
             let fields = fluxion::world::fields(sel, comp);
             for field in fields {
-                let ft = fluxion::world::field_type(sel, comp, field);
-                let ro = fluxion::world::field_readonly(sel, comp, field);
+                let ft    = fluxion::world::field_type(sel, comp, field);
+                let ro    = fluxion::world::field_readonly(sel, comp, field);
                 let range = fluxion::world::field_range(sel, comp, field);
-                let min = range[0];
-                let max = range[1];
+                let min   = range[0];
+                let max   = range[1];
 
                 if ft == "f32" {
                     let v = fluxion::world::get_f32(sel, comp, field);
@@ -45,9 +43,7 @@ pub fn panel() {
                         fluxion::ui::label(`${field}: ${v}`);
                     } else {
                         let nv = fluxion::ui::drag_float(field, v, 0.01, min, max);
-                        if nv != v {
-                            fluxion::world::set_f32(sel, comp, field, nv);
-                        }
+                        if nv != v { fluxion::world::set_f32(sel, comp, field, nv); }
                     }
                 } else if ft == "bool" {
                     let v = fluxion::world::get_bool(sel, comp, field);
@@ -55,9 +51,7 @@ pub fn panel() {
                         fluxion::ui::label(`${field}: ${v}`);
                     } else {
                         let nv = fluxion::ui::checkbox(field, v);
-                        if nv != v {
-                            fluxion::world::set_bool(sel, comp, field, nv);
-                        }
+                        if nv != v { fluxion::world::set_bool(sel, comp, field, nv); }
                     }
                 } else if ft == "str" || ft == "option_str" {
                     let v = fluxion::world::get_str(sel, comp, field);
@@ -65,9 +59,7 @@ pub fn panel() {
                         fluxion::ui::label(`${field}: ${v}`);
                     } else {
                         let nv = fluxion::ui::input_text(field, v);
-                        if nv != v {
-                            fluxion::world::set_str(sel, comp, field, nv);
-                        }
+                        if nv != v { fluxion::world::set_str(sel, comp, field, nv); }
                     }
                 } else if ft == "vec3" {
                     let v = fluxion::world::get_vec3(sel, comp, field);
@@ -80,7 +72,7 @@ pub fn panel() {
                     }
                 } else if ft == "quat" {
                     let v = fluxion::world::get_euler(sel, comp, field);
-                    fluxion::ui::label(`${field} (Euler °)`);
+                    fluxion::ui::label(`${field} (Euler deg)`);
                     let nx = fluxion::ui::drag_float("  Pitch", v[0], 0.5, -360.0, 360.0);
                     let ny = fluxion::ui::drag_float("  Yaw",   v[1], 0.5, -360.0, 360.0);
                     let nz = fluxion::ui::drag_float("  Roll",  v[2], 0.5, -360.0, 360.0);
@@ -113,9 +105,7 @@ pub fn panel() {
                         fluxion::ui::label(`${field}: ${v}`);
                     } else {
                         let nv = fluxion::ui::drag_int(field, v);
-                        if nv != v {
-                            fluxion::world::set_u32(sel, comp, field, nv);
-                        }
+                        if nv != v { fluxion::world::set_u32(sel, comp, field, nv); }
                     }
                 } else if ft == "enum" {
                     let v = fluxion::world::get_str(sel, comp, field);

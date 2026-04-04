@@ -50,10 +50,10 @@ impl<'a> egui_dock::TabViewer for RuneTabViewer<'a> {
         let result = self.vm.call_fn(&parts, ());
         if let Err(e) = result {
             clear_current_ui();
-            ui.colored_label(
-                egui::Color32::RED,
-                format!("⚠ Rune error in {}: {e}", tab.rune_fn),
-            );
+            // Use {e:#} to show the full anyhow error chain (not just the wrapper message).
+            let msg = format!("{e:#}");
+            log::error!("Rune panel '{}': {msg}", tab.rune_fn);
+            ui.colored_label(egui::Color32::RED, format!("⚠ {}: {msg}", tab.rune_fn));
             return;
         }
 

@@ -12,8 +12,9 @@ use egui_wgpu::ScreenDescriptor;
 use winit::window::Window;
 
 pub struct UiShell {
-    state:    egui_winit::State,
-    renderer: egui_wgpu::Renderer,
+    state:              egui_winit::State,
+    renderer:           egui_wgpu::Renderer,
+    viewport_texture:   Option<egui::TextureId>,
 }
 
 impl UiShell {
@@ -33,15 +34,15 @@ impl UiShell {
             Some(max_tex),
         );
         let renderer = egui_wgpu::Renderer::new(device, surface_format, None, 1, false);
-        Self { state, renderer }
+        Self { state, renderer, viewport_texture: None }
     }
 
     pub fn context(&self) -> &egui::Context {
         self.state.egui_ctx()
     }
 
-    /// Register (or re-register) the offscreen viewport texture with the egui-wgpu renderer.
-    /// Returns the `egui::TextureId` to pass to `fluxion::ui::image()`.
+    /// Register (first call) or update (subsequent calls) the offscreen viewport texture.
+    /// Reuses the same `egui::TextureId` every frame to avoid leaking texture slots.
     pub fn register_viewport_texture(
         &mut self,
         device: &wgpu::Device,
@@ -49,11 +50,26 @@ impl UiShell {
         _width:  u32,
         _height: u32,
     ) -> egui::TextureId {
-        self.renderer.register_native_texture(
-            device,
-            view,
-            wgpu::FilterMode::Linear,
-        )
+        match self.viewport_texture {
+            None => {
+                let id = self.renderer.register_native_texture(
+                    device,
+                    view,
+                    wgpu::FilterMode::Linear,
+                );
+                self.viewport_texture = Some(id);
+                id
+            }
+            Some(id) => {
+                self.renderer.update_egui_texture_from_wgpu_texture(
+                    device,
+                    view,
+                    wgpu::FilterMode::Linear,
+                    id,
+                );
+                id
+            }
+        }
     }
 
     pub fn on_window_event(
