@@ -1,9 +1,9 @@
 // ============================================================
 // hierarchy.rn — Hierarchy panel
 //
-// Lists all entities in the scene.  Clicking one selects it.
-// Right-click a row for Rename / Duplicate / Delete options.
-// Entity IDs are i64 integers (Copy in Rune — safe to reuse).
+// Lists entities as a parent/child tree.  Clicking selects.
+// Right-click for Rename / Duplicate / Delete / Unparent.
+// Entity IDs are i64 integers (Copy in Rune).
 // ============================================================
 
 pub mod hierarchy {
@@ -20,10 +20,41 @@ fn entity_icon(id) {
     "[   ]"
 }
 
+fn draw_entity_row(id, depth, sel) {
+    let name   = fluxion::world::entity_name(id);
+    let icon   = entity_icon(id);
+    let indent = depth * 14;
+    let prefix = if sel == id { "▶ " } else { "  " };
+    let label  = `${prefix}${icon} ${name}`;
+
+    fluxion::ui::space(indent);
+
+    let action = fluxion::ui::selectable_with_menu(label, sel == id, ["Rename", "Duplicate", "Delete", "Unparent"]);
+
+    if action == "select" {
+        fluxion::world::set_selected(id);
+    } else if action == "Delete" {
+        fluxion::world::despawn(id);
+    } else if action == "Duplicate" {
+        fluxion::world::duplicate_entity(id);
+    } else if action == "Rename" {
+        fluxion::world::set_selected(id);
+    } else if action == "Unparent" {
+        fluxion::world::set_parent(id, -1);
+    }
+
+    // Recurse into children
+    let children = fluxion::world::entity_children(id);
+    for child in children {
+        draw_entity_row(child, depth + 1, sel);
+    }
+}
+
 pub fn panel() {
-    let sel      = fluxion::world::selected();
-    let entities = fluxion::world::entities();
-    let count    = entities.len();
+    let sel   = fluxion::world::selected();
+    let roots = fluxion::world::root_entities();
+    let all   = fluxion::world::entities();
+    let count = all.len();
 
     fluxion::ui::label(`Scene  (${count} entities)`);
     fluxion::ui::separator();
@@ -34,28 +65,13 @@ pub fn panel() {
 
     fluxion::ui::separator();
 
-    if entities.is_empty() {
+    if roots.is_empty() {
         fluxion::ui::small("(empty scene)");
         return;
     }
 
-    for id in entities {
-        let name   = fluxion::world::entity_name(id);
-        let icon   = entity_icon(id);
-        let is_sel = sel == id;
-        let label  = if is_sel { `> ${icon} ${name}` } else { `  ${icon} ${name}` };
-
-        let action = fluxion::ui::entity_row(label, is_sel);
-
-        if action == "select" {
-            fluxion::world::set_selected(id);
-        } else if action == "Delete" {
-            fluxion::world::despawn(id);
-        } else if action == "Duplicate" {
-            fluxion::world::duplicate_entity(id);
-        } else if action == "Rename" {
-            fluxion::world::set_selected(id);
-        }
+    for id in roots {
+        draw_entity_row(id, 0, sel);
     }
 }
 

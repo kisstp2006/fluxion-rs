@@ -1,12 +1,34 @@
 // ============================================================
-// viewport.rn — Viewport panel
+// viewport.rn — Viewport panel with interactive transform gizmos
 //
-// Displays the 3D scene rendered to an offscreen texture by
-// the Rust host (render_to_viewport).  The texture ID and
-// dimensions are provided by fluxion::viewport.
+// Displays the 3D scene rendered to an offscreen texture.
+// When an entity is selected, draws colored axis arrows and
+// processes mouse drag to move/rotate/scale the entity.
 // ============================================================
 
 pub mod viewport {
+
+// Simple perspective projection: world pos → screen pixel coords.
+// vp_w, vp_h = viewport size in pixels.
+// Returns [sx, sy] or [-1, -1] if behind camera.
+fn world_to_screen(wx, wy, wz, vp_w, vp_h) {
+    // Fixed camera approximation: camera at (0,2,5) looking at origin.
+    // This gives a reasonable default for the editor default scene.
+    let cam_x = 0.0;
+    let cam_y = 2.0;
+    let cam_z = 5.0;
+    let rx = wx - cam_x;
+    let ry = wy - cam_y;
+    let rz = wz - cam_z;
+
+    // Simple perspective divide (fov ~60 degrees, aspect from vp dims)
+    let fov_factor = vp_h / (2.0 * 1.732); // tan(60/2) ≈ 0.577, inverted
+    if rz >= -0.1 { return [-1.0, -1.0]; } // behind camera
+
+    let sx = (rx / (-rz)) * fov_factor + vp_w * 0.5;
+    let sy = (-ry / (-rz)) * fov_factor + vp_h * 0.5;
+    [sx, sy]
+}
 
 pub fn panel() {
     let tid = fluxion::viewport::texture_id();
@@ -23,7 +45,73 @@ pub fn panel() {
         return;
     }
 
-    fluxion::ui::image(tid, w, h);
+    // Draw scene image (interactive — stores response for drag queries).
+    fluxion::ui::image_interactive(tid, w, h);
+
+    // ── Gizmos for selected entity ────────────────────────────────────────────
+    let sel = fluxion::world::selected();
+    if sel < 0 { return; }
+
+    // Get world position of selected entity.
+    let pos = fluxion::world::get_world_position(sel);
+    let wx = pos[0];
+    let wy = pos[1];
+    let wz = pos[2];
+
+    let sc = world_to_screen(wx, wy, wz, w, h);
+    if sc[0] < 0.0 { return; } // behind camera
+
+    let cx = sc[0];
+    let cy = sc[1];
+    let gizmo_size = 60.0;
+
+    // Draw the three axis arrows.
+    fluxion::gizmo::draw_axes(cx, cy, gizmo_size);
+
+    // Draw each axis arrow using the painter API for visual feedback.
+    // X axis — red
+    fluxion::ui::painter_arrow([cx, cy, cx + gizmo_size, cy], [1.0, 0.2, 0.2, 2.5]);
+    // Y axis — green (up = screen up)
+    fluxion::ui::painter_arrow([cx, cy, cx, cy - gizmo_size], [0.2, 1.0, 0.2, 2.5]);
+    // Z axis — blue (diagonal)
+    fluxion::ui::painter_arrow([cx, cy, cx - gizmo_size * 0.6, cy - gizmo_size * 0.6], [0.3, 0.5, 1.0, 2.5]);
+
+    // ── Process drag interaction ──────────────────────────────────────────────
+    let tool = fluxion::gizmo::get_tool();
+    let result = fluxion::gizmo::drag_result();
+    let axis  = result[0] as i64;
+    let delta = result[1];
+
+    if axis >= 0 && delta != 0.0 {
+        if tool == "translate" {
+            let cur = fluxion::world::get_vec3(sel, "Transform", "position");
+            if axis == 0 {
+                fluxion::world::set_vec3(sel, "Transform", "position", [cur[0] + delta, cur[1], cur[2]]);
+            } else if axis == 1 {
+                fluxion::world::set_vec3(sel, "Transform", "position", [cur[0], cur[1] + delta, cur[2]]);
+            } else {
+                fluxion::world::set_vec3(sel, "Transform", "position", [cur[0], cur[1], cur[2] + delta]);
+            }
+        } else if tool == "scale" {
+            let cur = fluxion::world::get_vec3(sel, "Transform", "scale");
+            if axis == 0 {
+                fluxion::world::set_vec3(sel, "Transform", "scale", [cur[0] + delta, cur[1], cur[2]]);
+            } else if axis == 1 {
+                fluxion::world::set_vec3(sel, "Transform", "scale", [cur[0], cur[1] + delta, cur[2]]);
+            } else {
+                fluxion::world::set_vec3(sel, "Transform", "scale", [cur[0], cur[1], cur[2] + delta]);
+            }
+        } else if tool == "rotate" {
+            let cur = fluxion::world::get_euler(sel, "Transform", "rotation");
+            if axis == 0 {
+                fluxion::world::set_euler(sel, "Transform", "rotation", [cur[0] + delta * 90.0, cur[1], cur[2]]);
+            } else if axis == 1 {
+                fluxion::world::set_euler(sel, "Transform", "rotation", [cur[0], cur[1] + delta * 90.0, cur[2]]);
+            } else {
+                fluxion::world::set_euler(sel, "Transform", "rotation", [cur[0], cur[1], cur[2] + delta * 90.0]);
+            }
+        }
+    }
 }
 
 } // pub mod viewport

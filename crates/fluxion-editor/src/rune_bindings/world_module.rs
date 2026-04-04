@@ -10,6 +10,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::ptr::NonNull;
 
 use rune::Module;
@@ -33,6 +34,12 @@ thread_local! {
     /// Monotonic counter incremented on every push_log / clear_log call.
     /// Rune panels compare against their last-seen value to skip redundant clones.
     static LOG_GENERATION: Cell<u64> = Cell::new(0);
+    /// Project root directory path — set once at editor startup.
+    static PROJECT_ROOT: RefCell<PathBuf> = RefCell::new(PathBuf::new());
+    /// (can_undo, can_redo) — pushed each frame by EditorHost.
+    static UNDO_STATE: Cell<(bool, bool)> = Cell::new((false, false));
+    /// Last frame delta time in milliseconds.
+    static FRAME_TIME_MS: Cell<f64> = Cell::new(0.0);
 }
 
 /// A deferred field mutation queued by Rune, applied after the panel call.
@@ -104,6 +111,21 @@ pub fn push_log(line: String) {
 /// Get the currently selected entity (may be None).
 pub fn get_selected_id() -> Option<EntityId> {
     SELECTED.with(|s| *s.borrow())
+}
+
+/// Set the project root path so Rune scripts can enumerate assets.
+pub fn set_project_root(root: &std::path::Path) {
+    PROJECT_ROOT.with(|p| *p.borrow_mut() = root.to_path_buf());
+}
+
+/// Update undo/redo state so Rune scripts can query it.
+pub fn set_undo_state(can_undo: bool, can_redo: bool) {
+    UNDO_STATE.with(|c| c.set((can_undo, can_redo)));
+}
+
+/// Push the last frame delta time (milliseconds) for the debugger panel.
+pub fn set_frame_time(ms: f64) {
+    FRAME_TIME_MS.with(|c| c.set(ms));
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -446,6 +468,133 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
+    // ── Asset browser ─────────────────────────────────────────────────────────
+
+    m.function("list_assets", |subdir: String| -> Vec<String> {
+        PROJECT_ROOT.with(|root| {
+            let base = root.borrow();
+            let dir = if subdir.is_empty() {
+                base.join("assets")
+            } else {
+                base.join("assets").join(&subdir)
+            };
+            let mut paths = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file() {
+                        if let Some(name) = p.file_name() {
+                            paths.push(name.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+            paths.sort();
+            paths
+        })
+    }).build()?;
+
+    m.function("list_asset_dirs", || -> Vec<String> {
+        PROJECT_ROOT.with(|root| {
+            let dir = root.borrow().join("assets");
+            let mut dirs = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        if let Some(name) = p.file_name() {
+                            dirs.push(name.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+            dirs.sort();
+            dirs
+        })
+    }).build()?;
+
+    // ── Component add / remove ────────────────────────────────────────────────
+
+    m.function("available_components", || -> Vec<String> {
+        with_ctx(|_, registry| {
+            registry.reflected_type_names()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect()
+        }).unwrap_or_default()
+    }).build()?;
+
+    m.function("add_component", |id: i64, type_name: String| {
+        with_ctx(|world, _| {
+            if let Some(entity) = id_to_entity(world, id) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity,
+                    component: "__add_comp__".to_string(),
+                    field:     type_name,
+                    value:     fluxion_core::reflect::ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    m.function("remove_component", |id: i64, type_name: String| {
+        with_ctx(|world, _| {
+            if let Some(entity) = id_to_entity(world, id) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity,
+                    component: "__remove_comp__".to_string(),
+                    field:     type_name,
+                    value:     fluxion_core::reflect::ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    // ── Hierarchy / parenting ─────────────────────────────────────────────────
+
+    m.function("root_entities", || -> Vec<i64> {
+        with_ctx(|world, _| {
+            world.root_entities()
+                .map(entity_to_id)
+                .collect::<Vec<_>>()
+        }).unwrap_or_default()
+    }).build()?;
+
+    m.function("entity_parent", |id: i64| -> i64 {
+        with_ctx(|world, _| {
+            id_to_entity(world, id)
+                .and_then(|e| world.get_parent(e))
+                .map(entity_to_id)
+                .unwrap_or(-1)
+        }).unwrap_or(-1)
+    }).build()?;
+
+    m.function("entity_children", |id: i64| -> Vec<i64> {
+        with_ctx(|world, _| {
+            if let Some(entity) = id_to_entity(world, id) {
+                world.get_children(entity)
+                    .map(entity_to_id)
+                    .collect()
+            } else {
+                vec![]
+            }
+        }).unwrap_or_default()
+    }).build()?;
+
+    m.function("set_parent", |child_id: i64, parent_id: i64| {
+        with_ctx(|world, _| {
+            let child = id_to_entity(world, child_id)?;
+            let parent = if parent_id < 0 { None } else { id_to_entity(world, parent_id) };
+            PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                entity:    child,
+                component: "__set_parent__".to_string(),
+                field:     parent_id.to_string(),
+                value:     fluxion_core::reflect::ReflectValue::Bool(parent.is_some()),
+            }));
+            Some(())
+        });
+    }).build()?;
+
     // ── Console log access ────────────────────────────────────────────────────
 
     m.function("log_lines", || -> Vec<String> {
@@ -509,6 +658,51 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                 }));
             }
         });
+    }).build()?;
+
+    // ── Transform shorthand ───────────────────────────────────────────────────
+
+    m.function("get_world_position", |id: i64| -> Vec<f64> {
+        with_ctx(|world, registry| {
+            let entity = id_to_entity(world, id)?;
+            let reflect = registry.get_reflect("Transform", world, entity)?;
+            match reflect.get_field("world_position")? {
+                ReflectValue::Vec3([x, y, z]) => Some(vec![x as f64, y as f64, z as f64]),
+                _ => None,
+            }
+        }).flatten().unwrap_or_else(|| vec![0.0, 0.0, 0.0])
+    }).build()?;
+
+    // ── Stats / debugger ─────────────────────────────────────────────────────
+
+    m.function("entity_count", || -> i64 {
+        with_ctx(|world, _| world.entity_count() as i64).unwrap_or(0)
+    }).build()?;
+
+    m.function("component_count", || -> i64 {
+        with_ctx(|world, _| {
+            world.all_entities().map(|e| world.component_names(e).len() as i64).sum::<i64>()
+        }).unwrap_or(0)
+    }).build()?;
+
+    m.function("frame_time_ms", || -> f64 {
+        FRAME_TIME_MS.with(|c| c.get())
+    }).build()?;
+
+    m.function("log_error_count", || -> i64 {
+        LOG_LINES.with(|l| {
+            l.borrow().iter().filter(|s| s.contains("[ERROR]")).count() as i64
+        })
+    }).build()?;
+
+    // ── Undo/redo state ───────────────────────────────────────────────────────
+
+    m.function("can_undo", || -> bool {
+        UNDO_STATE.with(|c| c.get().0)
+    }).build()?;
+
+    m.function("can_redo", || -> bool {
+        UNDO_STATE.with(|c| c.get().1)
     }).build()?;
 
     // ── Euler angle helpers (degrees) ─────────────────────────────────────────

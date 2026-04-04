@@ -49,3 +49,6 @@ pub const PARTICLES: &str = include_str!("../../../../assets/shaders/particles.w
 
 /// Debug line overlay — colored LineList, no depth test.
 pub const DEBUG_LINES: &str = include_str!("../../../../assets/shaders/debug_lines.wgsl");
+
+/// Shadow depth-only pass — renders scene from light's POV to produce a shadow map.
+pub const SHADOW_DEPTH: &str = include_str!("../../../../assets/shaders/shadow_depth.wgsl");

@@ -1,0 +1,70 @@
+// ============================================================
+// assets.rn — Asset Browser panel
+//
+// Lists files in the project assets/ directory, grouped by
+// subdirectory.  Clicking a .fluxscene file loads the scene.
+// ============================================================
+
+pub mod assets {
+
+fn file_icon(name) {
+    if name.ends_with(".fluxscene") { return "[SCN]"; }
+    if name.ends_with(".obj") || name.ends_with(".gltf") || name.ends_with(".glb") { return "[MDL]"; }
+    if name.ends_with(".png") || name.ends_with(".jpg") || name.ends_with(".jpeg") || name.ends_with(".webp") { return "[TEX]"; }
+    if name.ends_with(".rn")  { return " [RN]"; }
+    if name.ends_with(".wav") || name.ends_with(".ogg") || name.ends_with(".mp3")  { return "[SND]"; }
+    "[   ]"
+}
+
+pub fn panel() {
+    fluxion::ui::label("Assets");
+    fluxion::ui::separator();
+
+    // Root-level files
+    let root_files = fluxion::world::list_assets("");
+    if root_files.len() > 0 {
+        if fluxion::ui::collapsing_begin("/ (root)") {
+            let i = 0;
+            while i < root_files.len() {
+                let f    = root_files[i];
+                let icon = file_icon(f);
+                fluxion::ui::label(`${icon} ${f}`);
+                i += 1;
+            }
+            fluxion::ui::collapsing_end();
+        }
+    }
+
+    // Subdirectories
+    let dirs = fluxion::world::list_asset_dirs();
+    let di = 0;
+    while di < dirs.len() {
+        let dir = dirs[di];
+        if fluxion::ui::collapsing_begin(dir) {
+            let files = fluxion::world::list_assets(dir);
+            let fi = 0;
+            while fi < files.len() {
+                let f    = files[fi];
+                let icon = file_icon(f);
+                let label = `${icon} ${f}`;
+                if fluxion::ui::button(label) {
+                    if f.ends_with(".fluxscene") {
+                        fluxion::world::log(`[Assets] Load scene: ${dir}/${f}`);
+                    }
+                }
+                fi += 1;
+            }
+            if files.is_empty() {
+                fluxion::ui::small("(empty)");
+            }
+            fluxion::ui::collapsing_end();
+        }
+        di += 1;
+    }
+
+    if dirs.is_empty() && root_files.is_empty() {
+        fluxion::ui::small("(no assets found)");
+    }
+}
+
+} // pub mod assets

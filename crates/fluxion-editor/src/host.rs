@@ -10,6 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
+use serde_json;
+
 use fluxion_core::{
     ComponentRegistry, ECSWorld, InputState, Time,
     transform::Transform,
@@ -25,6 +27,7 @@ use crate::rune_bindings::{
     set_world_context, WorldContextGuard,
 };
 use crate::rune_bindings::world_module::push_log;
+use crate::undo::UndoStack;
 
 // ── EditorHost ────────────────────────────────────────────────────────────────
 
@@ -35,6 +38,7 @@ pub struct EditorHost {
     pub input:    InputState,
     pub vm:       RuneVm,
     pub physics:  Option<fluxion_physics::PhysicsEcsWorld>,
+    pub undo:     UndoStack,
 
     /// Scripts directory — watched for hot reload.
     pub scripts_dir: PathBuf,
@@ -92,6 +96,7 @@ impl EditorHost {
             input:       InputState::new(),
             vm,
             physics,
+            undo:        UndoStack::new(),
             scripts_dir,
         })
     }
@@ -210,15 +215,71 @@ impl EditorHost {
                         }
                     }
                 }
+                "__add_comp__" => {
+                    if edit.entity.is_valid() {
+                        if let Err(e) = self.registry.attach(
+                            &edit.field,
+                            &serde_json::Value::Object(Default::default()),
+                            &mut self.world,
+                            edit.entity,
+                        ) {
+                            log::warn!("add_component '{}': {:?}", edit.field, e);
+                        }
+                    }
+                }
+                "__remove_comp__" => {
+                    if edit.entity.is_valid() {
+                        if !self.registry.remove_component_by_name(
+                            &edit.field,
+                            &mut self.world,
+                            edit.entity,
+                        ) {
+                            log::warn!("remove_component: no remover for '{}'", edit.field);
+                        }
+                    }
+                }
+                "__set_parent__" => {
+                    if edit.entity.is_valid() {
+                        let parent_id: i64 = edit.field.parse().unwrap_or(-1);
+                        if parent_id < 0 {
+                            self.world.set_parent(edit.entity, None, false);
+                        } else {
+                            let parent_bits = parent_id as u64;
+                            let parent_entity = self.world.all_entities()
+                                .find(|e| e.to_bits() == parent_bits);
+                            if let Some(parent) = parent_entity {
+                                self.world.set_parent(edit.entity, Some(parent), false);
+                            }
+                        }
+                    }
+                }
                 _ => {
-                    if let Err(e) = self.registry.set_reflect_field(
-                        &edit.component,
-                        &self.world,
-                        edit.entity,
-                        &edit.field,
-                        edit.value,
-                    ) {
-                        log::warn!("EditorHost::flush_pending_edits: {e}");
+                    // Capture current value as undo inverse before applying.
+                    if edit.entity.is_valid() {
+                        let inverse = if let Some(reflect) = self.registry.get_reflect(&edit.component, &self.world, edit.entity) {
+                            reflect.get_field(&edit.field).map(|old_val| {
+                                crate::rune_bindings::PendingEdit {
+                                    entity:    edit.entity,
+                                    component: edit.component.clone(),
+                                    field:     edit.field.clone(),
+                                    value:     old_val,
+                                }
+                            })
+                        } else {
+                            None
+                        };
+                        if let Err(e) = self.registry.set_reflect_field(
+                            &edit.component,
+                            &self.world,
+                            edit.entity,
+                            &edit.field,
+                            edit.value,
+                        ) {
+                            log::warn!("EditorHost::flush_pending_edits: {e}");
+                        } else if let Some(inv) = inverse {
+                            let label = format!("Edit {}.{}", edit.component, edit.field);
+                            self.undo.push(label, vec![inv]);
+                        }
                     }
                 }
             }

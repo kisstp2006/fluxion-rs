@@ -1,0 +1,60 @@
+// ============================================================
+// debugger.rn — Debug / Stats panel
+//
+// Displays frame time, entity/component counts, error count,
+// and undo/redo availability.  Registered as a tab in dock.rs.
+// ============================================================
+
+pub mod debugger {
+
+pub fn panel() {
+    let ft      = fluxion::world::frame_time_ms();
+    let fps     = if ft > 0.0 { 1000.0 / ft } else { 0.0 };
+    let entities = fluxion::world::entity_count();
+    let comps    = fluxion::world::component_count();
+    let errors   = fluxion::world::log_error_count();
+    let can_undo = fluxion::world::can_undo();
+    let can_redo = fluxion::world::can_redo();
+
+    // ── Frame timing ──────────────────────────────────────────────────────────
+    fluxion::ui::heading("Performance");
+    fluxion::ui::separator();
+
+    let fps_i = fps as i64;
+    let ft_int = (ft * 100.0) as i64;
+    let ft_dec = ft_int % 100;
+    let ft_whole = ft_int / 100;
+    fluxion::ui::label(`Frame Time : ${ft_whole}.${ft_dec} ms`);
+    fluxion::ui::label(`FPS        : ${fps_i}`);
+
+    fluxion::ui::separator();
+
+    // ── Scene stats ───────────────────────────────────────────────────────────
+    fluxion::ui::heading("Scene");
+    fluxion::ui::separator();
+    fluxion::ui::label(`Entities   : ${entities}`);
+    fluxion::ui::label(`Components : ${comps}`);
+
+    fluxion::ui::separator();
+
+    // ── Log health ────────────────────────────────────────────────────────────
+    fluxion::ui::heading("Log");
+    fluxion::ui::separator();
+    if errors > 0 {
+        fluxion::ui::colored_label(`Errors: ${errors}`, 1.0, 0.3, 0.3);
+    } else {
+        fluxion::ui::colored_label("No errors", 0.4, 0.9, 0.4);
+    }
+
+    fluxion::ui::separator();
+
+    // ── Undo state ────────────────────────────────────────────────────────────
+    fluxion::ui::heading("History");
+    fluxion::ui::separator();
+    let undo_label = if can_undo { "Undo  [Ctrl+Z]  ✓" } else { "Undo  [Ctrl+Z]  —" };
+    let redo_label = if can_redo { "Redo  [Ctrl+Y]  ✓" } else { "Redo  [Ctrl+Y]  —" };
+    fluxion::ui::label(undo_label);
+    fluxion::ui::label(redo_label);
+}
+
+} // pub mod debugger

@@ -13,6 +13,7 @@ mod rune_bindings;
 mod theme;
 mod toolbar;
 mod ui_shell;
+mod undo;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -187,6 +188,17 @@ impl ApplicationHandler for EditorApp {
                             match kev.physical_key {
                                 PhysicalKey::Code(KeyCode::KeyS) if ctrl => g.save_scene(),
                                 PhysicalKey::Code(KeyCode::KeyN) if ctrl => g.new_scene(),
+                                PhysicalKey::Code(KeyCode::KeyZ) if ctrl => {
+                                    let world    = &g.host.world    as *const _;
+                                    let registry = &g.host.registry as *const _;
+                                    // SAFETY: undo only reads world/registry; no aliased mutable refs exist.
+                                    unsafe { g.host.undo.undo(&*world, &*registry); }
+                                }
+                                PhysicalKey::Code(KeyCode::KeyY) if ctrl => {
+                                    let world    = &g.host.world    as *const _;
+                                    let registry = &g.host.registry as *const _;
+                                    unsafe { g.host.undo.redo(&*world, &*registry); }
+                                }
                                 PhysicalKey::Code(KeyCode::Delete) => g.delete_selected(),
                                 _ => {}
                             }
@@ -277,6 +289,9 @@ impl EditorApp {
             theme_applied:  false,
         };
 
+        // Push project root so Rune asset browser can enumerate files.
+        crate::rune_bindings::set_project_root(&inner.project_root);
+
         *self = EditorApp::Running(Rc::new(RefCell::new(inner)));
     }
 }
@@ -296,6 +311,28 @@ impl EditorInner {
         // Push ECS context so Rune panels can read data this frame.
         // Guard clears thread-locals on drop (even on panic).
         let _world_ctx = self.host.push_world_context();
+
+        // Push undo state so Rune can show Undo/Redo availability.
+        crate::rune_bindings::set_undo_state(
+            self.host.undo.can_undo(),
+            self.host.undo.can_redo(),
+        );
+
+        // Push frame time for the debugger panel.
+        crate::rune_bindings::set_frame_time(self.host.time.dt as f64 * 1000.0);
+
+        // Clear per-frame gizmo state and sync transform tool to gizmo module.
+        crate::rune_bindings::clear_gizmo_frame();
+        {
+            use crate::toolbar::TransformTool;
+            use crate::rune_bindings::gizmo_module::TOOL_MODE;
+            let tool_str = match self.transform_tool {
+                TransformTool::Translate => "translate",
+                TransformTool::Rotate    => "rotate",
+                TransformTool::Scale     => "scale",
+            };
+            TOOL_MODE.with(|t| *t.borrow_mut() = tool_str.to_string());
+        }
 
         // Render 3-D scene to offscreen viewport texture.
         if let Err(e) = self.renderer.render_to_viewport(&self.host.world, &self.host.time) {

@@ -95,11 +95,15 @@ pub fn default_dock_state() -> DockState<EditorTab> {
         vec![EditorTab::new("Inspector", "inspector::panel")],
     );
 
-    // Split bottom 25% for Console (anchor to hierarchy node so it spans the full width)
+    // Split bottom 25% for Console + Assets + Debugger (tabbed together)
     surface.split_below(
         hier_node,
         0.75,
-        vec![EditorTab::new("Console", "console::panel")],
+        vec![
+            EditorTab::new("Console",  "console::panel"),
+            EditorTab::new("Assets",   "assets::panel"),
+            EditorTab::new("Debugger", "debugger::panel"),
+        ],
     );
 
     let _ = centre2;

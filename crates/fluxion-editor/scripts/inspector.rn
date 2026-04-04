@@ -24,11 +24,17 @@ pub fn panel() {
     let comps = fluxion::world::component_types(sel);
     if comps.is_empty() {
         fluxion::ui::label("(no reflected components)");
-        return;
     }
 
     for comp in comps {
-        if fluxion::ui::collapsing_begin(comp) {
+        fluxion::ui::horizontal_begin();
+        let open = fluxion::ui::collapsing_begin(comp);
+        if fluxion::ui::button(`✕##rm_${comp}`) {
+            fluxion::world::remove_component(sel, comp);
+        }
+        fluxion::ui::horizontal_end();
+
+        if open {
             let fields = fluxion::world::fields(sel, comp);
             for field in fields {
                 let ft    = fluxion::world::field_type(sel, comp, field);
@@ -117,6 +123,14 @@ pub fn panel() {
             fluxion::ui::collapsing_end();
         }
         fluxion::ui::separator();
+    }
+
+    // ── Add Component ─────────────────────────────────────────────────────────
+    fluxion::ui::separator();
+    let available = fluxion::world::available_components();
+    let chosen = fluxion::ui::combo_box("+ Add Component", available);
+    if chosen != "" {
+        fluxion::world::add_component(sel, chosen);
     }
 }
 

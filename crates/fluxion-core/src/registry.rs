@@ -61,6 +61,12 @@ pub type ReflectMutator = Arc<
     dyn Fn(&ECSWorld, EntityId, &str, ReflectValue) -> Result<(), String> + Send + Sync,
 >;
 
+/// Removes a component from an entity by type-erased dispatch.
+/// Registered alongside reflect in `register_reflect`.
+pub type ComponentRemover = Arc<
+    dyn Fn(&mut ECSWorld, EntityId) + Send + Sync,
+>;
+
 /// Registry that maps component type-name strings to factory functions.
 ///
 /// Built once at startup; passed (by reference) to scene / prefab loaders.
@@ -69,6 +75,7 @@ pub struct ComponentRegistry {
     factories:         HashMap<String, ComponentFactory>,
     reflect_accessors: HashMap<String, ReflectAccessor>,
     reflect_mutators:  HashMap<String, ReflectMutator>,
+    removers:          HashMap<String, ComponentRemover>,
     /// Static field descriptors cached at registration time for `.d.ts` generation.
     reflect_fields:    HashMap<String, Vec<crate::reflect::FieldDescriptor>>,
 }
@@ -155,6 +162,14 @@ impl ComponentRegistry {
                 }
             }),
         );
+
+        // Remover: type-erased remove for editor add/remove component support.
+        self.removers.insert(
+            type_name.to_string(),
+            Arc::new(move |world: &mut ECSWorld, entity: EntityId| {
+                world.remove_component::<T>(entity);
+            }),
+        );
     }
 
     /// Read a component's fields as a cloned `Box<dyn Reflect>`.
@@ -199,6 +214,22 @@ impl ComponentRegistry {
         let mut names: Vec<&str> = self.reflect_accessors.keys().map(|s| s.as_str()).collect();
         names.sort_unstable();
         names
+    }
+
+    /// Remove a component by type name using the registered remover.
+    /// Returns `false` if the type name has no remover registered.
+    pub fn remove_component_by_name(
+        &self,
+        type_name: &str,
+        world: &mut ECSWorld,
+        entity: EntityId,
+    ) -> bool {
+        if let Some(remover) = self.removers.get(type_name) {
+            remover(world, entity);
+            true
+        } else {
+            false
+        }
     }
 
     /// Returns the cached field descriptors for a component type (no world needed).
