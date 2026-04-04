@@ -55,7 +55,7 @@ use fluxion_scripting::{
 #[cfg(not(target_arch = "wasm32"))]
 mod gamepad;
 #[cfg(not(target_arch = "wasm32"))]
-mod egui_shell;
+mod editor_shell;
 
 // ── Entry point ────────────────────────────────────────────────────────────────
 
@@ -110,10 +110,15 @@ struct SandboxInner {
     asset_root: Option<PathBuf>,
     /// Scene JSON `settings` applied to the renderer after init (`None` = built-in demo).
     loaded_scene_settings: Option<SceneSettings>,
+    /// Per-frame component registry (builtins registered at startup).
+    #[cfg(not(target_arch = "wasm32"))]
+    registry: ComponentRegistry,
     #[cfg(not(target_arch = "wasm32"))]
     gilrs: Option<gilrs::Gilrs>,
     #[cfg(not(target_arch = "wasm32"))]
-    egui: Option<egui_shell::EguiShell>,
+    editor: Option<editor_shell::EditorShell>,
+    #[cfg(not(target_arch = "wasm32"))]
+    editor_state: editor_shell::EditorState,
     #[cfg(not(target_arch = "wasm32"))]
     ui_debug_lines: Vec<String>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -198,40 +203,46 @@ impl SandboxInner {
         {
             let win = self.window.clone();
             let lines = self.ui_debug_lines.clone();
-            let ents = self.world.entity_count();
             let dt = self.time.dt;
             let smooth_fps = self.time.smooth_fps;
             let elapsed = self.time.elapsed;
             let frame = self.time.frame_count;
-            let scene_loaded = self.loaded_scene_settings.is_some();
-            let gamepad = self.input.gamepad_connected;
-            let ball_y: Option<f32> = None; // physics_demo removed; use entity Transform.y for debug
             let w = renderer.width;
             let h = renderer.height;
-            let res = if let Some(ref mut egui) = self.egui {
-                renderer.render_with(&self.world, &self.time, |device, queue, enc, view| {
-                    egui_shell::paint_sandbox_panel(
-                        egui,
-                        &win,
-                        device,
-                        queue,
-                        enc,
-                        view,
-                        w,
-                        h,
-                        &lines,
-                        ents,
-                        dt,
-                        smooth_fps,
-                        elapsed,
-                        frame,
-                        scene_loaded,
-                        gamepad,
-                        ball_y,
-                    )
-                })
-            } else {
-                renderer.render(&self.world, &self.time)
+            let registry = self.registry.clone();
+            // Capture a raw pointer to world so we can share it between render_with
+            // (which takes &self.world) and the paint closure without a double-borrow.
+            let world_ptr: *const ECSWorld = &self.world;
+            let res = {
+                let editor_state = &mut self.editor_state;
+                if let Some(ref mut editor) = self.editor {
+                    // SAFETY: world_ptr points to self.world which lives for the duration of
+                    // this block. render_with + the closure both take &ECSWorld (shared).
+                    let world_ref: &ECSWorld = unsafe { &*world_ptr };
+                    renderer.render_with(world_ref, &self.time, |device, queue, enc, view| {
+                        editor_shell::paint_editor(
+                            editor,
+                            editor_state,
+                            &win,
+                            device,
+                            queue,
+                            enc,
+                            view,
+                            w,
+                            h,
+                            world_ref,
+                            &registry,
+                            &lines,
+                            dt,
+                            smooth_fps,
+                            elapsed,
+                            frame,
+                        )
+                    })
+                } else {
+                    let world_ref: &ECSWorld = unsafe { &*world_ptr };
+                    renderer.render(world_ref, &self.time)
+                }
             };
             match res {
                 Ok(()) => {}
@@ -297,9 +308,13 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
         asset_root,
         loaded_scene_settings,
         #[cfg(not(target_arch = "wasm32"))]
+        registry: { let mut r = ComponentRegistry::new(); r.register_builtins(); r },
+        #[cfg(not(target_arch = "wasm32"))]
         gilrs: gilrs::Gilrs::new().ok(),
         #[cfg(not(target_arch = "wasm32"))]
-        egui: None,
+        editor: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        editor_state: editor_shell::EditorState::new(),
         #[cfg(not(target_arch = "wasm32"))]
         ui_debug_lines: Vec::new(),
         #[cfg(not(target_arch = "wasm32"))]
@@ -315,6 +330,13 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
         let r = pollster::block_on(FluxionRenderer::new(window.clone(), renderer_config)).expect("Renderer init failed");
         inner.borrow_mut().renderer = Some(r);
         finish_renderer_setup(&mut inner.borrow_mut());
+
+        // Write TypeScript declarations to <assets>/types/ for script IDE support.
+        {
+            let g = inner.borrow();
+            let types_dir = std::path::Path::new("assets/types");
+            fluxion_scripting::write_dts_files(types_dir, &g.registry);
+        }
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -346,7 +368,7 @@ fn finish_renderer_setup(g: &mut SandboxInner) {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        g.egui = Some(egui_shell::EguiShell::new(
+        g.editor = Some(editor_shell::EditorShell::new(
             g.window.as_ref(),
             &renderer.device,
             renderer.surface_format(),
@@ -582,7 +604,7 @@ impl ApplicationHandler for SandboxApp {
         let egui_consumed = {
             let win = state.window.clone();
             state
-                .egui
+                .editor
                 .as_mut()
                 .map(|e| e.on_window_event(win.as_ref(), &event).consumed)
                 .unwrap_or(false)

@@ -195,3 +195,164 @@ pub fn reflect_value_to_json(v: &ReflectValue) -> Value {
         ReflectValue::Enum(s)       => Value::String(s.clone()),
     }
 }
+
+// ── Method Reflection ───────────────────────────────────────────────────────────
+
+/// Parameter metadata for reflected methods.
+#[derive(Debug, Clone)]
+pub struct ParameterDescriptor {
+    /// Parameter name
+    pub name: &'static str,
+    /// Human-readable display name
+    pub display_name: &'static str,
+    /// Parameter type
+    pub param_type: ReflectFieldType,
+    /// Whether parameter has a default value
+    pub has_default: bool,
+    /// Default value serialised as a JSON string (e.g. `"0"`, `"true"`, `"\"hello\""`).
+    /// Stored as `&'static str` so the struct can be `const`-constructed.
+    pub default_json: Option<&'static str>,
+    /// Whether parameter is optional
+    pub optional: bool,
+}
+
+impl ParameterDescriptor {
+    pub const fn new(name: &'static str, display_name: &'static str, param_type: ReflectFieldType) -> Self {
+        ParameterDescriptor {
+            name,
+            display_name,
+            param_type,
+            has_default: false,
+            default_json: None,
+            optional: false,
+        }
+    }
+
+    pub const fn with_default_json(mut self, json: &'static str) -> Self {
+        self.has_default = true;
+        self.default_json = Some(json);
+        self
+    }
+
+    pub const fn optional(mut self) -> Self {
+        self.optional = true;
+        self
+    }
+}
+
+/// Method types for reflection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodType {
+    /// Static method (no self parameter)
+    Static,
+    /// Instance method (takes &self)
+    Instance,
+    /// Instance method with mutable access (takes &mut self)
+    InstanceMut,
+}
+
+/// Method visibility levels
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodVisibility {
+    Public,
+    Private,
+    Internal,
+}
+
+/// Method metadata for reflection.
+#[derive(Debug, Clone)]
+pub struct MethodDescriptor {
+    /// Method name
+    pub name: &'static str,
+    /// Human-readable display name
+    pub display_name: &'static str,
+    /// Method description
+    pub description: &'static str,
+    /// Method type (static/instance)
+    pub method_type: MethodType,
+    /// Visibility level
+    pub visibility: MethodVisibility,
+    /// Return type (None for void)
+    pub return_type: Option<ReflectFieldType>,
+    /// Parameter list
+    pub parameters: &'static [ParameterDescriptor],
+    /// Whether method is async
+    pub is_async: bool,
+    /// Whether method is a coroutine (Unity-style)
+    pub is_coroutine: bool,
+    /// Method attributes (e.g., [ContextMenu], [Header])
+    pub attributes: &'static [&'static str],
+}
+
+impl MethodDescriptor {
+    pub const fn new(name: &'static str, display_name: &'static str, method_type: MethodType) -> Self {
+        MethodDescriptor {
+            name,
+            display_name,
+            description: "",
+            method_type,
+            visibility: MethodVisibility::Public,
+            return_type: None,
+            parameters: &[],
+            is_async: false,
+            is_coroutine: false,
+            attributes: &[],
+        }
+    }
+
+    pub const fn with_description(mut self, description: &'static str) -> Self {
+        self.description = description;
+        self
+    }
+
+    pub const fn with_return_type(mut self, return_type: ReflectFieldType) -> Self {
+        self.return_type = Some(return_type);
+        self
+    }
+
+    pub const fn with_parameters(mut self, parameters: &'static [ParameterDescriptor]) -> Self {
+        self.parameters = parameters;
+        self
+    }
+
+    pub const fn private(mut self) -> Self {
+        self.visibility = MethodVisibility::Private;
+        self
+    }
+
+    pub const fn async_fn(mut self) -> Self {
+        self.is_async = true;
+        self
+    }
+
+    pub const fn coroutine(mut self) -> Self {
+        self.is_coroutine = true;
+        self
+    }
+
+    pub const fn with_attributes(mut self, attributes: &'static [&'static str]) -> Self {
+        self.attributes = attributes;
+        self
+    }
+}
+
+/// Trait for types that can reflect their methods.
+pub trait ReflectMethods {
+    /// Get all method descriptors for this type
+    fn methods() -> &'static [MethodDescriptor] where Self: Sized;
+    
+    /// Invoke a static method by name
+    fn invoke_static(method_name: &str, args: &[ReflectValue]) -> Result<Option<ReflectValue>, String> where Self: Sized {
+        Err(format!("Static method '{}' not implemented for type", method_name))
+    }
+    
+    /// Invoke an instance method by name
+    fn invoke_method(&self, method_name: &str, args: &[ReflectValue]) -> Result<Option<ReflectValue>, String> {
+        Err(format!("Instance method '{}' not implemented", method_name))
+    }
+    
+    /// Invoke a mutable instance method by name
+    fn invoke_method_mut(&mut self, method_name: &str, args: &[ReflectValue]) -> Result<Option<ReflectValue>, String> {
+        Err(format!("Mutable instance method '{}' not implemented", method_name))
+    }
+}

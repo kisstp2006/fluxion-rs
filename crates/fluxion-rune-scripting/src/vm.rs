@@ -1,0 +1,321 @@
+// ============================================================
+// vm.rs — RuneVm: compile, run, hot-reload Rune scripts
+// ============================================================
+
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock, RwLock},
+    collections::HashSet,
+};
+
+use anyhow::Context as _;
+use rune::{
+    termcolor::{ColorChoice, StandardStream},
+    Diagnostics, Source, Sources, Unit,
+};
+
+use crate::hot_reload::HotReloadWatcher;
+
+// ── Global snapshots (read by auto_binding modules) ───────────────────────────
+
+/// Atomic snapshot of time values, updated each frame by the host.
+pub static TIME_SNAPSHOT: TimeSnapshot = TimeSnapshot::new();
+/// Atomic snapshot of input state. Accessed via `input_snapshot()`.
+static INPUT_SNAPSHOT_CELL: OnceLock<InputSnapshot> = OnceLock::new();
+
+/// Get the global input snapshot (lazily initialized).
+pub fn input_snapshot() -> &'static InputSnapshot {
+    INPUT_SNAPSHOT_CELL.get_or_init(InputSnapshot::default)
+}
+
+pub struct TimeSnapshot {
+    dt:      std::sync::atomic::AtomicU32,
+    elapsed: std::sync::atomic::AtomicU32,
+    frame:   std::sync::atomic::AtomicU64,
+}
+
+impl TimeSnapshot {
+    const fn new() -> Self {
+        Self {
+            dt:      std::sync::atomic::AtomicU32::new(0),
+            elapsed: std::sync::atomic::AtomicU32::new(0),
+            frame:   std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    pub fn update(&self, dt: f32, elapsed: f32, frame: u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.dt.store(dt.to_bits(), Relaxed);
+        self.elapsed.store(elapsed.to_bits(), Relaxed);
+        self.frame.store(frame, Relaxed);
+    }
+
+    pub fn load_dt(&self) -> f64 {
+        f32::from_bits(self.dt.load(std::sync::atomic::Ordering::Relaxed)) as f64
+    }
+
+    pub fn load_elapsed(&self) -> f64 {
+        f32::from_bits(self.elapsed.load(std::sync::atomic::Ordering::Relaxed)) as f64
+    }
+
+    pub fn load_frame(&self) -> u64 {
+        self.frame.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Thread-safe input state snapshot.
+pub struct InputSnapshot {
+    held: Mutex<HashSet<String>>,
+    down: Mutex<HashSet<String>>,
+    up:   Mutex<HashSet<String>>,
+}
+
+impl Default for InputSnapshot {
+    fn default() -> Self {
+        Self {
+            held: Mutex::new(HashSet::new()),
+            down: Mutex::new(HashSet::new()),
+            up:   Mutex::new(HashSet::new()),
+        }
+    }
+}
+
+impl InputSnapshot {
+
+    pub fn update(&self, held: Vec<String>, down: Vec<String>, up: Vec<String>) {
+        *self.held.lock().unwrap() = held.into_iter().collect();
+        *self.down.lock().unwrap() = down.into_iter().collect();
+        *self.up.lock().unwrap()   = up.into_iter().collect();
+    }
+
+    pub fn is_key_held(&self, key: &str) -> bool {
+        self.held.lock().unwrap().contains(key)
+    }
+
+    pub fn is_key_down(&self, key: &str) -> bool {
+        self.down.lock().unwrap().contains(key)
+    }
+
+    pub fn is_key_up(&self, key: &str) -> bool {
+        self.up.lock().unwrap().contains(key)
+    }
+}
+
+// ── RuneVm ────────────────────────────────────────────────────────────────────
+
+/// Compiled Rune unit, shared across all VMs for a script set.
+type SharedUnit = Arc<RwLock<Arc<Unit>>>;
+
+/// The Rune scripting VM.
+///
+/// # Hot reload
+///
+/// Call `enable_hot_reload(watch_dir)` to start watching for `.rn` file
+/// changes. Each frame, call `poll_hot_reload()` to process any pending
+/// recompiles. On compile error the old unit keeps running.
+pub struct RuneVm {
+    /// Rune runtime (context + type info). Rebuilt only when modules change.
+    runtime: Arc<rune::runtime::RuntimeContext>,
+    /// Compiled bytecode, swappable on hot reload.
+    unit:    SharedUnit,
+    /// Paths of loaded source files (for incremental recompile).
+    source_paths: Vec<PathBuf>,
+    /// Watches .rn files for changes (native only; None = hot reload disabled).
+    watcher: Option<HotReloadWatcher>,
+    /// Hooks called after every successful hot reload.
+    reload_hooks: Vec<Box<dyn Fn() + Send + Sync>>,
+    /// Last compile errors (shown in-editor).
+    pub last_error: Option<String>,
+}
+
+impl RuneVm {
+    /// Create a new VM, compiling the given source files.
+    pub fn new(source_paths: &[&Path]) -> anyhow::Result<Self> {
+        let mut ctx = rune::Context::with_default_modules()
+            .context("Failed to create default Rune context")?;
+
+        // Install engine modules.
+        for m in crate::auto_binding::all_modules()? {
+            ctx.install(m).context("Failed to install engine module")?;
+        }
+
+        let runtime = Arc::new(ctx.runtime().context("Failed to build Rune runtime")?);
+
+        let paths: Vec<PathBuf> = source_paths.iter().map(|p| p.to_path_buf()).collect();
+        let unit = Self::compile_paths(&paths)?;
+
+        Ok(Self {
+            runtime,
+            unit:         Arc::new(RwLock::new(Arc::new(unit))),
+            source_paths: paths,
+            watcher:      None,
+            reload_hooks: Vec::new(),
+            last_error:   None,
+        })
+    }
+
+    /// Create an empty VM (no scripts loaded).
+    pub fn empty() -> anyhow::Result<Self> {
+        Self::new(&[])
+    }
+
+    /// Load an additional script file and recompile.
+    pub fn load_file(&mut self, path: &Path) -> anyhow::Result<()> {
+        if !self.source_paths.contains(&path.to_path_buf()) {
+            self.source_paths.push(path.to_path_buf());
+        }
+        let unit = Self::compile_paths(&self.source_paths)?;
+        *self.unit.write().unwrap() = Arc::new(unit);
+        self.last_error = None;
+        Ok(())
+    }
+
+    /// Start watching `watch_dir` for `.rn` changes. Non-blocking.
+    pub fn enable_hot_reload(&mut self, watch_dir: &Path) -> anyhow::Result<()> {
+        self.watcher = Some(HotReloadWatcher::start(watch_dir)?);
+        Ok(())
+    }
+
+    /// Register a hook to call after every successful hot reload.
+    pub fn on_reload(&mut self, hook: impl Fn() + Send + Sync + 'static) {
+        self.reload_hooks.push(Box::new(hook));
+    }
+
+    /// Check for pending hot-reload events and process them.
+    /// Call once per frame from the engine loop.
+    pub fn poll_hot_reload(&mut self) {
+        let changed: Vec<PathBuf> = match &self.watcher {
+            Some(w) => w.drain(),
+            None    => return,
+        };
+        if changed.is_empty() { return; }
+
+        for path in &changed {
+            log::info!("[RuneHotReload] Reloading {:?}", path.file_name().unwrap_or_default());
+
+            // Update source_paths with the changed file (add if new, otherwise keep existing).
+            if !self.source_paths.contains(path) {
+                self.source_paths.push(path.clone());
+            }
+
+            match Self::compile_paths(&self.source_paths) {
+                Ok(unit) => {
+                    *self.unit.write().unwrap() = Arc::new(unit);
+                }
+                Err(e) => {
+                    let msg = format!("{:#}", e);
+                    log::error!("[RuneHotReload] Compile error:\n{msg}");
+                    self.last_error = Some(msg);
+                    return;
+                }
+            }
+        }
+
+        self.last_error = None;
+        // Call the in-script on_hot_reload() hook.
+        let _ = self.on_hot_reload_hook();
+        // Call registered Rust-side reload hooks.
+        for hook in &self.reload_hooks {
+            hook();
+        }
+    }
+
+    /// Compile a set of .rn file paths into a `rune::Unit`.
+    fn compile_paths(paths: &[PathBuf]) -> anyhow::Result<Unit> {
+        let mut sources = Sources::new();
+        for path in paths {
+            let source = Source::from_path(path)
+                .with_context(|| format!("Failed to read {:?}", path))?;
+            sources.insert(source);
+        }
+
+        let ctx = rune::Context::with_default_modules()
+            .context("Default context")?;
+        let mut diagnostics = Diagnostics::new();
+        let result = rune::prepare(&mut sources)
+            .with_context(&ctx)
+            .with_diagnostics(&mut diagnostics)
+            .build();
+
+        if !diagnostics.is_empty() {
+            let mut out = StandardStream::stderr(ColorChoice::Always);
+            diagnostics.emit(&mut out, &sources)?;
+        }
+
+        result.context("Rune compilation failed")
+    }
+
+    // ── Script execution ──────────────────────────────────────────────────────
+
+    /// Call a Rune function by name. Returns `Ok(None)` if the function
+    /// does not exist in the current unit (not an error).
+    pub fn call_fn(
+        &self,
+        fn_path: &[&str],
+        args:    impl rune::runtime::Args,
+    ) -> anyhow::Result<Option<rune::Value>> {
+        let unit   = self.unit.read().unwrap().clone();
+        let mut vm = rune::Vm::new(self.runtime.clone(), unit);
+
+        let result = vm.execute(fn_path, args);
+        match result {
+            Ok(mut exec) => {
+                let val = exec.complete().into_result()
+                    .context("Rune function panicked")?;
+                Ok(Some(val))
+            }
+            Err(e) => {
+                let msg = format!("{e:?}");
+                if msg.contains("MissingFunction") || msg.contains("missing function") {
+                    return Ok(None);
+                }
+                Err(anyhow::anyhow!("Rune call {:?}: {e}", fn_path))
+            }
+        }
+    }
+
+    // ── Lifecycle interface ───────────────────────────────────────────────────
+
+    /// Run `start()` if defined.
+    pub fn start(&self) -> anyhow::Result<()> {
+        self.call_fn(&["start"], ())?;
+        Ok(())
+    }
+
+    /// Run `update(dt)` if defined.
+    pub fn update(&self, dt: f64) -> anyhow::Result<()> {
+        self.call_fn(&["update"], (dt,))?;
+        Ok(())
+    }
+
+    /// Run `fixed_update(dt)` if defined.
+    pub fn fixed_update(&self, dt: f64) -> anyhow::Result<()> {
+        self.call_fn(&["fixed_update"], (dt,))?;
+        Ok(())
+    }
+
+    /// Run `on_destroy()` if defined.
+    pub fn on_destroy(&self) -> anyhow::Result<()> {
+        self.call_fn(&["on_destroy"], ())?;
+        Ok(())
+    }
+
+    // ── Editor lifecycle ──────────────────────────────────────────────────────
+
+    /// Run `on_editor_init()` — called once when the editor starts.
+    pub fn on_editor_init(&self) -> anyhow::Result<()> {
+        self.call_fn(&["on_editor_init"], ())?;
+        Ok(())
+    }
+
+    /// Run `on_hot_reload()` — called after the script is reloaded.
+    pub fn on_hot_reload_hook(&self) -> anyhow::Result<()> {
+        self.call_fn(&["on_hot_reload"], ())?;
+        Ok(())
+    }
+
+    /// Whether the VM has any compile errors (from the last hot reload attempt).
+    pub fn has_error(&self) -> bool {
+        self.last_error.is_some()
+    }
+}

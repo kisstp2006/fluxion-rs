@@ -52,6 +52,9 @@ pub use scene::{
 pub use scene::world_to_scene_data;
 pub use registry::ComponentRegistry;
 pub use reflect::{Reflect, ReflectValue, FieldDescriptor, ReflectFieldType, RangeHint};
+pub use reflect::{ParameterDescriptor, MethodDescriptor, MethodType, MethodVisibility, ReflectMethods};
+#[doc(hidden)]
+pub use fluxion_reflect_derive::Reflect as DeriveReflect;
 pub use components::{RigidBody, PhysicsShape, BodyType};
 pub use particles::step_particle_emitters;
 pub use debug_draw::{DebugDraw, DebugLine};

@@ -1,8 +1,10 @@
 [workspace]
 members = [
+    "crates/fluxion-reflect-derive",
     "crates/fluxion-core",
     "crates/fluxion-renderer",
     "crates/fluxion-scripting",
+    "crates/fluxion-rune-scripting",
     "crates/fluxion-physics",
     "crates/fluxion-audio",
     "crates/fluxion-sandbox",
