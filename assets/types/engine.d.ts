@@ -45,6 +45,12 @@ declare namespace Debug {
   function DrawLine(start: Vector3, end: Vector3, color?: Vector4, duration?: number): void;
   /** Draws a ray from origin in direction. */
   function DrawRay(origin: Vector3, direction: Vector3, color?: Vector4, duration?: number): void;
+  /** Draws a wireframe sphere in the scene view. */
+  function DrawSphere(center: Vector3, radius: number, color?: Vector4): void;
+  /** Draws a wireframe axis-aligned box in the scene view. */
+  function DrawBox(center: Vector3, halfExtents: Vector3, color?: Vector4): void;
+  /** Draws a cross (3 axis lines) at the given position. */
+  function DrawCross(position: Vector3, size?: number, color?: Vector4): void;
   /** Pauses the editor (no-op in standalone builds). */
   function Break(): void;
   /** Clears errors from the developer console. */

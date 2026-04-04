@@ -26,9 +26,6 @@ gilrs                   = "0.11"
 fluxion-physics         = { path = "../fluxion-physics" }
 fluxion-audio           = { path = "../fluxion-audio" }
 fluxion-rune-scripting  = { path = "../fluxion-rune-scripting" }
-egui             = { workspace = true }
-egui-wgpu        = { workspace = true }
-egui-winit       = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen         = "0.2"

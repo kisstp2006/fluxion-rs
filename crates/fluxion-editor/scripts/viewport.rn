@@ -1,0 +1,29 @@
+// ============================================================
+// viewport.rn — Viewport panel
+//
+// Displays the 3D scene rendered to an offscreen texture by
+// the Rust host (render_to_viewport).  The texture ID and
+// dimensions are provided by fluxion::viewport.
+// ============================================================
+
+pub mod viewport {
+
+pub fn panel() {
+    let tid = fluxion::viewport::texture_id();
+
+    if tid < 0 {
+        fluxion::ui::label("(viewport not ready)");
+        return;
+    }
+
+    let w = fluxion::ui::available_width();
+    let h = fluxion::ui::available_height();
+
+    if w < 1.0 || h < 1.0 {
+        return;
+    }
+
+    fluxion::ui::image(tid, w, h);
+}
+
+} // pub mod viewport

@@ -8,7 +8,10 @@
 
 mod dock;
 mod host;
+mod project_chooser;
 mod rune_bindings;
+mod theme;
+mod toolbar;
 mod ui_shell;
 
 use std::cell::RefCell;
@@ -21,14 +24,19 @@ use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
+    keyboard::{KeyCode, ModifiersState, PhysicalKey},
     window::{Window, WindowId},
 };
 
 use fluxion_renderer::{FluxionRenderer, RendererConfig};
+use fluxion_core::ProjectConfig;
+use fluxion_core::scene::{load_scene_into_world, world_to_scene_data, SceneSettings, save_scene_file, load_scene_file};
 
 use crate::dock::{default_dock_state, show_dock, EditorTab};
 use crate::host::EditorHost;
+use crate::project_chooser::ProjectChooser;
+use crate::rune_bindings::set_viewport_texture;
+use crate::toolbar::{EditorMode, TransformTool};
 use crate::ui_shell::UiShell;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -53,25 +61,42 @@ fn main() {
 
 enum EditorApp {
     Uninitialized,
+    /// Window is open but we are still showing the project chooser.
+    Choosing {
+        window:   Arc<Window>,
+        renderer: FluxionRenderer,
+        ui_shell: UiShell,
+        chooser:  ProjectChooser,
+    },
+    /// Project loaded — main editor running.
     Running(Rc<RefCell<EditorInner>>),
 }
 
-/// All per-window state.  Fields are separate so we can split borrows when
-/// calling renderer.render_with (needs &mut renderer, &world, &time) while
-/// also borrowing vm and dock_state for the egui closure.
+/// All per-window state once a project is open.
 struct EditorInner {
     window:     Arc<Window>,
     host:       EditorHost,
     renderer:   FluxionRenderer,
     ui_shell:   UiShell,
     dock_state: egui_dock::DockState<EditorTab>,
+
+    // Editor metadata
+    project:      ProjectConfig,
+    project_root: PathBuf,
+    scene_path:   Option<PathBuf>,
+    scene_dirty:  bool,
+
+    // Runtime state
+    editor_mode:    EditorMode,
+    transform_tool: TransformTool,
+    modifiers:      ModifiersState,
 }
 
 // ── ApplicationHandler impl ───────────────────────────────────────────────────
 
 impl ApplicationHandler for EditorApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if matches!(self, EditorApp::Running(_)) {
+        if !matches!(self, EditorApp::Uninitialized) {
             return;
         }
 
@@ -83,13 +108,20 @@ impl ApplicationHandler for EditorApp {
             event_loop.create_window(attrs).expect("Window creation failed"),
         );
 
-        let scripts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts");
-        let host = EditorHost::new(scripts_dir).expect("EditorHost init failed");
+        let (renderer, ui_shell) = pollster::block_on(async {
+            let r = FluxionRenderer::new(window.clone(), RendererConfig::default())
+                .await.expect("Renderer init failed");
+            let fmt   = r.surface_format();
+            let shell = UiShell::new(&window, &r.device, fmt);
+            (r, shell)
+        });
 
-        let inner = pollster::block_on(EditorInner::new(window, host))
-            .expect("EditorInner init failed");
-
-        *self = EditorApp::Running(Rc::new(RefCell::new(inner)));
+        *self = EditorApp::Choosing {
+            window,
+            renderer,
+            ui_shell,
+            chooser: ProjectChooser::new(),
+        };
     }
 
     fn window_event(
@@ -98,109 +130,289 @@ impl ApplicationHandler for EditorApp {
         _window_id: WindowId,
         event:      WindowEvent,
     ) {
-        let EditorApp::Running(inner) = self else { return };
-        let mut g = inner.borrow_mut();
+        match self {
+            // ── Project chooser ──────────────────────────────────────────────
+            EditorApp::Choosing { window, renderer, ui_shell, chooser } => {
+                let win = window.clone();
+                let egui_resp = ui_shell.on_window_event(&win, &event);
 
-        // Forward to egui first (clone Arc<Window> to avoid split-borrow through RefMut).
-        let window = g.window.clone();
-        let egui_resp = g.ui_shell.on_window_event(&window, &event);
-        if egui_resp.consumed { return; }
+                match event {
+                    WindowEvent::CloseRequested => event_loop.exit(),
+                    WindowEvent::Resized(size) => renderer.resize(size.width, size.height),
+                    WindowEvent::RedrawRequested => {
+                        // Draw the project chooser on the swap chain surface directly.
+                        let w = renderer.width;
+                        let h = renderer.height;
+                        let result = renderer.render_ui_only(|device, queue, encoder, view| {
+                            ui_shell.paint(&win, device, queue, encoder, view, w, h, |ctx| {
+                                theme::apply_theme(ctx);
+                                chooser.show(ctx);
+                            })
+                        });
+                        if let Err(SurfaceError::Lost | SurfaceError::Outdated) = result {
+                            let s = win.inner_size();
+                            renderer.resize(s.width, s.height);
+                        }
+                    }
+                    _ => {}
+                }
 
-        match event {
-            WindowEvent::CloseRequested => {
-                event_loop.exit();
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                    && event.state == ElementState::Pressed
-                {
-                    event_loop.exit();
-                }
-                let pressed = event.state == ElementState::Pressed;
-                if let PhysicalKey::Code(code) = event.physical_key {
-                    g.host.input.set_key_down(&format!("{code:?}"), pressed);
+                let _ = egui_resp;
+
+                // Check if project was chosen — transition to Running.
+                if let Some(choice) = chooser.take_choice() {
+                    self.transition_to_running(choice, event_loop);
                 }
             }
-            WindowEvent::Resized(size) => {
-                g.renderer.resize(size.width, size.height);
+
+            // ── Main editor ──────────────────────────────────────────────────
+            EditorApp::Running(inner) => {
+                let mut g = inner.borrow_mut();
+                let window = g.window.clone();
+                let egui_resp = g.ui_shell.on_window_event(&window, &event);
+                if egui_resp.consumed { return; }
+
+                match event {
+                    WindowEvent::CloseRequested => event_loop.exit(),
+                    WindowEvent::ModifiersChanged(mods) => {
+                        g.modifiers = mods.state();
+                    }
+                    WindowEvent::KeyboardInput { event: kev, .. } => {
+                        let pressed = kev.state == ElementState::Pressed;
+                        if pressed {
+                            let ctrl = g.modifiers.control_key();
+                            match kev.physical_key {
+                                PhysicalKey::Code(KeyCode::KeyS) if ctrl => g.save_scene(),
+                                PhysicalKey::Code(KeyCode::KeyN) if ctrl => g.new_scene(),
+                                PhysicalKey::Code(KeyCode::Delete) => g.delete_selected(),
+                                _ => {}
+                            }
+                        }
+                        if let PhysicalKey::Code(code) = kev.physical_key {
+                            g.host.input.set_key_down(&format!("{code:?}"), kev.state == ElementState::Pressed);
+                        }
+                    }
+                    WindowEvent::Resized(size) => g.renderer.resize(size.width, size.height),
+                    WindowEvent::RedrawRequested => g.frame(),
+                    _ => {}
+                }
             }
-            WindowEvent::RedrawRequested => {
-                g.frame();
-            }
-            _ => {}
+
+            EditorApp::Uninitialized => {}
         }
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let EditorApp::Running(inner) = self {
-            inner.borrow().window.request_redraw();
+        match self {
+            EditorApp::Choosing { window, .. } => window.request_redraw(),
+            EditorApp::Running(inner) => inner.borrow().window.request_redraw(),
+            EditorApp::Uninitialized => {}
         }
+    }
+}
+
+impl EditorApp {
+    fn transition_to_running(
+        &mut self,
+        choice: crate::project_chooser::ProjectChoice,
+        _event_loop: &ActiveEventLoop,
+    ) {
+        // Destructure Choosing state, take ownership
+        let (window, mut renderer, ui_shell) = match std::mem::replace(self, EditorApp::Uninitialized) {
+            EditorApp::Choosing { window, renderer, ui_shell, .. } => (window, renderer, ui_shell),
+            _ => return,
+        };
+
+        let scripts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts");
+        let mut host = EditorHost::new(scripts_dir).expect("EditorHost init failed");
+
+        // Enable gizmos in editor mode
+        renderer.gizmos_enabled = true;
+
+        // Resolve and load the default scene if it exists
+        let scene_path = if !choice.config.default_scene.is_empty() {
+            let sp = choice.root.join(&choice.config.default_scene);
+            if sp.exists() {
+                if let Ok(data) = load_scene_file(sp.to_str().unwrap_or("")) {
+                    host.world.clear();
+                    let _ = load_scene_into_world(&mut host.world, &data, true, &host.registry);
+                    log::info!("Loaded scene: {}", sp.display());
+                }
+                Some(sp)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Call on_editor_init.
+        if let Err(e) = host.vm.on_editor_init() {
+            log::warn!("on_editor_init: {e}");
+        }
+
+        let scene_name = scene_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".to_string());
+        let _ = scene_name;
+
+        let inner = EditorInner {
+            window,
+            host,
+            renderer,
+            ui_shell,
+            dock_state:     default_dock_state(),
+            project:        choice.config,
+            project_root:   choice.root,
+            scene_path,
+            scene_dirty:    false,
+            editor_mode:    EditorMode::Editing,
+            transform_tool: TransformTool::Translate,
+            modifiers:      ModifiersState::empty(),
+        };
+
+        *self = EditorApp::Running(Rc::new(RefCell::new(inner)));
     }
 }
 
 // ── EditorInner ───────────────────────────────────────────────────────────────
 
 impl EditorInner {
-    async fn new(window: Arc<Window>, host: EditorHost) -> anyhow::Result<Self> {
-        let renderer = FluxionRenderer::new(window.clone(), RendererConfig::default()).await?;
-        let fmt      = renderer.surface_format();
-        let shell    = UiShell::new(&window, &renderer.device, fmt);
-
-        // Call on_editor_init now that everything is ready.
-        if let Err(e) = host.vm.on_editor_init() {
-            log::warn!("on_editor_init: {e}");
+    fn frame(&mut self) {
+        // Engine tick (skip physics while in Editing mode to avoid moving things)
+        if self.editor_mode == EditorMode::Playing {
+            self.host.tick();
+        } else {
+            // Still need transform propagation + hot reload even when paused.
+            self.host.tick_editor_only();
         }
 
-        Ok(Self {
-            window,
-            host,
-            renderer,
-            ui_shell:   shell,
-            dock_state: default_dock_state(),
-        })
-    }
-
-    fn frame(&mut self) {
-        // Engine tick — physics, transforms, hot reload, flush pending edits.
-        self.host.tick();
-        // Set thread-locals so Rune panels can read ECS data this frame.
+        // Push ECS context so Rune panels can read data this frame.
         self.host.push_world_context();
+
+        // Render 3-D scene to offscreen viewport texture.
+        if let Err(e) = self.renderer.render_to_viewport(&self.host.world, &self.host.time) {
+            log::error!("render_to_viewport: {e}");
+        }
+
+        // Register / update the viewport texture with egui.
+        if let Some(view) = self.renderer.viewport_view() {
+            let vp_w = self.renderer.width;
+            let vp_h = self.renderer.height;
+            // Register the texture with the egui-wgpu renderer.
+            let tid = self.ui_shell.register_viewport_texture(
+                &self.renderer.device,
+                view,
+                vp_w,
+                vp_h,
+            );
+            set_viewport_texture(tid, vp_w, vp_h);
+            self.host.vm.push_viewport(vp_w, vp_h);
+        }
 
         let w      = self.renderer.width;
         let h      = self.renderer.height;
         let window = self.window.clone();
 
-        // Split borrows: renderer needs &mut self.renderer + &self.host.world/time.
-        // ui_shell, dock_state, and vm come from separate fields — Rust allows this.
-        let ui_shell   = &mut self.ui_shell;
-        let dock_state = &mut self.dock_state;
-        let vm         = &mut self.host.vm;
+        let ui_shell        = &mut self.ui_shell;
+        let dock_state      = &mut self.dock_state;
+        let vm              = &mut self.host.vm;
+        let editor_mode     = &mut self.editor_mode;
+        let transform_tool  = &mut self.transform_tool;
+        let project         = &self.project;
+        let scene_path      = &self.scene_path;
+        let scene_dirty     = self.scene_dirty;
+        let project_root    = &self.project_root;
 
-        let result = self.renderer.render_with(
-            &self.host.world,
-            &self.host.time,
-            |device, queue, encoder, view| {
-                ui_shell.paint(
-                    &window, device, queue, encoder, view, w, h,
-                    |ctx| {
-                        egui::TopBottomPanel::top("editor_menu").show(ctx, |ui| {
-                            egui::menu::bar(ui, |ui| {
-                                ui.menu_button("File", |ui| {
-                                    if ui.button("Exit").clicked() {
-                                        std::process::exit(0);
-                                    }
-                                });
-                                ui.menu_button("Edit", |_ui| {});
-                                ui.menu_button("View", |_ui| {});
+        let scene_name = scene_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".to_string());
+        let title = if scene_dirty {
+            format!("{} — {}*  |  FluxionRS Editor", project.name, scene_name)
+        } else {
+            format!("{} — {}  |  FluxionRS Editor", project.name, scene_name)
+        };
+        window.set_title(&title);
+
+        // Deferred scene-save request from menu.
+        let mut do_save_scene   = false;
+        let mut do_open_scene   = false;
+        let mut do_new_scene    = false;
+        let mut new_editor_mode = *editor_mode;
+
+        let result = self.renderer.render_ui_only(|device, queue, encoder, view| {
+            ui_shell.paint(&window, device, queue, encoder, view, w, h, |ctx| {
+                theme::apply_theme(ctx);
+
+                // ── Menu bar ────────────────────────────────────────────────
+                egui::TopBottomPanel::top("editor_menu")
+                    .frame(egui::Frame::none()
+                        .fill(crate::theme::MENU_BG)
+                        .inner_margin(egui::Margin::symmetric(4.0, 2.0)))
+                    .show(ctx, |ui| {
+                        egui::menu::bar(ui, |ui| {
+                            ui.menu_button("File", |ui| {
+                                if ui.button("New Scene        Ctrl+N").clicked() {
+                                    do_new_scene = true;
+                                    ui.close_menu();
+                                }
+                                if ui.button("Open Scene…").clicked() {
+                                    do_open_scene = true;
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                if ui.button("Save Scene        Ctrl+S").clicked() {
+                                    do_save_scene = true;
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                if ui.button("Exit").clicked() {
+                                    std::process::exit(0);
+                                }
+                            });
+                            ui.menu_button("Edit", |_ui| {});
+                            ui.menu_button("View", |_ui| {});
+                            ui.menu_button("Help", |ui| {
+                                if ui.button("About").clicked() {
+                                    ui.close_menu();
+                                }
                             });
                         });
-                        show_dock(ctx, dock_state, vm);
-                    },
-                )
-            },
-        );
+                    });
 
-        // Clear world context after the full frame (panels are done rendering).
+                // ── Toolbar ─────────────────────────────────────────────────
+                new_editor_mode = crate::toolbar::show_toolbar(
+                    ctx,
+                    *editor_mode,
+                    transform_tool,
+                    &project.name,
+                    &scene_name,
+                );
+
+                // ── Dock area ───────────────────────────────────────────────
+                show_dock(ctx, dock_state, vm);
+            })
+        });
+
+        // Apply deferred mode change.
+        *editor_mode = new_editor_mode;
+
+        // Handle file menu actions (after the render closure, to avoid borrow issues).
+        if do_save_scene {
+            self.save_scene();
+        }
+        if do_open_scene {
+            self.open_scene_dialog();
+        }
+        if do_new_scene {
+            self.new_scene();
+        }
+
+        // Clear world context after the full frame.
         self.host.pop_world_context();
 
         match result {
@@ -210,6 +422,82 @@ impl EditorInner {
                 self.renderer.resize(size.width, size.height);
             }
             Err(e) => log::error!("Render error: {e}"),
+        }
+    }
+
+    // ── Scene operations ──────────────────────────────────────────────────────
+
+    pub fn save_scene(&mut self) {
+        let path = if let Some(p) = &self.scene_path {
+            p.clone()
+        } else {
+            // No path yet — prompt for one.
+            if let Some(p) = rfd::FileDialog::new()
+                .add_filter("Fluxion Scene", &["scene"])
+                .set_directory(&self.project_root)
+                .save_file()
+            {
+                self.scene_path = Some(p.clone());
+                p
+            } else {
+                return;
+            }
+        };
+
+        let settings = SceneSettings::default();
+        let scene_name = path.file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "scene".to_string());
+        let data = world_to_scene_data(&self.host.world, &self.host.registry, scene_name, settings, None);
+        match save_scene_file(path.to_str().unwrap_or(""), &data) {
+            Ok(()) => {
+                self.scene_dirty = false;
+                log::info!("Scene saved to {}", path.display());
+            }
+            Err(e) => log::error!("Save scene failed: {e}"),
+        }
+    }
+
+    pub fn open_scene_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Fluxion Scene", &["scene"])
+            .set_directory(&self.project_root)
+            .pick_file()
+        {
+            self.load_scene_from_path(path);
+        }
+    }
+
+    pub fn new_scene(&mut self) {
+        self.host.world.clear();
+        host::EditorHost::spawn_default_scene_pub(&mut self.host.world);
+        self.scene_path  = None;
+        self.scene_dirty = false;
+        log::info!("New scene created");
+    }
+
+    fn load_scene_from_path(&mut self, path: std::path::PathBuf) {
+        match load_scene_file(path.to_str().unwrap_or("")) {
+            Ok(data) => {
+                self.host.world.clear();
+                if let Err(e) = load_scene_into_world(
+                    &mut self.host.world, &data, true, &self.host.registry,
+                ) {
+                    log::error!("Scene load failed: {e}");
+                    return;
+                }
+                self.scene_path  = Some(path);
+                self.scene_dirty = false;
+                log::info!("Scene loaded");
+            }
+            Err(e) => log::error!("Open scene failed: {e}"),
+        }
+    }
+
+    pub fn delete_selected(&mut self) {
+        if let Some(id) = self.host.selected_entity() {
+            self.host.world.despawn(id);
+            self.scene_dirty = true;
         }
     }
 }

@@ -178,5 +178,66 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("scroll_begin", || {}).build()?;
     m.function("scroll_end",   || {}).build()?;
 
+    // ── Viewport image ────────────────────────────────────────────────────────
+    // texture_id is the raw u64 from egui::TextureId::Managed (cast to i64 for Rune).
+    // Pass width=0, height=0 to auto-fill available space.
+    m.function("image", |texture_id: i64, w: f64, h: f64| {
+        with_ui(|ui| {
+            if texture_id < 0 { return; }
+            let tid = egui::TextureId::Managed(texture_id as u64);
+            let size = if w > 0.0 && h > 0.0 {
+                egui::Vec2::new(w as f32, h as f32)
+            } else {
+                ui.available_size()
+            };
+            ui.add(egui::Image::new(egui::load::SizedTexture::new(tid, size)));
+        });
+    }).build()?;
+
+    // ── Colored label ─────────────────────────────────────────────────────────
+    m.function("colored_label", |text: String, r: f64, g: f64, b: f64| {
+        with_ui(|ui| {
+            ui.colored_label(
+                egui::Color32::from_rgb(
+                    (r * 255.0) as u8,
+                    (g * 255.0) as u8,
+                    (b * 255.0) as u8,
+                ),
+                &text,
+            );
+        });
+    }).build()?;
+
+    // ── Selectable with right-click context menu ───────────────────────────────
+    // Returns "" (no action), "select" (left-clicked), or the menu item string.
+    m.function("selectable_with_menu", |label: String, selected: bool, items: Vec<String>| -> String {
+        with_ui(|ui| {
+            let mut action = String::new();
+            let response = ui.selectable_label(selected, &label);
+            response.context_menu(|ui| {
+                for item in &items {
+                    if ui.button(item).clicked() {
+                        action = item.clone();
+                        ui.close_menu();
+                    }
+                }
+            });
+            if response.clicked() && action.is_empty() {
+                "select".to_string()
+            } else {
+                action
+            }
+        }).unwrap_or_default()
+    }).build()?;
+
+    // ── Size query ────────────────────────────────────────────────────────────
+    m.function("available_width", || -> f64 {
+        with_ui(|ui| ui.available_width() as f64).unwrap_or(0.0)
+    }).build()?;
+
+    m.function("available_height", || -> f64 {
+        with_ui(|ui| ui.available_height() as f64).unwrap_or(0.0)
+    }).build()?;
+
     Ok(m)
 }

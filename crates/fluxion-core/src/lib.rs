@@ -31,6 +31,7 @@ pub mod assets;
 pub mod particles;
 pub mod color;
 pub mod debug_draw;
+pub mod project;
 pub mod registry;
 pub mod reflect;
 // reflect_impls removed — Reflect is now derived via #[derive(Reflect)] on each component.
@@ -59,6 +60,14 @@ pub use fluxion_reflect_derive::Reflect as DeriveReflect;
 pub use components::{RigidBody, PhysicsShape, BodyType};
 pub use particles::step_particle_emitters;
 pub use color::Color;
+pub use project::{ProjectConfig, ProjectSettings, ProjectPhysicsSettings,
+    ProjectRenderSettings, ProjectEditorSettings, RecentProject};
+#[cfg(not(target_arch = "wasm32"))]
+pub use project::{
+    load_project, save_project, create_project,
+    load_recent_projects, push_recent_project, save_recent_projects,
+    project_file_path, fluxion_config_dir,
+};
 pub use debug_draw::{DebugDraw, DebugLine, draw_line, draw_ray, draw_sphere,
     draw_aabb, draw_box_rotated, draw_capsule, draw_cross, draw_grid,
     draw_cone, draw_frustum, drain_debug_lines};

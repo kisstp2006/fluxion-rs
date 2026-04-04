@@ -98,6 +98,11 @@ impl EditorHost {
 
     // ── Default scene ─────────────────────────────────────────────────────────
 
+    /// Public version of spawn_default_scene so main.rs can call it for New Scene.
+    pub fn spawn_default_scene_pub(world: &mut ECSWorld) {
+        Self::spawn_default_scene(world);
+    }
+
     fn spawn_default_scene(world: &mut ECSWorld) {
         // Camera
         let cam = world.spawn(Some("Main Camera"));
@@ -156,7 +161,17 @@ impl EditorHost {
         self.input.begin_frame();
     }
 
-    // ── World context helpers ─────────────────────────────────────────────────
+    /// Editor-only tick: runs transforms and hot-reload but skips physics.
+    /// Used while in Editing / Paused mode.
+    pub fn tick_editor_only(&mut self) {
+        self.time.tick();
+        TransformSystem::update(&mut self.world);
+        self.vm.poll_hot_reload();
+        self.flush_pending_edits();
+        self.input.begin_frame();
+    }
+
+    // ── World context helpers ───────────────────────────────────────────────────
 
     /// Set thread-locals so the Rune world module can access ECS data.
     pub fn push_world_context(&self) {
@@ -171,14 +186,45 @@ impl EditorHost {
     /// Apply queued field mutations produced by Rune inspector panels.
     fn flush_pending_edits(&mut self) {
         for edit in drain_pending_edits() {
-            if let Err(e) = self.registry.set_reflect_field(
-                &edit.component,
-                &self.world,
-                edit.entity,
-                &edit.field,
-                edit.value,
-            ) {
-                log::warn!("EditorHost::flush_pending_edits: {e}");
+            match edit.component.as_str() {
+                "__spawn__" => {
+                    let name = if edit.field.is_empty() { "Entity" } else { &edit.field };
+                    let e = self.world.spawn(Some(name));
+                    self.world.add_component(e, fluxion_core::Transform::new());
+                }
+                "__despawn__" => {
+                    if edit.entity.is_valid() {
+                        self.world.despawn(edit.entity);
+                    }
+                }
+                "__rename__" => {
+                    if edit.entity.is_valid() {
+                        self.world.set_name(edit.entity, &edit.field);
+                    }
+                }
+                "__duplicate__" => {
+                    if edit.entity.is_valid() {
+                        let name = format!("{} (copy)", self.world.get_name(edit.entity));
+                        let new_e = self.world.spawn(Some(&name));
+                        let cloned_transform = self.world
+                            .get_component::<fluxion_core::Transform>(edit.entity)
+                            .map(|t| (*t).clone());
+                        if let Some(t) = cloned_transform {
+                            self.world.add_component(new_e, t);
+                        }
+                    }
+                }
+                _ => {
+                    if let Err(e) = self.registry.set_reflect_field(
+                        &edit.component,
+                        &self.world,
+                        edit.entity,
+                        &edit.field,
+                        edit.value,
+                    ) {
+                        log::warn!("EditorHost::flush_pending_edits: {e}");
+                    }
+                }
             }
         }
     }

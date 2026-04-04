@@ -40,6 +40,22 @@ impl UiShell {
         self.state.egui_ctx()
     }
 
+    /// Register (or re-register) the offscreen viewport texture with the egui-wgpu renderer.
+    /// Returns the `egui::TextureId` to pass to `fluxion::ui::image()`.
+    pub fn register_viewport_texture(
+        &mut self,
+        device: &wgpu::Device,
+        view:   &wgpu::TextureView,
+        _width:  u32,
+        _height: u32,
+    ) -> egui::TextureId {
+        self.renderer.register_native_texture(
+            device,
+            view,
+            wgpu::FilterMode::Linear,
+        )
+    }
+
     pub fn on_window_event(
         &mut self,
         window: &Window,

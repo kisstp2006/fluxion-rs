@@ -70,34 +70,42 @@ impl<'a> egui_dock::TabViewer for RuneTabViewer<'a> {
 /// Build the initial dock layout.
 ///
 /// ```text
-/// ┌─────────────┬────────────────────────┬─────────────┐
-/// │  Hierarchy  │     (centre — empty)   │  Inspector  │
-/// ├─────────────┴────────────────────────┴─────────────┤
+/// ┌────────────┬──────────────────────────┬─────────────┐
+/// │ Hierarchy  │       Viewport           │  Inspector  │
+/// ├────────────┴──────────────────────────┴─────────────┤
 /// │  Console                                            │
 /// └─────────────────────────────────────────────────────┘
 /// ```
 pub fn default_dock_state() -> DockState<EditorTab> {
+    // Centre column: Viewport
     let mut state = DockState::new(vec![
-        EditorTab::new("Hierarchy", "hierarchy::panel"),
+        EditorTab::new("Viewport", "viewport::panel"),
     ]);
 
     let surface = state.main_surface_mut();
 
-    // Split right for Inspector
-    let [left, right] = surface.split_right(
+    // Split left 20% for Hierarchy
+    let [hier_node, centre] = surface.split_left(
         NodeIndex::root(),
-        0.75,
+        0.20,
+        vec![EditorTab::new("Hierarchy", "hierarchy::panel")],
+    );
+
+    // Split right 22% (of remaining) for Inspector
+    let [centre2, _insp] = surface.split_right(
+        centre,
+        0.78,
         vec![EditorTab::new("Inspector", "inspector::panel")],
     );
 
-    // Split bottom for Console
+    // Split bottom 25% for Console (anchor to hierarchy node so it spans the full width)
     surface.split_below(
-        left,
-        0.70,
+        hier_node,
+        0.75,
         vec![EditorTab::new("Console", "console::panel")],
     );
 
-    let _ = right;
+    let _ = centre2;
 
     state
 }

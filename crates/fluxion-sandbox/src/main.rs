@@ -56,8 +56,6 @@ use fluxion_scripting::{
 
 #[cfg(not(target_arch = "wasm32"))]
 mod gamepad;
-#[cfg(not(target_arch = "wasm32"))]
-mod editor_shell;
 
 // ── Entry point ────────────────────────────────────────────────────────────────
 
@@ -117,10 +115,6 @@ struct SandboxInner {
     registry: ComponentRegistry,
     #[cfg(not(target_arch = "wasm32"))]
     gilrs: Option<gilrs::Gilrs>,
-    #[cfg(not(target_arch = "wasm32"))]
-    editor: Option<editor_shell::EditorShell>,
-    #[cfg(not(target_arch = "wasm32"))]
-    editor_state: editor_shell::EditorState,
     #[cfg(not(target_arch = "wasm32"))]
     ui_debug_lines: Vec<String>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -215,76 +209,10 @@ impl SandboxInner {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let win = self.window.clone();
-            let lines = self.ui_debug_lines.clone();
-            let dt = self.time.dt;
-            let smooth_fps = self.time.smooth_fps;
-            let elapsed = self.time.elapsed;
-            let frame = self.time.frame_count;
-            let w = renderer.width;
-            let h = renderer.height;
-            let registry = self.registry.clone();
-            // Capture a raw pointer to world so we can share it between render_with
-            // (which takes &self.world) and the paint closure without a double-borrow.
-            let world_ptr: *const ECSWorld = &self.world;
-            // Push viewport size for Rune scripts (uses renderer dims before render)
-            #[cfg(not(target_arch = "wasm32"))]
             if let Some(ref vm) = self.rune_vm {
                 vm.push_viewport(renderer.width, renderer.height);
             }
-
-            let res = {
-                let editor_state = &mut self.editor_state;
-                if let Some(ref mut editor) = self.editor {
-                    // SAFETY: world_ptr points to self.world which lives for the duration of
-                    // this block. Both render calls + closure take &ECSWorld (shared).
-                    let world_ref: &ECSWorld = unsafe { &*world_ptr };
-
-                    // Step 1: render 3D scene to offscreen viewport texture
-                    if let Err(e) = renderer.render_to_viewport(world_ref, &self.time) {
-                        log::error!("Viewport render: {e}");
-                    }
-
-                    // Step 2: register / update the viewport texture with egui
-                    let (vp_w, vp_h) = (renderer.width, renderer.height);
-                    let tex_id = {
-                        if let Some(view) = renderer.viewport_view() {
-                            Some(editor.update_viewport_texture(&renderer.device, view))
-                        } else {
-                            None
-                        }
-                    };
-
-                    // Step 3: render egui UI to surface (no 3D pipeline)
-                    renderer.render_ui_only(|device, queue, enc, surface_view| {
-                        editor_shell::paint_editor(
-                            editor,
-                            editor_state,
-                            &win,
-                            device,
-                            queue,
-                            enc,
-                            surface_view,
-                            w,
-                            h,
-                            world_ref,
-                            &registry,
-                            &lines,
-                            dt,
-                            smooth_fps,
-                            elapsed,
-                            frame,
-                            tex_id,
-                            vp_w,
-                            vp_h,
-                        )
-                    })
-                } else {
-                    let world_ref: &ECSWorld = unsafe { &*world_ptr };
-                    renderer.render(world_ref, &self.time)
-                }
-            };
-            match res {
+            match renderer.render(&self.world, &self.time) {
                 Ok(()) => {}
                 Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                     let size = self.window.inner_size();
@@ -375,10 +303,6 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
         #[cfg(not(target_arch = "wasm32"))]
         gilrs: gilrs::Gilrs::new().ok(),
         #[cfg(not(target_arch = "wasm32"))]
-        editor: None,
-        #[cfg(not(target_arch = "wasm32"))]
-        editor_state: editor_shell::EditorState::new(),
-        #[cfg(not(target_arch = "wasm32"))]
         ui_debug_lines: Vec::new(),
         #[cfg(not(target_arch = "wasm32"))]
         physics_ecs,
@@ -432,15 +356,6 @@ fn finish_renderer_setup(g: &mut SandboxInner) {
     }
 
     renderer.gizmos_enabled = true;
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        g.editor = Some(editor_shell::EditorShell::new(
-            g.window.as_ref(),
-            &renderer.device,
-            renderer.surface_format(),
-        ));
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -738,16 +653,6 @@ impl ApplicationHandler for SandboxApp {
         let SandboxApp::Running(rc) = self else { return };
         let mut state = rc.borrow_mut();
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let egui_consumed = {
-            let win = state.window.clone();
-            state
-                .editor
-                .as_mut()
-                .map(|e| e.on_window_event(win.as_ref(), &event).consumed)
-                .unwrap_or(false)
-        };
-        #[cfg(target_arch = "wasm32")]
         let egui_consumed = false;
 
         match event {

@@ -1,15 +1,23 @@
 // ============================================================
 // console.rn — Console panel
 //
-// Displays log lines accumulated via fluxion::world::log and
-// fluxion::debug::log (the latter routes through Rust log::info
-// which is not yet captured here — only direct world::log calls).
+// Displays log lines from fluxion::world::log_lines().
+// Lines prefixed with [WARN] are shown in yellow,
+// [ERROR] in red, all others in the default color.
 // ============================================================
 
 pub mod console {
 
 pub fn panel() {
     let lines = fluxion::world::log_lines();
+
+    // Toolbar row: line count + Clear button
+    fluxion::ui::label(`${lines.len()} messages`);
+    fluxion::ui::separator();
+    if fluxion::ui::button("🗑 Clear") {
+        fluxion::world::clear_log();
+    }
+    fluxion::ui::separator();
 
     if lines.is_empty() {
         fluxion::ui::small("(no messages)");
@@ -18,9 +26,16 @@ pub fn panel() {
 
     // Show last 200 lines to avoid overwhelming the UI.
     let start = if lines.len() > 200 { lines.len() - 200 } else { 0 };
-    let mut i = start;
+    let i = start;
     while i < lines.len() {
-        fluxion::ui::small(lines[i]);
+        let line = lines[i];
+        if line.starts_with("[ERROR]") {
+            fluxion::ui::colored_label(line, 1.0, 0.35, 0.35);
+        } else if line.starts_with("[WARN]") {
+            fluxion::ui::colored_label(line, 1.0, 0.85, 0.2);
+        } else {
+            fluxion::ui::small(line);
+        }
         i += 1;
     }
 }

@@ -1,5 +1,6 @@
 pub mod ui_module;
 pub mod world_module;
+pub mod viewport_module;
 
 use anyhow::Result;
 use rune::Module;
@@ -10,10 +11,12 @@ pub use world_module::{
     drain_pending_edits, PendingEdit,
     push_log, get_selected_id,
 };
+pub use viewport_module::set_viewport_texture;
 
 pub fn all_editor_modules() -> Result<Vec<Module>> {
     Ok(vec![
         ui_module::build_ui_module()?,
         world_module::build_world_module()?,
+        viewport_module::build_viewport_module()?,
     ])
 }

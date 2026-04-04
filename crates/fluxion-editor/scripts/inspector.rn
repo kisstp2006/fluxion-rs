@@ -4,6 +4,7 @@
 // Renders editable property widgets for all reflected components
 // on the currently selected entity.  Field type is detected via
 // fluxion::world::field_type and the appropriate widget is used.
+// Quaternion fields are displayed as Euler angles (degrees).
 // ============================================================
 
 pub mod inspector {
@@ -78,9 +79,14 @@ pub fn panel() {
                         fluxion::world::set_vec3(sel, comp, field, [nx, ny, nz]);
                     }
                 } else if ft == "quat" {
-                    let v = fluxion::world::get_quat(sel, comp, field);
-                    fluxion::ui::label(`${field} (XYZW)`);
-                    fluxion::ui::label(`  X=${v[0]}  Y=${v[1]}  Z=${v[2]}  W=${v[3]}`);
+                    let v = fluxion::world::get_euler(sel, comp, field);
+                    fluxion::ui::label(`${field} (Euler °)`);
+                    let nx = fluxion::ui::drag_float("  Pitch", v[0], 0.5, -360.0, 360.0);
+                    let ny = fluxion::ui::drag_float("  Yaw",   v[1], 0.5, -360.0, 360.0);
+                    let nz = fluxion::ui::drag_float("  Roll",  v[2], 0.5, -360.0, 360.0);
+                    if nx != v[0] || ny != v[1] || nz != v[2] {
+                        fluxion::world::set_euler(sel, comp, field, [nx, ny, nz]);
+                    }
                 } else if ft == "color3" {
                     let v = fluxion::world::get_color3(sel, comp, field);
                     if ro {

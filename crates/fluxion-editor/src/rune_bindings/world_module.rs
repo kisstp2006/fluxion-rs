@@ -17,6 +17,7 @@ use fluxion_core::{
     ComponentRegistry, ECSWorld, EntityId,
     reflect::{FieldDescriptor, ReflectFieldType, ReflectValue},
 };
+use glam::EulerRot;
 
 // ── Thread-local context ──────────────────────────────────────────────────────
 
@@ -127,7 +128,7 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         })
     }).build()?;
 
-    m.function("select", |id: String| {
+    m.function("set_selected", |id: String| {
         if id.is_empty() {
             SELECTED.with(|s| *s.borrow_mut() = None);
             return;
@@ -375,6 +376,32 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         let _ = result;
     }).build()?;
 
+    // ── Entity creation / deletion ────────────────────────────────────────────
+    // NOTE: spawn/despawn require &mut ECSWorld which we don't hold here.
+    // We queue a special SpawnPending / DespawnPending that host.rs applies.
+
+    m.function("create_entity", |name: String| {
+        PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+            entity:    fluxion_core::EntityId::INVALID,
+            component: "__spawn__".to_string(),
+            field:     name,
+            value:     fluxion_core::reflect::ReflectValue::Bool(true),
+        }));
+    }).build()?;
+
+    m.function("despawn", |id: String| {
+        with_ctx(|world, _| {
+            if let Some(entity) = str_to_entity(world, &id) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity,
+                    component: "__despawn__".to_string(),
+                    field:     String::new(),
+                    value:     fluxion_core::reflect::ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
     // ── Console log access ────────────────────────────────────────────────────
 
     m.function("log_lines", || -> Vec<String> {
@@ -383,6 +410,84 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     m.function("log", |line: String| {
         push_log(line);
+    }).build()?;
+
+    m.function("clear_log", || {
+        LOG_LINES.with(|l| l.borrow_mut().clear());
+    }).build()?;
+
+    m.function("log_with_level", |level: String, msg: String| {
+        let prefix = match level.to_lowercase().as_str() {
+            "warn" | "warning" => "[WARN] ",
+            "error"            => "[ERROR] ",
+            "info"             => "[INFO] ",
+            _                  => "[LOG] ",
+        };
+        push_log(format!("{prefix}{msg}"));
+    }).build()?;
+
+    // ── Entity rename / duplicate ─────────────────────────────────────────────
+
+    m.function("rename_entity", |id: String, name: String| {
+        with_ctx(|world, _| {
+            if let Some(entity) = str_to_entity(world, &id) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity,
+                    component: "__rename__".to_string(),
+                    field:     name,
+                    value:     fluxion_core::reflect::ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    m.function("duplicate_entity", |id: String| {
+        with_ctx(|world, _| {
+            if let Some(entity) = str_to_entity(world, &id) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity,
+                    component: "__duplicate__".to_string(),
+                    field:     String::new(),
+                    value:     fluxion_core::reflect::ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    // ── Euler angle helpers (degrees) ─────────────────────────────────────────
+
+    /// Returns [pitch_deg, yaw_deg, roll_deg] for a Quat field.
+    m.function("get_euler", |id: String, component: String, field: String| -> Vec<f64> {
+        with_ctx(|world, registry| {
+            let entity = str_to_entity(world, &id)?;
+            let reflect = registry.get_reflect(&component, world, entity)?;
+            match reflect.get_field(&field)? {
+                ReflectValue::Quat([x, y, z, w]) => {
+                    let q = glam::Quat::from_xyzw(x, y, z, w);
+                    let (rx, ry, rz) = q.to_euler(EulerRot::XYZ);
+                    Some(vec![
+                        rx.to_degrees() as f64,
+                        ry.to_degrees() as f64,
+                        rz.to_degrees() as f64,
+                    ])
+                }
+                _ => None,
+            }
+        }).flatten().unwrap_or_else(|| vec![0.0, 0.0, 0.0])
+    }).build()?;
+
+    /// Queues a Quat set from [pitch_deg, yaw_deg, roll_deg].
+    m.function("set_euler", |id: String, component: String, field: String, vals: Vec<f64>| {
+        if vals.len() >= 3 {
+            if let Some(e) = with_ctx(|world, _| str_to_entity(world, &id)).flatten() {
+                let rx = (vals[0] as f32).to_radians();
+                let ry = (vals[1] as f32).to_radians();
+                let rz = (vals[2] as f32).to_radians();
+                let q = glam::Quat::from_euler(EulerRot::XYZ, rx, ry, rz);
+                queue_edit(e, component, field,
+                    ReflectValue::Quat([q.x, q.y, q.z, q.w]));
+            }
+        }
     }).build()?;
 
     Ok(m)

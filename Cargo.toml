@@ -33,3 +33,6 @@ egui        = "0.29"
 egui-wgpu   = "0.29"
 egui-winit  = "0.29"
 egui_dock   = "0.14"
+dirs-next   = "2.0"
+chrono      = { version = "0.4", features = ["clock"] }
+rfd         = "0.15"
