@@ -23,6 +23,7 @@ anyhow      = "1"
 log         = "0.4"
 bytemuck    = { version = "1", features = ["derive"] }
 hecs        = "0.10"
+lazy_static = "1"
 wgpu        = { version = "22", features = ["wgsl"] }
 winit       = "0.30"
 image       = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

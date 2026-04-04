@@ -22,6 +22,8 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use wgpu::TextureView;
 
+use fluxion_core::DebugLine;
+
 use crate::texture::GpuTexture;
 use crate::lighting::LightUniform;
 use crate::mesh::MeshRegistry;
@@ -117,6 +119,8 @@ pub struct FrameData {
     pub sky:         SkyParams,
     /// Billboard particles (world space), drawn in overlay pass.
     pub particles:   Vec<ParticleInstance>,
+    /// Debug line segments drained from `fluxion_core::drain_debug_lines()` each frame.
+    pub debug_lines: Vec<DebugLine>,
 }
 
 // ── Shared GPU render targets ─────────────────────────────────────────────────

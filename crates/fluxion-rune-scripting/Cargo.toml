@@ -6,6 +6,7 @@ description = "FluxionRS Rune scripting VM with hot-reload support."
 
 [dependencies]
 fluxion-core = { path = "../fluxion-core" }
+glam         = { workspace = true }
 anyhow       = { workspace = true }
 log          = { workspace = true }
 serde        = { workspace = true }

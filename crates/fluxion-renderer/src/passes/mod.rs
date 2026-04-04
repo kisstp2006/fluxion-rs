@@ -9,6 +9,7 @@ pub mod bloom;
 pub mod ssao;
 pub mod tonemap;
 pub mod particles;
+pub mod debug_lines;
 
 pub use geometry::GeometryPass;
 pub use lighting::LightingPass;
@@ -17,3 +18,4 @@ pub use bloom::BloomPass;
 pub use ssao::SsaoPass;
 pub use tonemap::TonemapPass;
 pub use particles::ParticleOverlayPass;
+pub use debug_lines::DebugLinePass;

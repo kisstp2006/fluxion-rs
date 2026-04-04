@@ -29,6 +29,7 @@ pub mod input;
 pub mod facade;
 pub mod assets;
 pub mod particles;
+pub mod color;
 pub mod debug_draw;
 pub mod registry;
 pub mod reflect;
@@ -57,7 +58,10 @@ pub use reflect::{ParameterDescriptor, MethodDescriptor, MethodType, MethodVisib
 pub use fluxion_reflect_derive::Reflect as DeriveReflect;
 pub use components::{RigidBody, PhysicsShape, BodyType};
 pub use particles::step_particle_emitters;
-pub use debug_draw::{DebugDraw, DebugLine};
+pub use color::Color;
+pub use debug_draw::{DebugDraw, DebugLine, draw_line, draw_ray, draw_sphere,
+    draw_aabb, draw_box_rotated, draw_capsule, draw_cross, draw_grid,
+    draw_cone, draw_frustum, drain_debug_lines};
 
 // WASM entry-point: sets up the browser panic hook so Rust panics appear
 // as readable messages in the browser console instead of "unreachable".

@@ -46,3 +46,6 @@ pub const SKYBOX: &str = include_str!("../../../../assets/shaders/skybox.wgsl");
 
 /// Instanced billboard particles (overlay, alpha blend).
 pub const PARTICLES: &str = include_str!("../../../../assets/shaders/particles.wgsl");
+
+/// Debug line overlay — colored LineList, no depth test.
+pub const DEBUG_LINES: &str = include_str!("../../../../assets/shaders/debug_lines.wgsl");

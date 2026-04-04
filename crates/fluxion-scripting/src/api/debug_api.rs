@@ -13,27 +13,10 @@
 //   Debug.Break()
 // ============================================================
 
-use std::sync::Mutex;
 use fluxion_core::ReflectValue;
+use fluxion_core::Color;
+use fluxion_core::debug_draw;
 use crate::binding_registry::{BindingEntry, ParamMeta, ScriptBindingRegistry, ScriptType};
-
-#[derive(Debug, Clone)]
-pub struct DebugDrawRequest {
-    pub start:    [f32; 3],
-    pub end:      [f32; 3],
-    pub color:    [f32; 4],
-    pub duration: f32,
-}
-
-lazy_static::lazy_static! {
-    pub static ref DEBUG_DRAW_QUEUE: Mutex<Vec<DebugDrawRequest>> = Mutex::new(Vec::new());
-}
-
-pub fn drain_draw_requests() -> Vec<DebugDrawRequest> {
-    DEBUG_DRAW_QUEUE.lock()
-        .map(|mut q| std::mem::take(&mut *q))
-        .unwrap_or_default()
-}
 
 fn as_str(v: &ReflectValue) -> String {
     match v { ReflectValue::Str(s) => s.clone(), _ => String::new() }
@@ -119,13 +102,14 @@ pub fn register(reg: &mut ScriptBindingRegistry) {
         ],
         None,
         |args| {
-            let start    = as_vec3(args.first());
-            let end      = as_vec3(args.get(1));
-            let color    = as_color(args.get(2));
-            let duration = args.get(3).map(as_f32).unwrap_or(0.0);
-            if let Ok(mut q) = DEBUG_DRAW_QUEUE.lock() {
-                q.push(DebugDrawRequest { start, end, color, duration });
-            }
+            let [sx, sy, sz] = as_vec3(args.first());
+            let [ex, ey, ez] = as_vec3(args.get(1));
+            let [r, g, b, a] = as_color(args.get(2));
+            debug_draw::draw_line(
+                glam::Vec3::new(sx, sy, sz),
+                glam::Vec3::new(ex, ey, ez),
+                Color::Custom(r, g, b, a),
+            );
             Ok(None)
         },
     ));
@@ -141,14 +125,78 @@ pub fn register(reg: &mut ScriptBindingRegistry) {
         ],
         None,
         |args| {
-            let origin = as_vec3(args.first());
-            let dir    = as_vec3(args.get(1));
-            let end    = [origin[0]+dir[0], origin[1]+dir[1], origin[2]+dir[2]];
-            let color  = as_color(args.get(2));
-            let dur    = args.get(3).map(as_f32).unwrap_or(0.0);
-            if let Ok(mut q) = DEBUG_DRAW_QUEUE.lock() {
-                q.push(DebugDrawRequest { start: origin, end, color, duration: dur });
-            }
+            let [ox, oy, oz] = as_vec3(args.first());
+            let [dx, dy, dz] = as_vec3(args.get(1));
+            let [r, g, b, a] = as_color(args.get(2));
+            debug_draw::draw_ray(
+                glam::Vec3::new(ox, oy, oz),
+                glam::Vec3::new(dx, dy, dz),
+                Color::Custom(r, g, b, a),
+            );
+            Ok(None)
+        },
+    ));
+
+    reg.register("Debug", BindingEntry::new(
+        "DrawSphere",
+        "Draws a wireframe sphere in the scene view.",
+        vec![
+            ParamMeta::new("center", ScriptType::Vec3),
+            ParamMeta::new("radius", ScriptType::Float),
+            ParamMeta::new("color",  ScriptType::Vec4).optional(),
+        ],
+        None,
+        |args| {
+            let [cx, cy, cz] = as_vec3(args.first());
+            let radius       = args.get(1).map(as_f32).unwrap_or(1.0);
+            let [r, g, b, a] = as_color(args.get(2));
+            debug_draw::draw_sphere(
+                glam::Vec3::new(cx, cy, cz),
+                radius,
+                Color::Custom(r, g, b, a),
+            );
+            Ok(None)
+        },
+    ));
+
+    reg.register("Debug", BindingEntry::new(
+        "DrawBox",
+        "Draws a wireframe axis-aligned box in the scene view.",
+        vec![
+            ParamMeta::new("center",      ScriptType::Vec3),
+            ParamMeta::new("halfExtents", ScriptType::Vec3),
+            ParamMeta::new("color",       ScriptType::Vec4).optional(),
+        ],
+        None,
+        |args| {
+            let [cx, cy, cz] = as_vec3(args.first());
+            let [hx, hy, hz] = as_vec3(args.get(1));
+            let [r, g, b, a] = as_color(args.get(2));
+            let center = glam::Vec3::new(cx, cy, cz);
+            let half   = glam::Vec3::new(hx, hy, hz);
+            debug_draw::draw_aabb(center - half, center + half, Color::Custom(r, g, b, a));
+            Ok(None)
+        },
+    ));
+
+    reg.register("Debug", BindingEntry::new(
+        "DrawCross",
+        "Draws a cross (3 axis lines) at the given position.",
+        vec![
+            ParamMeta::new("position", ScriptType::Vec3),
+            ParamMeta::new("size",     ScriptType::Float).optional(),
+            ParamMeta::new("color",    ScriptType::Vec4).optional(),
+        ],
+        None,
+        |args| {
+            let [px, py, pz] = as_vec3(args.first());
+            let size         = args.get(1).map(as_f32).unwrap_or(1.0);
+            let [r, g, b, a] = as_color(args.get(2));
+            debug_draw::draw_cross(
+                glam::Vec3::new(px, py, pz),
+                size,
+                Color::Custom(r, g, b, a),
+            );
             Ok(None)
         },
     ));

@@ -1020,6 +1020,7 @@ dependencies = [
  "fluxion-reflect-derive",
  "glam",
  "hecs",
+ "lazy_static",
  "log",
  "serde",
  "serde_json",
@@ -1099,6 +1100,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fluxion-core",
+ "glam",
  "log",
  "notify",
  "rune",

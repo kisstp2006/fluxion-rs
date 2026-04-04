@@ -10,6 +10,8 @@ use rune::Module;
 
 /// Debug / logging module: `fluxion::debug`
 pub fn build_debug_module() -> anyhow::Result<Module> {
+    use fluxion_core::{Color, debug_draw};
+
     let mut m = Module::with_crate_item("fluxion", ["debug"])?;
 
     m.function("log", |msg: String| {
@@ -23,6 +25,20 @@ pub fn build_debug_module() -> anyhow::Result<Module> {
     m.function("error", |msg: String| {
         log::error!("[Rune] {msg}");
     }).build()?;
+
+    // ── Draw functions (Rune 0.14 Function trait is implemented only up to arity 5) ──
+    // 4-arg variants compile; 6-arg variants (draw_line, draw_ray, draw_box) exceed
+    // the arity limit and must use the JS scripting API instead.
+
+    let draw_sphere_fn: fn(f64,f64,f64,f64) = |cx,cy,cz,r| {
+        debug_draw::draw_sphere(glam::Vec3::new(cx as f32,cy as f32,cz as f32), r as f32, Color::White);
+    };
+    m.function("draw_sphere", draw_sphere_fn).build()?;
+
+    let draw_cross_fn: fn(f64,f64,f64,f64) = |px,py,pz,s| {
+        debug_draw::draw_cross(glam::Vec3::new(px as f32,py as f32,pz as f32), s as f32, Color::White);
+    };
+    m.function("draw_cross", draw_cross_fn).build()?;
 
     Ok(m)
 }

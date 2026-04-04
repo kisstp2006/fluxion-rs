@@ -431,6 +431,8 @@ fn finish_renderer_setup(g: &mut SandboxInner) {
         renderer.apply_scene_settings(s.clone());
     }
 
+    renderer.gizmos_enabled = true;
+
     #[cfg(not(target_arch = "wasm32"))]
     {
         g.editor = Some(editor_shell::EditorShell::new(

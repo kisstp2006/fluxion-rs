@@ -26,19 +26,22 @@ use wgpu::SurfaceError;
 
 use fluxion_core::{
     ECSWorld, EntityId,
+    Color,
     assets,
-    components::{Camera, Light, MeshRenderer, ParticleEmitter},
+    components::{Camera, Light, MeshRenderer, ParticleEmitter, RigidBody, PhysicsShape},
     components::light::LightType,
+    components::camera::ProjectionMode,
     scene::SceneSettings,
     transform::Transform,
     time::Time,
+    debug_draw,
 };
 
 use crate::{
     config::RendererConfig,
     render_graph::{RenderGraph, PassSlot, RenderContext, RenderResources},
     render_graph::context::{FrameData, CameraData, MeshDrawCall, SkyParams, ParticleInstance},
-    passes::{GeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, ParticleOverlayPass},
+    passes::{GeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, ParticleOverlayPass, DebugLinePass},
     lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT, MAX_LIGHTS},
     material::MaterialRegistry,
     mesh::{GpuMesh, MeshRegistry},
@@ -93,6 +96,10 @@ pub struct FluxionRenderer {
 
     pub width:  u32,
     pub height: u32,
+
+    /// When `true`, component gizmos (camera frustum, collider wireframe, light, particles)
+    /// and the editor grid are drawn as a debug overlay every frame.
+    pub gizmos_enabled: bool,
 
     /// Offscreen render target for the editor viewport panel.
     /// Recreated automatically when the window is resized.
@@ -231,7 +238,8 @@ impl FluxionRenderer {
         render_graph.add_pass("ssao",      PassSlot::Ssao,     Box::new(ssao));
         render_graph.add_pass("bloom",     PassSlot::Bloom,    Box::new(bloom));
         render_graph.add_pass("tonemap",   PassSlot::Tonemap,  Box::new(tonemap));
-        render_graph.add_pass("particles", PassSlot::Overlay,  Box::new(ParticleOverlayPass::new(surface_format)));
+        render_graph.add_pass("particles",   PassSlot::Overlay,  Box::new(ParticleOverlayPass::new(surface_format)));
+        render_graph.add_pass("debug_lines", PassSlot::Overlay,  Box::new(DebugLinePass::new(surface_format)));
 
         // Apply per-pass enable flags from config.
         render_graph.set_enabled("skybox",    config.passes.skybox);
@@ -254,6 +262,7 @@ impl FluxionRenderer {
             config,
             max_lights,
             width: w, height: h,
+            gizmos_enabled: false,
             viewport_texture: None,
         })
     }
@@ -941,6 +950,11 @@ impl FluxionRenderer {
             }
         });
 
+        if self.gizmos_enabled {
+            self.populate_gizmos(world);
+        }
+        let debug_lines = debug_draw::drain_debug_lines();
+
         FrameData {
             camera,
             draw_calls,
@@ -949,7 +963,122 @@ impl FluxionRenderer {
             time: time.elapsed,
             sky,
             particles,
+            debug_lines,
         }
+    }
+
+    /// Draw component gizmos for every entity in the world that has a recognisable component.
+    /// Pushes into `fluxion_core::debug_draw` global (drained immediately after).
+    fn populate_gizmos(&self, world: &ECSWorld) {
+        let (w, h) = (self.width as f32, self.height as f32);
+        let aspect = if h > 0.0 { w / h } else { 1.0 };
+
+        // Editor grid (XZ plane)
+        debug_draw::draw_grid(100.0, 100, Color::Custom(0.18, 0.20, 0.22, 1.0));
+
+        // ── Camera frustum ────────────────────────────────────────────────────
+        world.query_active::<(&Transform, &Camera), _>(|_id, (t, cam)| {
+            if !cam.is_active { return; }
+            let fwd   = t.world_forward();
+            let up    = t.world_up();
+            let right = fwd.cross(up).normalize_or_zero();
+            let up2   = right.cross(fwd).normalize_or_zero();
+            let vis_far = (cam.far * 0.08).clamp(1.0, 20.0);
+            match cam.projection_mode {
+                ProjectionMode::Perspective => {
+                    debug_draw::draw_frustum(
+                        t.world_position, fwd, up2, right,
+                        cam.fov, aspect, cam.near, vis_far,
+                        Color::Yellow,
+                    );
+                }
+                ProjectionMode::Orthographic => {
+                    // Draw a simple box for ortho cameras
+                    let hw = cam.ortho_size * aspect;
+                    let hh = cam.ortho_size;
+                    let c  = Color::Custom(0.9, 0.8, 0.1, 1.0);
+                    debug_draw::draw_aabb(
+                        t.world_position - glam::Vec3::new(hw, hh, 0.1),
+                        t.world_position + glam::Vec3::new(hw, hh, vis_far),
+                        c,
+                    );
+                }
+            }
+        });
+
+        // ── Light gizmos ──────────────────────────────────────────────────────
+        world.query_active::<(&Transform, &Light), _>(|_id, (t, light)| {
+            let pos = t.world_position;
+            let c = Color::Custom(light.color[0], light.color[1], light.color[2], 1.0);
+            match light.light_type {
+                LightType::Point => {
+                    debug_draw::draw_sphere(pos, light.range, c);
+                }
+                LightType::Spot => {
+                    let fwd = t.world_forward();
+                    let half_angle = (light.spot_angle * 0.5).to_radians();
+                    debug_draw::draw_cone(pos, fwd, half_angle, light.range, 8, c);
+                }
+                LightType::Directional => {
+                    let fwd   = t.world_forward();
+                    let right = t.world_up().cross(fwd).normalize_or_zero();
+                    let up    = fwd.cross(right).normalize_or_zero();
+                    let len   = 1.5_f32;
+                    let offsets = [
+                        glam::Vec3::ZERO,
+                        right * 0.5, -right * 0.5,
+                        up * 0.5,    -up * 0.5,
+                    ];
+                    for off in offsets {
+                        debug_draw::draw_line(pos + off, pos + off + fwd * len, c);
+                    }
+                }
+            }
+        });
+
+        // ── Particle emitter cones ────────────────────────────────────────────
+        world.query_active::<(&Transform, &ParticleEmitter), _>(|_id, (t, pe)| {
+            let half_angle = (pe.spread_degrees * 0.5).to_radians();
+            let emit_dir   = t.world_up();
+            debug_draw::draw_cone(
+                t.world_position, emit_dir, half_angle, 1.5,
+                8, Color::Orange,
+            );
+        });
+
+        // ── RigidBody collider wireframes ─────────────────────────────────────
+        world.query_active::<(&Transform, &RigidBody), _>(|_id, (t, rb)| {
+            let pos = t.world_position;
+            let rot = t.world_rotation;
+            let c   = Color::Lime;
+            match rb.shape {
+                PhysicsShape::Box { half_extents } => {
+                    debug_draw::draw_box_rotated(
+                        pos,
+                        glam::Vec3::from(half_extents),
+                        rot, c,
+                    );
+                }
+                PhysicsShape::Sphere { radius } => {
+                    debug_draw::draw_sphere(pos, radius, c);
+                }
+                PhysicsShape::Capsule { half_height, radius } => {
+                    debug_draw::draw_capsule(pos, half_height, radius, rot, c);
+                }
+                PhysicsShape::HalfSpace => {
+                    debug_draw::draw_line(
+                        pos - glam::Vec3::X * 10.0,
+                        pos + glam::Vec3::X * 10.0,
+                        c,
+                    );
+                    debug_draw::draw_line(
+                        pos - glam::Vec3::Z * 10.0,
+                        pos + glam::Vec3::Z * 10.0,
+                        c,
+                    );
+                }
+            }
+        });
     }
 
     fn compute_sky_params(settings: &SceneSettings, lights: &[LightUniform]) -> SkyParams {
