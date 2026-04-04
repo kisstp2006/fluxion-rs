@@ -313,6 +313,34 @@ impl ComponentRegistry {
             Ok(())
         });
 
+        // ── RigidBody ─────────────────────────────────────────────────────────
+        self.register("RigidBody", |data, world, entity| {
+            use crate::components::rigid_body::{BodyType, PhysicsShape, RigidBody};
+            let mut rb = RigidBody::default();
+            if let Some(bt) = data.get("bodyType").and_then(|v| v.as_str()) {
+                rb.body_type = match bt {
+                    "Dynamic"   => BodyType::Dynamic,
+                    "Kinematic" => BodyType::Kinematic,
+                    "Static"    => BodyType::Static,
+                    _           => BodyType::Dynamic,
+                };
+            }
+            if let Some(shape_val) = data.get("shape") {
+                if let Ok(s) = serde_json::from_value::<PhysicsShape>(shape_val.clone()) {
+                    rb.shape = s;
+                }
+            }
+            rb.mass            = data.get("mass").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+            rb.linear_damping  = data.get("linearDamping").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            rb.angular_damping = data.get("angularDamping").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            rb.gravity_scale   = data.get("gravityScale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+            rb.can_sleep       = data.get("canSleep").and_then(|v| v.as_bool()).unwrap_or(true);
+            rb.restitution     = data.get("restitution").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            rb.friction        = data.get("friction").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+            world.add_component(entity, rb);
+            Ok(())
+        });
+
         // ── Reflect accessors for all built-in types ──────────────────────────
         // Allows the editor to read / write component fields at runtime.
         self.register_reflect::<Transform>("Transform");
@@ -322,6 +350,10 @@ impl ComponentRegistry {
         {
             use crate::components::particle_emitter::ParticleEmitter;
             self.register_reflect::<ParticleEmitter>("ParticleEmitter");
+        }
+        {
+            use crate::components::rigid_body::RigidBody;
+            self.register_reflect::<RigidBody>("RigidBody");
         }
     }
 }

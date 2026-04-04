@@ -217,6 +217,15 @@ impl ECSWorld {
             .unwrap_or(false)
     }
 
+    /// Returns all tag strings on a given entity.
+    /// Returns an empty iterator if the entity has no tags.
+    pub fn tags_of(&self, id: EntityId) -> impl Iterator<Item = &str> {
+        self.entity_tags
+            .get(&id.0)
+            .into_iter()
+            .flat_map(|set| set.iter().map(|s| s.as_str()))
+    }
+
     /// Returns all entities that have a given tag. O(1) lookup.
     pub fn entities_with_tag(&self, tag: &str) -> impl Iterator<Item = EntityId> + '_ {
         self.tag_index

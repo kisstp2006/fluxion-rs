@@ -115,7 +115,7 @@ struct SandboxInner {
     #[cfg(not(target_arch = "wasm32"))]
     ui_debug_lines: Vec<String>,
     #[cfg(not(target_arch = "wasm32"))]
-    physics_demo: Option<(fluxion_physics::PhysicsWorld, fluxion_physics::RigidBodyHandle)>,
+    physics_ecs: Option<fluxion_physics::PhysicsEcsWorld>,
     #[cfg(not(target_arch = "wasm32"))]
     _audio_keepalive: Option<fluxion_audio::AudioEngine>,
 }
@@ -142,7 +142,16 @@ impl SandboxInner {
             if let Err(e) = self.scripts.fixed_update(self.time.fixed_dt) {
                 log::warn!("Script fixed_update error: {e}");
             }
+            // Propagate script-driven transforms before physics reads them.
             TransformSystem::update(&mut self.world);
+
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(ref mut phys) = self.physics_ecs {
+                phys.sync_from_ecs(&self.world);        // register new RigidBody entities
+                phys.step(self.time.fixed_dt);           // advance simulation
+                phys.sync_to_ecs(&self.world);           // write positions → Transform (Dynamic only)
+                TransformSystem::update(&mut self.world); // propagate dirty flags to children
+            }
         }
 
         if let Err(e) = bindings::update_time_global(
@@ -176,10 +185,6 @@ impl SandboxInner {
 
         step_particle_emitters(&mut self.world, dt);
 
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some((ref mut pw, _)) = self.physics_demo.as_mut() {
-            pw.step(dt);
-        }
 
         self.input.begin_frame();
 
@@ -198,11 +203,7 @@ impl SandboxInner {
             let frame = self.time.frame_count;
             let scene_loaded = self.loaded_scene_settings.is_some();
             let gamepad = self.input.gamepad_connected;
-            let ball_y = self
-                .physics_demo
-                .as_ref()
-                .and_then(|(w, h)| w.body_translation(*h))
-                .map(|p| p.y);
+            let ball_y: Option<f32> = None; // physics_demo removed; use entity Transform.y for debug
             let w = renderer.width;
             let h = renderer.height;
             let res = if let Some(ref mut egui) = self.egui {
@@ -279,12 +280,7 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
         .map(|s| Vec3::from_array(s.physics_gravity))
         .unwrap_or(Vec3::new(0.0, -9.81, 0.0));
     #[cfg(not(target_arch = "wasm32"))]
-    let physics_demo = {
-        let mut w = fluxion_physics::PhysicsWorld::new(grav);
-        w.add_ground_plane();
-        let ball = w.add_ball(0.25, Vec3::new(0.0, 2.5, 0.0));
-        Some((w, ball))
-    };
+    let physics_ecs = Some(fluxion_physics::PhysicsEcsWorld::new(grav));
     #[cfg(not(target_arch = "wasm32"))]
     let _audio_keepalive = fluxion_audio::AudioEngine::try_new();
 
@@ -305,7 +301,7 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
         #[cfg(not(target_arch = "wasm32"))]
         ui_debug_lines: Vec::new(),
         #[cfg(not(target_arch = "wasm32"))]
-        physics_demo,
+        physics_ecs,
         #[cfg(not(target_arch = "wasm32"))]
         _audio_keepalive,
     }));
@@ -601,6 +597,24 @@ impl ApplicationHandler for SandboxApp {
                     if let PhysicalKey::Code(KeyCode::Escape) = key_ev.physical_key {
                         event_loop.exit();
                         return;
+                    }
+
+                    // Ctrl+S — save the current world to sandbox_save.scene
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let PhysicalKey::Code(KeyCode::KeyS) = key_ev.physical_key {
+                        let mut reg = ComponentRegistry::new();
+                        reg.register_builtins();
+                        let scene = fluxion_core::world_to_scene_data(
+                            &state.world,
+                            &reg,
+                            "sandbox_save".to_string(),
+                            fluxion_core::scene::SceneSettings::default(),
+                            None,
+                        );
+                        match fluxion_core::scene::save_scene_file("sandbox_save.scene", &scene) {
+                            Ok(()) => log::info!("Scene saved to sandbox_save.scene"),
+                            Err(e) => log::error!("Scene save failed: {e}"),
+                        }
                     }
                 }
                 if egui_consumed {

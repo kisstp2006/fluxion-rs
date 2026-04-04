@@ -48,8 +48,11 @@ pub use scene::{
     instantiate_entities, load_scene_from_bytes, load_scene_into_world, parse_prefab_json,
     spawn_prefab_into_world, PrefabFileData,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use scene::world_to_scene_data;
 pub use registry::ComponentRegistry;
 pub use reflect::{Reflect, ReflectValue, FieldDescriptor, ReflectFieldType, RangeHint};
+pub use components::{RigidBody, PhysicsShape, BodyType};
 pub use particles::step_particle_emitters;
 pub use debug_draw::{DebugDraw, DebugLine};
 

@@ -17,8 +17,10 @@ pub mod mesh_renderer;
 pub mod camera;
 pub mod light;
 pub mod particle_emitter;
+pub mod rigid_body;
 
 pub use mesh_renderer::MeshRenderer;
 pub use camera::{Camera, ProjectionMode};
 pub use light::{Light, LightType};
 pub use particle_emitter::{Particle, ParticleEmitter};
+pub use rigid_body::{RigidBody, PhysicsShape, BodyType};

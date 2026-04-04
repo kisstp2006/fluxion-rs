@@ -1,0 +1,214 @@
+{
+  "name": "sandbox_save",
+  "version": 2,
+  "settings": {
+    "ambientColor": [
+      0.2,
+      0.2,
+      0.3
+    ],
+    "ambientIntensity": 0.3,
+    "fogEnabled": false,
+    "fogColor": [
+      0.5,
+      0.6,
+      0.7
+    ],
+    "fogDensity": 0.01,
+    "skybox": null,
+    "physicsGravity": [
+      0.0,
+      -9.81,
+      0.0
+    ]
+  },
+  "entities": [
+    {
+      "id": 1,
+      "name": "MainCamera",
+      "parent": null,
+      "tags": [],
+      "components": [
+        {
+          "type": "Transform",
+          "data": {
+            "position": [
+              0.0,
+              1.2000000476837158,
+              4.0
+            ],
+            "rotation": [
+              -0.25999999046325684,
+              0.0,
+              0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "type": "Camera",
+          "data": {
+            "far": 200.0,
+            "fov": 60.0,
+            "isMain": true,
+            "isOrthographic": false,
+            "near": 0.10000000149011612,
+            "orthoSize": 10.0
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Sun",
+      "parent": null,
+      "tags": [],
+      "components": [
+        {
+          "type": "Transform",
+          "data": {
+            "position": [
+              0.0,
+              10.0,
+              0.0
+            ],
+            "rotation": [
+              -0.800000011920929,
+              0.5,
+              1.6979781136683414e-8
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "type": "Light",
+          "data": {
+            "castShadow": true,
+            "color": [
+              1.0,
+              0.9700000286102295,
+              0.8999999761581421
+            ],
+            "intensity": 2.5,
+            "lightType": "directional",
+            "range": 3.4028234663852886e+38,
+            "shadowBias": -0.00009999999747378752,
+            "shadowMapSize": 2048,
+            "spotAngle": 45.0,
+            "spotPenumbra": 0.10000000149011612
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Cube",
+      "parent": null,
+      "tags": [],
+      "components": [
+        {
+          "type": "Transform",
+          "data": {
+            "position": [
+              0.0,
+              0.5,
+              0.0
+            ],
+            "rotation": [
+              -0.0,
+              -0.5731374025344849,
+              -0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "type": "MeshRenderer",
+          "data": {
+            "castShadow": true,
+            "layer": 0,
+            "modelPath": "models/CubeTest.glb",
+            "receiveShadow": true
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Cube",
+      "parent": 3,
+      "tags": [],
+      "components": [
+        {
+          "type": "Transform",
+          "data": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              -0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Cube_p0_CubeTest.glb",
+      "parent": 4,
+      "tags": [],
+      "components": [
+        {
+          "type": "Transform",
+          "data": {
+            "position": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "rotation": [
+              -0.0,
+              0.0,
+              -0.0
+            ],
+            "scale": [
+              1.0,
+              1.0,
+              1.0
+            ]
+          }
+        },
+        {
+          "type": "MeshRenderer",
+          "data": {
+            "castShadow": true,
+            "layer": 0,
+            "primitiveType": "cube",
+            "receiveShadow": true
+          }
+        }
+      ]
+    }
+  ]
+}

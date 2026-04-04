@@ -19,6 +19,7 @@ use crate::components::camera::{Camera, ProjectionMode};
 use crate::components::light::{Light, LightType};
 use crate::components::mesh_renderer::{MeshRenderer, PrimitiveType};
 use crate::components::particle_emitter::ParticleEmitter;
+use crate::components::rigid_body::{BodyType, PhysicsShape, RigidBody};
 use crate::reflect::{FieldDescriptor, ReflectFieldType, ReflectValue, RangeHint, Reflect};
 use crate::transform::Transform;
 
@@ -401,6 +402,132 @@ impl Reflect for ParticleEmitter {
             "color":          self.color,
             "size":           self.size,
             "spreadDegrees":  self.spread_degrees,
+        })
+    }
+}
+
+// ── RigidBody ──────────────────────────────────────────────────────────────────
+
+static RIGID_BODY_FIELDS: OnceLock<Vec<FieldDescriptor>> = OnceLock::new();
+
+fn rigid_body_fields() -> &'static [FieldDescriptor] {
+    RIGID_BODY_FIELDS.get_or_init(|| vec![
+        FieldDescriptor::new("body_type",       "Body Type",        ReflectFieldType::Enum),
+        FieldDescriptor::new("shape",           "Shape",            ReflectFieldType::Enum),
+        FieldDescriptor::new("shape_param_x",   "Shape Param X",    ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.001, 100.0)),
+        FieldDescriptor::new("shape_param_y",   "Shape Param Y",    ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.001, 100.0)),
+        FieldDescriptor::new("shape_param_z",   "Shape Param Z",    ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.001, 100.0)),
+        FieldDescriptor::new("mass",            "Mass (kg)",        ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.001, 100_000.0)),
+        FieldDescriptor::new("restitution",     "Restitution",      ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.0, 1.0)),
+        FieldDescriptor::new("friction",        "Friction",         ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.0, 10.0)),
+        FieldDescriptor::new("linear_damping",  "Linear Damping",   ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.0, 100.0)),
+        FieldDescriptor::new("angular_damping", "Angular Damping",  ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.0, 100.0)),
+        FieldDescriptor::new("gravity_scale",   "Gravity Scale",    ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(-10.0, 10.0)),
+        FieldDescriptor::new("can_sleep",       "Can Sleep",        ReflectFieldType::Bool),
+    ])
+}
+
+impl Reflect for RigidBody {
+    fn reflect_type_name(&self) -> &'static str { "RigidBody" }
+    fn fields(&self) -> &'static [FieldDescriptor] { rigid_body_fields() }
+
+    fn get_field(&self, name: &str) -> Option<ReflectValue> {
+        match name {
+            "body_type"       => Some(ReflectValue::Enum(self.body_type.as_str().to_string())),
+            "shape"           => Some(ReflectValue::Enum(self.shape.as_str().to_string())),
+            "mass"            => Some(ReflectValue::F32(self.mass)),
+            "restitution"     => Some(ReflectValue::F32(self.restitution)),
+            "friction"        => Some(ReflectValue::F32(self.friction)),
+            "linear_damping"  => Some(ReflectValue::F32(self.linear_damping)),
+            "angular_damping" => Some(ReflectValue::F32(self.angular_damping)),
+            "gravity_scale"   => Some(ReflectValue::F32(self.gravity_scale)),
+            "can_sleep"       => Some(ReflectValue::Bool(self.can_sleep)),
+            // Shape dimension accessors (read component shape params as x/y/z)
+            "shape_param_x"   => Some(ReflectValue::F32(match self.shape {
+                PhysicsShape::Box { half_extents }   => half_extents[0],
+                PhysicsShape::Sphere { radius }      => radius,
+                PhysicsShape::Capsule { radius, .. } => radius,
+                PhysicsShape::HalfSpace              => 0.0,
+            })),
+            "shape_param_y"   => Some(ReflectValue::F32(match self.shape {
+                PhysicsShape::Box { half_extents }        => half_extents[1],
+                PhysicsShape::Capsule { half_height, .. } => half_height,
+                _                                          => 0.0,
+            })),
+            "shape_param_z"   => Some(ReflectValue::F32(match self.shape {
+                PhysicsShape::Box { half_extents } => half_extents[2],
+                _                                   => 0.0,
+            })),
+            _ => None,
+        }
+    }
+
+    fn set_field(&mut self, name: &str, value: ReflectValue) -> Result<(), String> {
+        match (name, value) {
+            ("body_type", ReflectValue::Enum(s)) => {
+                self.body_type = match s.as_str() {
+                    "Dynamic"   => BodyType::Dynamic,
+                    "Kinematic" => BodyType::Kinematic,
+                    "Static"    => BodyType::Static,
+                    o => return Err(format!("Unknown BodyType '{}'", o)),
+                };
+            }
+            ("shape", ReflectValue::Enum(s)) => {
+                self.shape = match s.as_str() {
+                    "Box"       => PhysicsShape::Box { half_extents: [0.5, 0.5, 0.5] },
+                    "Sphere"    => PhysicsShape::Sphere { radius: 0.5 },
+                    "Capsule"   => PhysicsShape::Capsule { half_height: 0.5, radius: 0.25 },
+                    "HalfSpace" => PhysicsShape::HalfSpace,
+                    o => return Err(format!("Unknown PhysicsShape '{}'", o)),
+                };
+            }
+            ("mass",            ReflectValue::F32(f)) => self.mass = f.max(0.001),
+            ("restitution",     ReflectValue::F32(f)) => self.restitution = f.clamp(0.0, 1.0),
+            ("friction",        ReflectValue::F32(f)) => self.friction = f.max(0.0),
+            ("linear_damping",  ReflectValue::F32(f)) => self.linear_damping = f.max(0.0),
+            ("angular_damping", ReflectValue::F32(f)) => self.angular_damping = f.max(0.0),
+            ("gravity_scale",   ReflectValue::F32(f)) => self.gravity_scale = f,
+            ("can_sleep",       ReflectValue::Bool(b)) => self.can_sleep = b,
+            ("shape_param_x",   ReflectValue::F32(f)) => match &mut self.shape {
+                PhysicsShape::Box { half_extents }   => half_extents[0] = f.max(0.001),
+                PhysicsShape::Sphere { radius }      => *radius = f.max(0.001),
+                PhysicsShape::Capsule { radius, .. } => *radius = f.max(0.001),
+                PhysicsShape::HalfSpace              => {}
+            },
+            ("shape_param_y",   ReflectValue::F32(f)) => match &mut self.shape {
+                PhysicsShape::Box { half_extents }        => half_extents[1] = f.max(0.001),
+                PhysicsShape::Capsule { half_height, .. } => *half_height = f.max(0.001),
+                _                                          => {}
+            },
+            ("shape_param_z",   ReflectValue::F32(f)) => match &mut self.shape {
+                PhysicsShape::Box { half_extents } => half_extents[2] = f.max(0.001),
+                _                                   => {}
+            },
+            (n, _) => return Err(format!("Unknown or type-mismatched field '{}' on RigidBody", n)),
+        }
+        Ok(())
+    }
+
+    fn to_serialized_data(&self) -> serde_json::Value {
+        serde_json::json!({
+            "bodyType":      self.body_type.as_str(),
+            "shape":         serde_json::to_value(&self.shape).unwrap_or(serde_json::Value::Null),
+            "mass":          self.mass,
+            "linearDamping": self.linear_damping,
+            "angularDamping":self.angular_damping,
+            "gravityScale":  self.gravity_scale,
+            "canSleep":      self.can_sleep,
+            "restitution":   self.restitution,
+            "friction":      self.friction,
         })
     }
 }

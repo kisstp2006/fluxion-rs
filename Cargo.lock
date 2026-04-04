@@ -990,6 +990,7 @@ dependencies = [
 name = "fluxion-physics"
 version = "0.1.0"
 dependencies = [
+ "fluxion-core",
  "glam",
  "log",
  "rapier3d",

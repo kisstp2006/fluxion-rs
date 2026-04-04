@@ -192,6 +192,74 @@ pub fn save_scene_file(path: &str, scene: &SceneFileData) -> Result<(), String> 
     Ok(())
 }
 
+// ── World → SceneFileData serialization ───────────────────────────────────────
+
+/// Serialize a live [`ECSWorld`] into a [`SceneFileData`] ready for [`save_scene_file`].
+///
+/// All entities in the world are included. Components that have a reflect accessor
+/// registered in `registry` are serialized via [`crate::reflect::Reflect::to_serialized_data`].
+/// Components without a reflect accessor are skipped with a `warn!` log.
+///
+/// # Entity file-ID assignment
+/// Each entity receives a sequential `u32` file-ID (starting at 1) in the order
+/// returned by [`crate::ecs::world::ECSWorld::all_entities`]. These IDs are local
+/// to this call and used only for the parent-child relationship in the JSON.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn world_to_scene_data(
+    world:         &crate::ecs::world::ECSWorld,
+    registry:      &crate::registry::ComponentRegistry,
+    name:          String,
+    settings:      SceneSettings,
+    editor_camera: Option<EditorCamera>,
+) -> SceneFileData {
+    // Step 1: assign each entity a sequential file-ID.
+    let mut entity_to_file_id: HashMap<crate::ecs::entity::EntityId, u32> = HashMap::new();
+    let mut next_id: u32 = 1;
+    for eid in world.all_entities() {
+        entity_to_file_id.insert(eid, next_id);
+        next_id += 1;
+    }
+
+    // Step 2: build a SerializedEntity for every entity.
+    let mut entities: Vec<SerializedEntity> = Vec::new();
+
+    for eid in world.all_entities() {
+        let file_id    = entity_to_file_id[&eid];
+        let entity_name = world.get_name(eid).to_string();
+
+        let parent_file_id = world
+            .get_parent(eid)
+            .and_then(|pid| entity_to_file_id.get(&pid).copied());
+
+        let tags: Vec<String> = world.tags_of(eid).map(str::to_string).collect();
+
+        let mut components: Vec<SerializedComponent> = Vec::new();
+        for &comp_type in world.component_names(eid) {
+            if let Some(reflected) = registry.get_reflect(comp_type, world, eid) {
+                components.push(SerializedComponent {
+                    component_type: comp_type.to_string(),
+                    data:           reflected.to_serialized_data(),
+                });
+            } else {
+                log::warn!(
+                    "[world_to_scene_data] No reflect accessor for '{}' on entity '{}' — skipped",
+                    comp_type, entity_name
+                );
+            }
+        }
+
+        entities.push(SerializedEntity {
+            id:     file_id,
+            name:   entity_name,
+            parent: parent_file_id,
+            tags,
+            components,
+        });
+    }
+
+    SceneFileData { name, version: 2, settings, editor_camera, entities }
+}
+
 mod deserialize_world;
 mod prefab;
 
@@ -200,3 +268,4 @@ pub use prefab::{parse_prefab_json, spawn_prefab_into_world, PrefabFileData};
 
 // Re-export ComponentRegistry here so scene users don't need to know about registry module.
 pub use crate::registry::ComponentRegistry;
+
