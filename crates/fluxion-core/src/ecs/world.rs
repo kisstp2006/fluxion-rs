@@ -29,6 +29,15 @@ use crate::ecs::entity::EntityId;
 use crate::hierarchy::HierarchyStore;
 use crate::transform::Transform;
 
+// Helper: extract the short type name from a full Rust path.
+// e.g. "fluxion_core::transform::Transform" → "Transform"
+#[inline(always)]
+fn short_type_name<T>() -> &'static str {
+    let full = std::any::type_name::<T>();
+    // type_name is a &'static str; rsplit gives an iterator of &'static str slices.
+    full.rsplit("::").next().unwrap_or(full)
+}
+
 /// The main ECS container.
 ///
 /// # Usage
@@ -70,20 +79,28 @@ pub struct ECSWorld {
     /// Flat list of all alive entities. Kept in sync with spawn/despawn.
     /// Used by HierarchyStore::roots() which needs to iterate all entities.
     all_entities: Vec<Entity>,
+
+    /// Tracks which component type names each entity has.
+    ///
+    /// Updated in `add_component` / `remove_component` / `despawn_single`.
+    /// Used by the editor to list all components on an entity without
+    /// knowing the concrete types at compile time.
+    entity_component_names: HashMap<Entity, Vec<&'static str>>,
 }
 
 impl ECSWorld {
     pub fn new() -> Self {
         Self {
-            inner:              World::new(),
-            hierarchy:          HierarchyStore::new(),
-            names:              HashMap::new(),
-            tag_index:          HashMap::new(),
-            entity_tags:        HashMap::new(),
-            inactive:           HashSet::new(),
-            disabled_snapshot:  HashMap::new(),
-            hierarchy_revision: 0,
-            all_entities:       Vec::new(),
+            inner:                  World::new(),
+            hierarchy:              HierarchyStore::new(),
+            names:                  HashMap::new(),
+            tag_index:              HashMap::new(),
+            entity_tags:            HashMap::new(),
+            inactive:               HashSet::new(),
+            disabled_snapshot:      HashMap::new(),
+            hierarchy_revision:     0,
+            all_entities:           Vec::new(),
+            entity_component_names: HashMap::new(),
         }
     }
 
@@ -141,6 +158,7 @@ impl ECSWorld {
         }
         self.inactive.remove(&entity);
         self.disabled_snapshot.remove(&entity);
+        self.entity_component_names.remove(&entity);
         self.all_entities.retain(|&e| e != entity);
 
         // Remove from hecs
@@ -322,6 +340,12 @@ impl ECSWorld {
         if self.is_active(id) {
             component.on_enable();
         }
+        // Track the component type name for editor / reflect queries.
+        let name = short_type_name::<T>();
+        let names = self.entity_component_names.entry(id.0).or_default();
+        if !names.contains(&name) {
+            names.push(name);
+        }
         // hecs will handle overwriting an existing component of the same type
         // by moving the entity to a new archetype. This is the expected behavior.
         let _ = self.inner.insert_one(id.0, component);
@@ -355,7 +379,24 @@ impl ECSWorld {
             }
             c.on_destroy();
         }
+        // Remove the type name from the tracking list.
+        let name = short_type_name::<T>();
+        if let Some(names) = self.entity_component_names.get_mut(&id.0) {
+            names.retain(|&n| n != name);
+        }
         let _ = self.inner.remove_one::<T>(id.0);
+    }
+
+    /// Returns the short type names of all components attached to `entity`.
+    ///
+    /// Example: `["Transform", "MeshRenderer", "Light"]`
+    ///
+    /// Used by the editor to populate the component list panel.
+    pub fn component_names(&self, id: EntityId) -> &[&'static str] {
+        self.entity_component_names
+            .get(&id.0)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     // ────────────────────────────────────────────────────────────────────────────

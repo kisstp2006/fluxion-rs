@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ecs::entity::EntityId;
 use crate::ecs::world::ECSWorld;
+use crate::registry::ComponentRegistry;
 
 use super::{instantiate_entities, SerializedEntity, topo_sort_entities};
 
@@ -31,7 +32,8 @@ pub fn parse_prefab_json(json: &str) -> Result<PrefabFileData, String> {
 pub fn spawn_prefab_into_world(
     world: &mut ECSWorld,
     prefab: &PrefabFileData,
+    registry: &ComponentRegistry,
 ) -> Result<HashMap<u32, EntityId>, String> {
     let sorted = topo_sort_entities(prefab.entities.clone())?;
-    instantiate_entities(world, &sorted)
+    instantiate_entities(world, &sorted, registry)
 }

@@ -30,6 +30,9 @@ pub mod facade;
 pub mod assets;
 pub mod particles;
 pub mod debug_draw;
+pub mod registry;
+pub mod reflect;
+pub mod reflect_impls;
 
 // Re-export the most commonly used types at the crate root so users
 // can write `use fluxion_core::ECSWorld` instead of the full path.
@@ -45,6 +48,8 @@ pub use scene::{
     instantiate_entities, load_scene_from_bytes, load_scene_into_world, parse_prefab_json,
     spawn_prefab_into_world, PrefabFileData,
 };
+pub use registry::ComponentRegistry;
+pub use reflect::{Reflect, ReflectValue, FieldDescriptor, ReflectFieldType, RangeHint};
 pub use particles::step_particle_emitters;
 pub use debug_draw::{DebugDraw, DebugLine};
 

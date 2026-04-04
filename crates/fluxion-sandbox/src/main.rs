@@ -43,6 +43,7 @@ use fluxion_core::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use fluxion_core::scene::{load_scene_file, load_scene_into_world};
+use fluxion_core::ComponentRegistry;
 use fluxion_renderer::{FluxionRenderer, MaterialAsset};
 use fluxion_scripting::{
     JsVm, bindings,
@@ -396,10 +397,12 @@ fn bootstrap_world(world: &mut ECSWorld) -> (Option<SceneEntities>, Option<PathB
         if let Some(p) = candidate {
             let root = p.parent().map(PathBuf::from);
             let path_str = p.to_string_lossy();
+            let mut registry = ComponentRegistry::new();
+            registry.register_builtins();
             match load_scene_file(path_str.as_ref()) {
                 Ok(data) => {
                     let settings = data.settings.clone();
-                    match load_scene_into_world(world, &data, true) {
+                    match load_scene_into_world(world, &data, true, &registry) {
                         Ok(_) => {
                             log::info!("Loaded scene from {}", path_str);
                             return (None, root, Some(settings));

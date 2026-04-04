@@ -197,3 +197,6 @@ mod prefab;
 
 pub use deserialize_world::{instantiate_entities, load_scene_into_world};
 pub use prefab::{parse_prefab_json, spawn_prefab_into_world, PrefabFileData};
+
+// Re-export ComponentRegistry here so scene users don't need to know about registry module.
+pub use crate::registry::ComponentRegistry;
