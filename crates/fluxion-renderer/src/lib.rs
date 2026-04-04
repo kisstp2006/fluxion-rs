@@ -30,3 +30,6 @@ pub use render_graph::{RenderGraph, RenderPass, PassSlot};
 pub use material::{MaterialAsset, PbrMaterial};
 pub use texture::{GpuTexture, TextureCache};
 pub use mesh::{GpuMesh, MeshRegistry};
+#[cfg(not(target_arch = "wasm32"))]
+pub use mesh::load_gltf_path;
+pub use mesh::load_gltf_slice;

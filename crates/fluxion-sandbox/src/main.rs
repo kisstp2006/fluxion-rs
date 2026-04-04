@@ -198,6 +198,11 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
 fn finish_renderer_setup(g: &mut SandboxInner) {
     let Some(ref mut renderer) = g.renderer else { return };
 
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Err(e) = renderer.hydrate_mesh_paths(&mut g.world, g.asset_root.as_deref()) {
+        log::warn!("hydrate_mesh_paths: {e}");
+    }
+
     if let Some(ref demo) = g.pending_demo {
         setup_materials(renderer, &mut g.world, demo);
         g.pending_demo = None;

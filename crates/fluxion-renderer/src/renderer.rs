@@ -38,7 +38,7 @@ use crate::{
     passes::{GeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass},
     lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT},
     material::MaterialRegistry,
-    mesh::MeshRegistry,
+    mesh::{GpuMesh, MeshRegistry},
     texture::TextureCache,
     shader::ShaderCache,
 };
@@ -262,6 +262,93 @@ impl FluxionRenderer {
                     mr.material_handle = Some(h);
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Upload `.glb` / `.gltf` meshes referenced by `MeshRenderer.mesh_path` (relative to `base`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn hydrate_mesh_paths(
+        &mut self,
+        world: &mut ECSWorld,
+        base: Option<&Path>,
+    ) -> anyhow::Result<()> {
+        use fluxion_core::components::MeshRenderer;
+
+        let entities: Vec<EntityId> = world.all_entities().collect();
+        for id in entities {
+            let Some(mut mr) = world.get_component_mut::<MeshRenderer>(id) else {
+                continue;
+            };
+            if mr.mesh_handle.is_some() {
+                continue;
+            }
+            let Some(ref rel) = mr.mesh_path else {
+                continue;
+            };
+            let ext = Path::new(rel)
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase());
+            if !matches!(ext.as_deref(), Some("glb") | Some("gltf")) {
+                continue;
+            }
+
+            let path: PathBuf = base.map(|b| b.join(rel)).unwrap_or_else(|| PathBuf::from(rel));
+            if !path.is_file() {
+                log::warn!("[gltf] file not found: {}", path.display());
+                continue;
+            }
+
+            let (vertices, indices) = crate::mesh::gltf_loader::load_gltf_path(&path)?;
+            let n_verts = vertices.len();
+            let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("gltf");
+            let gpu = GpuMesh::upload(&self.device, label, &vertices, &indices);
+            let handle = self.meshes.add(gpu);
+            mr.mesh_handle = Some(handle);
+            mr.primitive = None;
+            log::info!("[gltf] loaded {} ({n_verts} vertices)", path.display());
+        }
+        Ok(())
+    }
+
+    /// WASM: call after fetching bytes (e.g. `fetch` + `.bytes()`), same semantics as [`hydrate_mesh_paths`](Self::hydrate_mesh_paths).
+    #[cfg(target_arch = "wasm32")]
+    pub fn hydrate_mesh_paths_from_memory(
+        &mut self,
+        world: &mut ECSWorld,
+        resolve: impl Fn(&str) -> Option<Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        use fluxion_core::components::MeshRenderer;
+
+        let entities: Vec<EntityId> = world.all_entities().collect();
+        for id in entities {
+            let Some(mut mr) = world.get_component_mut::<MeshRenderer>(id) else {
+                continue;
+            };
+            if mr.mesh_handle.is_some() {
+                continue;
+            }
+            let Some(ref rel) = mr.mesh_path else {
+                continue;
+            };
+            let ext = Path::new(rel)
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase());
+            if !matches!(ext.as_deref(), Some("glb") | Some("gltf")) {
+                continue;
+            }
+            let Some(bytes) = resolve(rel) else {
+                log::warn!("[gltf] no bytes for {rel}");
+                continue;
+            };
+            let (vertices, indices) = crate::mesh::gltf_loader::load_gltf_slice(&bytes)?;
+            let label = Path::new(rel).file_name().and_then(|s| s.to_str()).unwrap_or("gltf");
+            let gpu = GpuMesh::upload(&self.device, label, &vertices, &indices);
+            let handle = self.meshes.add(gpu);
+            mr.mesh_handle = Some(handle);
+            mr.primitive = None;
         }
         Ok(())
     }

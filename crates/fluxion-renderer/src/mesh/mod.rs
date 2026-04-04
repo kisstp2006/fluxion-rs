@@ -7,6 +7,11 @@
 // ============================================================
 
 pub mod primitives;
+pub mod gltf_loader;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use gltf_loader::load_gltf_path;
+pub use gltf_loader::load_gltf_slice;
 
 use wgpu::Device;
 use bytemuck::{Pod, Zeroable};
