@@ -1,0 +1,45 @@
+// ============================================================
+// demo.rn — Rune scripting demo for fluxion-sandbox
+//
+// Exercises the native Rune engine modules:
+//   fluxion::debug  — log / warn / error
+//   fluxion::time   — delta_time / elapsed / frame
+//   fluxion::input  — get_key / get_key_down
+//
+// Hot-reload: edit and save this file while the sandbox is
+// running — changes take effect on the next frame.
+// ============================================================
+
+pub fn start() {
+    fluxion::debug::log("Rune demo script started!");
+    fluxion::debug::log("  WASD to test input, watch the log for output.");
+}
+
+pub fn update(dt) {
+    let elapsed = fluxion::time::elapsed();
+    let frame   = fluxion::time::frame();
+
+    // Log a heartbeat every ~2 seconds.
+    let bucket = (elapsed / 2.0) as int;
+    if frame % 120 == 0 {
+        let msg = `[Rune] frame=${frame}  elapsed=${elapsed:.2}s  dt=${dt:.4}s`;
+        fluxion::debug::log(msg);
+    }
+
+    // Axis input test — logs once per key press.
+    if fluxion::input::get_key("KeyW") {
+        fluxion::debug::log("[Rune] W held — moving forward");
+    }
+    if fluxion::input::get_key("KeyS") {
+        fluxion::debug::log("[Rune] S held — moving back");
+    }
+    if fluxion::input::get_key("KeyA") {
+        fluxion::debug::log("[Rune] A held — moving left");
+    }
+    if fluxion::input::get_key("KeyD") {
+        fluxion::debug::log("[Rune] D held — moving right");
+    }
+    if fluxion::input::get_key("Space") {
+        fluxion::debug::log("[Rune] Space — jump!");
+    }
+}

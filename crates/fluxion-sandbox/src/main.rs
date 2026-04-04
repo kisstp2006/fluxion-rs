@@ -33,7 +33,7 @@ use winit::{
 
 use fluxion_core::{
     ECSWorld, EntityId, InputState, Time,
-    components::{Camera, Light, MeshRenderer, ParticleEmitter},
+    components::{Camera, Light, MeshRenderer, ParticleEmitter, RigidBody, PhysicsShape, BodyType},
     components::light::LightType,
     components::mesh_renderer::PrimitiveType,
     step_particle_emitters,
@@ -44,6 +44,8 @@ use fluxion_core::{
 #[cfg(not(target_arch = "wasm32"))]
 use fluxion_core::scene::{load_scene_file, load_scene_into_world};
 use fluxion_core::ComponentRegistry;
+#[cfg(not(target_arch = "wasm32"))]
+use fluxion_rune_scripting::RuneVm;
 use fluxion_renderer::{FluxionRenderer, MaterialAsset, RendererConfig};
 #[cfg(not(target_arch = "wasm32"))]
 use fluxion_renderer::load_renderer_config;
@@ -125,6 +127,8 @@ struct SandboxInner {
     physics_ecs: Option<fluxion_physics::PhysicsEcsWorld>,
     #[cfg(not(target_arch = "wasm32"))]
     _audio_keepalive: Option<fluxion_audio::AudioEngine>,
+    #[cfg(not(target_arch = "wasm32"))]
+    rune_vm: Option<RuneVm>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -189,6 +193,16 @@ impl SandboxInner {
         }
 
         TransformSystem::update(&mut self.world);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(ref mut vm) = self.rune_vm {
+            vm.poll_hot_reload();
+            vm.push_time(dt, self.time.elapsed, self.time.frame_count);
+            vm.push_input(self.input.keys_down_iter(), std::iter::empty::<String>(), std::iter::empty::<String>());
+            if let Err(e) = vm.update(dt as f64) {
+                log::warn!("Rune update: {e}");
+            }
+        }
 
         step_particle_emitters(&mut self.world, dt);
 
@@ -297,6 +311,29 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
     #[cfg(not(target_arch = "wasm32"))]
     let _audio_keepalive = fluxion_audio::AudioEngine::try_new();
 
+    #[cfg(not(target_arch = "wasm32"))]
+    let rune_vm = {
+        let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/scripts/demo.rn");
+        if script_path.is_file() {
+            match RuneVm::new(&[script_path.as_path()]) {
+                Ok(mut vm) => {
+                    if let Err(e) = vm.enable_hot_reload(script_path.parent().unwrap()) {
+                        log::warn!("Rune hot-reload: {e}");
+                    }
+                    if let Err(e) = vm.start() {
+                        log::warn!("Rune start(): {e}");
+                    }
+                    Some(vm)
+                }
+                Err(e) => { log::warn!("Rune VM init: {e}"); None }
+            }
+        } else {
+            log::info!("No demo.rn at {} — Rune VM disabled", script_path.display());
+            None
+        }
+    };
+
     let inner = Rc::new(RefCell::new(SandboxInner {
         window: window.clone(),
         world,
@@ -321,6 +358,8 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
         physics_ecs,
         #[cfg(not(target_arch = "wasm32"))]
         _audio_keepalive,
+        #[cfg(not(target_arch = "wasm32"))]
+        rune_vm,
     }));
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -451,6 +490,7 @@ struct SceneEntities {
     cube:   EntityId,
     sphere: EntityId,
     ground: EntityId,
+    _point_light: EntityId,
 }
 
 fn setup_scene(world: &mut ECSWorld) -> SceneEntities {
@@ -482,36 +522,72 @@ fn setup_scene(world: &mut ECSWorld) -> SceneEntities {
     let cube = world.spawn(Some("Cube"));
     {
         let mut t  = Transform::new();
-        t.position = Vec3::new(0.0, 0.5, 0.0);
+        t.position = Vec3::new(0.0, 1.5, 0.0);
         t.scale    = Vec3::splat(1.0);
         t.dirty    = true;
         world.add_component(cube, t);
         world.add_component(cube, MeshRenderer::from_primitive(PrimitiveType::Cube));
+        world.add_component(cube, RigidBody {
+            body_type: BodyType::Dynamic,
+            shape: PhysicsShape::Box { half_extents: [0.5, 0.5, 0.5] },
+            mass: 1.0,
+            ..RigidBody::default()
+        });
     }
 
     let sphere = world.spawn(Some("Sphere"));
     {
         let mut t  = Transform::new();
-        t.position = Vec3::new(2.5, 0.5, 0.0);
+        t.position = Vec3::new(2.5, 2.0, 0.0);
         t.dirty    = true;
         world.add_component(sphere, t);
         world.add_component(sphere, MeshRenderer::from_primitive(PrimitiveType::Sphere));
+        world.add_component(sphere, RigidBody {
+            body_type: BodyType::Dynamic,
+            shape: PhysicsShape::Sphere { radius: 0.5 },
+            mass: 1.0,
+            restitution: 0.6,
+            ..RigidBody::default()
+        });
     }
 
     let ground = world.spawn(Some("Ground"));
     {
         let mut t  = Transform::new();
         t.position = Vec3::new(0.0, 0.0, 0.0);
-        t.scale    = Vec3::new(20.0, 1.0, 20.0);
+        t.scale    = Vec3::new(20.0, 0.2, 20.0);
         t.dirty    = true;
         world.add_component(ground, t);
         world.add_component(ground, MeshRenderer::from_primitive(PrimitiveType::Plane));
+        world.add_component(ground, RigidBody {
+            body_type: BodyType::Static,
+            shape: PhysicsShape::HalfSpace,
+            ..RigidBody::default()
+        });
     }
 
-    let sparks = world.spawn(Some("ParticleEmitter"));
+    // ── Point light (warm, near the cube) ──────────────────────────────────────
+    let point_light = world.spawn(Some("PointLight"));
     {
         let mut t = Transform::new();
-        t.position = Vec3::new(0.0, 0.2, 0.0);
+        t.position = Vec3::new(-2.0, 2.5, 1.5);
+        t.dirty = true;
+        world.add_component(point_light, t);
+        world.add_component(point_light, Light {
+            light_type: LightType::Point,
+            color:      [0.2, 0.5, 1.0],
+            intensity:  8.0,
+            range:      6.0,
+            cast_shadow: false,
+            ..Light::default()
+        });
+    }
+
+    // ── Golden sparks (original) ────────────────────────────────────────────────
+    let sparks = world.spawn(Some("Sparks"));
+    {
+        let mut t = Transform::new();
+        t.position = Vec3::new(0.0, 0.05, 0.0);
         t.dirty = true;
         world.add_component(sparks, t);
         let mut pe = ParticleEmitter::default();
@@ -524,10 +600,44 @@ fn setup_scene(world: &mut ECSWorld) -> SceneEntities {
         world.add_component(sparks, pe);
     }
 
+    // ── Blue smoke (near sphere) ───────────────────────────────────────────────
+    let smoke = world.spawn(Some("BlueSmoke"));
+    {
+        let mut t = Transform::new();
+        t.position = Vec3::new(2.5, 0.05, 0.0);
+        t.dirty = true;
+        world.add_component(smoke, t);
+        let mut pe = ParticleEmitter::default();
+        pe.spawn_per_second = 24.0;
+        pe.max_particles = 256;
+        pe.start_speed = 0.6;
+        pe.lifetime = 2.5;
+        pe.color = [0.2, 0.4, 0.9, 0.5];
+        pe.size = 0.12;
+        world.add_component(smoke, pe);
+    }
+
+    // ── Red fire fountain (back-left) ──────────────────────────────────────────
+    let fire = world.spawn(Some("FireFountain"));
+    {
+        let mut t = Transform::new();
+        t.position = Vec3::new(-2.5, 0.05, -1.0);
+        t.dirty = true;
+        world.add_component(fire, t);
+        let mut pe = ParticleEmitter::default();
+        pe.spawn_per_second = 80.0;
+        pe.max_particles = 800;
+        pe.start_speed = 2.5;
+        pe.lifetime = 0.9;
+        pe.color = [1.0, 0.25, 0.05, 0.9];
+        pe.size = 0.05;
+        world.add_component(fire, pe);
+    }
+
     TransformSystem::update(world);
 
     log::info!("Scene created: {} entities", world.entity_count());
-    SceneEntities { cube, sphere, ground }
+    SceneEntities { cube, sphere, ground, _point_light: point_light }
 }
 
 fn setup_materials(

@@ -8,6 +8,7 @@ members = [
     "crates/fluxion-physics",
     "crates/fluxion-audio",
     "crates/fluxion-sandbox",
+    "crates/fluxion-editor",
 ]
 resolver = "2"
 
@@ -30,3 +31,4 @@ cpal        = "0.15"
 egui        = "0.29"
 egui-wgpu   = "0.29"
 egui-winit  = "0.29"
+egui_dock   = "0.14"

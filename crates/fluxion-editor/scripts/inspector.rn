@@ -1,0 +1,127 @@
+// ============================================================
+// inspector.rn — Inspector panel
+//
+// Renders editable property widgets for all reflected components
+// on the currently selected entity.  Field type is detected via
+// fluxion::world::field_type and the appropriate widget is used.
+// ============================================================
+
+pub mod inspector {
+
+pub fn panel() {
+    let sel = fluxion::world::selected();
+
+    if sel == "" {
+        fluxion::ui::label("Nothing selected");
+        fluxion::ui::separator();
+        fluxion::ui::small("Click an entity in the Hierarchy panel.");
+        return;
+    }
+
+    let name = fluxion::world::entity_name(sel);
+    fluxion::ui::heading(name);
+    fluxion::ui::separator();
+
+    let comps = fluxion::world::component_types(sel);
+    if comps.is_empty() {
+        fluxion::ui::label("(no reflected components)");
+        return;
+    }
+
+    for comp in comps {
+        if fluxion::ui::collapsing_begin(comp) {
+            let fields = fluxion::world::fields(sel, comp);
+            for field in fields {
+                let ft = fluxion::world::field_type(sel, comp, field);
+                let ro = fluxion::world::field_readonly(sel, comp, field);
+                let range = fluxion::world::field_range(sel, comp, field);
+                let min = range[0];
+                let max = range[1];
+
+                if ft == "f32" {
+                    let v = fluxion::world::get_f32(sel, comp, field);
+                    if ro {
+                        fluxion::ui::label(`${field}: ${v}`);
+                    } else {
+                        let nv = fluxion::ui::drag_float(field, v, 0.01, min, max);
+                        if nv != v {
+                            fluxion::world::set_f32(sel, comp, field, nv);
+                        }
+                    }
+                } else if ft == "bool" {
+                    let v = fluxion::world::get_bool(sel, comp, field);
+                    if ro {
+                        fluxion::ui::label(`${field}: ${v}`);
+                    } else {
+                        let nv = fluxion::ui::checkbox(field, v);
+                        if nv != v {
+                            fluxion::world::set_bool(sel, comp, field, nv);
+                        }
+                    }
+                } else if ft == "str" || ft == "option_str" {
+                    let v = fluxion::world::get_str(sel, comp, field);
+                    if ro {
+                        fluxion::ui::label(`${field}: ${v}`);
+                    } else {
+                        let nv = fluxion::ui::input_text(field, v);
+                        if nv != v {
+                            fluxion::world::set_str(sel, comp, field, nv);
+                        }
+                    }
+                } else if ft == "vec3" {
+                    let v = fluxion::world::get_vec3(sel, comp, field);
+                    fluxion::ui::label(field);
+                    let nx = fluxion::ui::drag_float("  X", v[0], 0.01, -1e9, 1e9);
+                    let ny = fluxion::ui::drag_float("  Y", v[1], 0.01, -1e9, 1e9);
+                    let nz = fluxion::ui::drag_float("  Z", v[2], 0.01, -1e9, 1e9);
+                    if nx != v[0] || ny != v[1] || nz != v[2] {
+                        fluxion::world::set_vec3(sel, comp, field, [nx, ny, nz]);
+                    }
+                } else if ft == "quat" {
+                    let v = fluxion::world::get_quat(sel, comp, field);
+                    fluxion::ui::label(`${field} (XYZW)`);
+                    fluxion::ui::label(`  X=${v[0]}  Y=${v[1]}  Z=${v[2]}  W=${v[3]}`);
+                } else if ft == "color3" {
+                    let v = fluxion::world::get_color3(sel, comp, field);
+                    if ro {
+                        fluxion::ui::label(`${field}: [${v[0]}, ${v[1]}, ${v[2]}]`);
+                    } else {
+                        let nc = fluxion::ui::color3(field, v[0], v[1], v[2]);
+                        if nc[0] != v[0] || nc[1] != v[1] || nc[2] != v[2] {
+                            fluxion::world::set_color3(sel, comp, field, [nc[0], nc[1], nc[2]]);
+                        }
+                    }
+                } else if ft == "color4" {
+                    let v = fluxion::world::get_color4(sel, comp, field);
+                    if ro {
+                        fluxion::ui::label(`${field}: [${v[0]}, ${v[1]}, ${v[2]}, ${v[3]}]`);
+                    } else {
+                        let nc = fluxion::ui::color4(field, v[0], v[1], v[2], v[3]);
+                        if nc[0] != v[0] || nc[1] != v[1] || nc[2] != v[2] || nc[3] != v[3] {
+                            fluxion::world::set_color4(sel, comp, field, [nc[0], nc[1], nc[2], nc[3]]);
+                        }
+                    }
+                } else if ft == "u32" || ft == "u8" || ft == "usize" {
+                    let v = fluxion::world::get_u32(sel, comp, field);
+                    if ro {
+                        fluxion::ui::label(`${field}: ${v}`);
+                    } else {
+                        let nv = fluxion::ui::drag_int(field, v);
+                        if nv != v {
+                            fluxion::world::set_u32(sel, comp, field, nv);
+                        }
+                    }
+                } else if ft == "enum" {
+                    let v = fluxion::world::get_str(sel, comp, field);
+                    fluxion::ui::label(`${field}: ${v}`);
+                } else {
+                    fluxion::ui::small(`${field}: (${ft})`);
+                }
+            }
+            fluxion::ui::collapsing_end();
+        }
+        fluxion::ui::separator();
+    }
+}
+
+} // pub mod inspector

@@ -1,0 +1,31 @@
+[package]
+name        = "fluxion-editor"
+version     = "0.1.0"
+edition     = "2021"
+description = "FluxionRS standalone editor — Rune-scripted UI with egui_dock docking."
+
+[[bin]]
+name = "fluxion-editor"
+path = "src/main.rs"
+
+[dependencies]
+fluxion-core           = { path = "../fluxion-core" }
+fluxion-renderer       = { path = "../fluxion-renderer" }
+fluxion-physics        = { path = "../fluxion-physics" }
+fluxion-rune-scripting = { path = "../fluxion-rune-scripting" }
+
+glam       = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+anyhow     = { workspace = true }
+log        = { workspace = true }
+wgpu       = { workspace = true }
+winit      = { workspace = true }
+egui       = { workspace = true }
+egui-wgpu  = { workspace = true }
+egui-winit = { workspace = true }
+egui_dock  = { workspace = true }
+rune       = "0.14"
+notify     = "6"
+env_logger = "0.11"
+pollster   = "0.3"

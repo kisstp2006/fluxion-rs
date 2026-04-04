@@ -154,6 +154,47 @@ impl RuneVm {
         })
     }
 
+    /// Create a new VM with additional caller-supplied Rune modules installed
+    /// on top of the default engine modules.  Used by `fluxion-editor` to
+    /// register `fluxion::ui` and `fluxion::world` without touching this crate.
+    pub fn new_with_extra_modules(
+        source_paths:  &[&Path],
+        extra_modules: Vec<rune::Module>,
+    ) -> anyhow::Result<Self> {
+        let mut ctx = rune::Context::with_default_modules()
+            .context("Failed to create default Rune context")?;
+
+        for m in crate::auto_binding::all_modules()? {
+            ctx.install(m).context("Failed to install engine module")?;
+        }
+        for m in &extra_modules {
+            ctx.install(m.clone()).context("Failed to install extra module")?;
+        }
+
+        let runtime = Arc::new(ctx.runtime().context("Failed to build Rune runtime")?);
+
+        let paths: Vec<PathBuf> = source_paths.iter().map(|p| p.to_path_buf()).collect();
+        // Build a compile context identical to the runtime context.
+        let mut compile_ctx = rune::Context::with_default_modules()
+            .context("Failed to create compile context")?;
+        for m in crate::auto_binding::all_modules()? {
+            compile_ctx.install(m).context("Failed to install engine module (compile)")?;
+        }
+        for m in extra_modules {
+            compile_ctx.install(m).context("Failed to install extra module (compile)")?;
+        }
+        let unit = Self::compile_paths_with_ctx(&paths, &compile_ctx)?;
+
+        Ok(Self {
+            runtime,
+            unit:         Arc::new(RwLock::new(Arc::new(unit))),
+            source_paths: paths,
+            watcher:      None,
+            reload_hooks: Vec::new(),
+            last_error:   None,
+        })
+    }
+
     /// Create an empty VM (no scripts loaded).
     pub fn empty() -> anyhow::Result<Self> {
         Self::new(&[])
@@ -222,18 +263,31 @@ impl RuneVm {
 
     /// Compile a set of .rn file paths into a `rune::Unit`.
     fn compile_paths(paths: &[PathBuf]) -> anyhow::Result<Unit> {
+        let ctx = rune::Context::with_default_modules().context("Default context")?;
+        Self::compile_paths_with_ctx(paths, &ctx)
+    }
+
+    /// Compile using a caller-supplied context (e.g. one that has extra modules).
+    pub fn compile_paths_with_ctx(
+        paths: &[PathBuf],
+        ctx:   &rune::Context,
+    ) -> anyhow::Result<Unit> {
         let mut sources = Sources::new();
         for path in paths {
-            let source = Source::from_path(path)
+            let stem = path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("script")
+                .to_string();
+            let content = std::fs::read_to_string(path)
                 .with_context(|| format!("Failed to read {:?}", path))?;
+            let source = Source::new(stem, content)
+                .with_context(|| format!("Failed to create source for {:?}", path))?;
             sources.insert(source);
         }
 
-        let ctx = rune::Context::with_default_modules()
-            .context("Default context")?;
         let mut diagnostics = Diagnostics::new();
         let result = rune::prepare(&mut sources)
-            .with_context(&ctx)
+            .with_context(ctx)
             .with_diagnostics(&mut diagnostics)
             .build();
 
@@ -312,6 +366,28 @@ impl RuneVm {
     pub fn on_hot_reload_hook(&self) -> anyhow::Result<()> {
         self.call_fn(&["on_hot_reload"], ())?;
         Ok(())
+    }
+
+    // ── Host data push ────────────────────────────────────────────────────────
+
+    /// Push current frame timing into the global snapshot read by `fluxion::time`.
+    pub fn push_time(&self, dt: f32, elapsed: f32, frame: u64) {
+        TIME_SNAPSHOT.update(dt, elapsed, frame);
+    }
+
+    /// Push currently held keys into the global snapshot read by `fluxion::input`.
+    /// `held` = keys currently pressed; `down` / `up` = just-pressed / just-released this frame.
+    pub fn push_input(
+        &self,
+        held: impl IntoIterator<Item = impl Into<String>>,
+        down: impl IntoIterator<Item = impl Into<String>>,
+        up:   impl IntoIterator<Item = impl Into<String>>,
+    ) {
+        input_snapshot().update(
+            held.into_iter().map(Into::into).collect(),
+            down.into_iter().map(Into::into).collect(),
+            up  .into_iter().map(Into::into).collect(),
+        );
     }
 
     /// Whether the VM has any compile errors (from the last hot reload attempt).

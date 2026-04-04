@@ -1,0 +1,32 @@
+// ============================================================
+// hierarchy.rn — Hierarchy panel
+//
+// Lists all entities in the scene.  Clicking one selects it.
+// The currently selected entity is highlighted.
+// ============================================================
+
+pub mod hierarchy {
+
+pub fn panel() {
+    let sel = fluxion::world::selected();
+    let entities = fluxion::world::entities();
+
+    if entities.is_empty() {
+        fluxion::ui::label("(empty scene)");
+        return;
+    }
+
+    for id in entities {
+        let name = fluxion::world::entity_name(id);
+        let label = if sel == id {
+            `▶ ${name}`
+        } else {
+            name
+        };
+        if fluxion::ui::button(label) {
+            fluxion::world::select(id);
+        }
+    }
+}
+
+} // pub mod hierarchy

@@ -1,0 +1,28 @@
+// ============================================================
+// console.rn — Console panel
+//
+// Displays log lines accumulated via fluxion::world::log and
+// fluxion::debug::log (the latter routes through Rust log::info
+// which is not yet captured here — only direct world::log calls).
+// ============================================================
+
+pub mod console {
+
+pub fn panel() {
+    let lines = fluxion::world::log_lines();
+
+    if lines.is_empty() {
+        fluxion::ui::small("(no messages)");
+        return;
+    }
+
+    // Show last 200 lines to avoid overwhelming the UI.
+    let start = if lines.len() > 200 { lines.len() - 200 } else { 0 };
+    let mut i = start;
+    while i < lines.len() {
+        fluxion::ui::small(lines[i]);
+        i += 1;
+    }
+}
+
+} // pub mod console
