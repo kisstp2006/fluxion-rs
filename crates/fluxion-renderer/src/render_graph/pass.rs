@@ -17,6 +17,18 @@
 
 use super::context::{RenderContext, RenderResources};
 
+/// On native, passes are `Send + Sync` so the graph can live behind `Arc` if needed.
+/// On `wasm32`, `wgpu` types are not `Send`/`Sync`, so bounds are relaxed.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait RenderPassBounds: Send + Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync + ?Sized> RenderPassBounds for T {}
+
+#[cfg(target_arch = "wasm32")]
+pub trait RenderPassBounds {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> RenderPassBounds for T {}
+
 /// A single render pass in the pipeline.
 ///
 /// Implement this to add custom rendering to the engine.
@@ -35,7 +47,7 @@ use super::context::{RenderContext, RenderResources};
 ///
 /// engine.renderer.render_graph.inject_pass(PassSlot::Overlay, "my_outline", Box::new(MyOutlinePass));
 /// ```
-pub trait RenderPass: Send + Sync {
+pub trait RenderPass: RenderPassBounds {
     /// Unique name for this pass. Used for enable/disable and debug output.
     fn name(&self) -> &str;
 

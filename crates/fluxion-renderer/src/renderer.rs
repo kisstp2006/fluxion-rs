@@ -433,10 +433,10 @@ impl FluxionRenderer {
             if mr.mesh_handle.is_some() {
                 continue;
             }
-            let Some(ref rel) = mr.mesh_path else {
+            let Some(rel_owned) = mr.mesh_path.clone() else {
                 continue;
             };
-            let ext = Path::new(rel)
+            let ext = Path::new(&rel_owned)
                 .extension()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_ascii_lowercase());
@@ -444,16 +444,18 @@ impl FluxionRenderer {
                 continue;
             }
 
-            let path: PathBuf = base.map(|b| b.join(rel)).unwrap_or_else(|| PathBuf::from(rel));
+            let path: PathBuf = base
+                .map(|b| b.join(&rel_owned))
+                .unwrap_or_else(|| PathBuf::from(&rel_owned));
             if !path.is_file() {
                 log::warn!("[gltf] file not found: {}", path.display());
                 continue;
             }
 
             let skip_mat = Self::scene_material_overrides_gltf(&mr, base);
+            drop(mr);
             let out = crate::mesh::gltf_loader::load_gltf_path_full(&path)?;
             let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("gltf");
-            drop(mr);
             self.apply_gltf_load_output(world, id, out, label, skip_mat)?;
         }
         Ok(())
@@ -476,24 +478,27 @@ impl FluxionRenderer {
             if mr.mesh_handle.is_some() {
                 continue;
             }
-            let Some(ref rel) = mr.mesh_path else {
+            let Some(rel_owned) = mr.mesh_path.clone() else {
                 continue;
             };
-            let ext = Path::new(rel)
+            let ext = Path::new(&rel_owned)
                 .extension()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_ascii_lowercase());
             if !matches!(ext.as_deref(), Some("glb") | Some("gltf")) {
                 continue;
             }
-            let Some(bytes) = resolve(rel) else {
-                log::warn!("[gltf] no bytes for {rel}");
+            let skip_mat = Self::scene_material_overrides_gltf(&mr, None);
+            drop(mr);
+            let Some(bytes) = resolve(&rel_owned) else {
+                log::warn!("[gltf] no bytes for {rel_owned}");
                 continue;
             };
-            let skip_mat = Self::scene_material_overrides_gltf(&mr, None);
             let out = crate::mesh::gltf_loader::load_gltf_slice_full(&bytes)?;
-            let label = Path::new(rel).file_name().and_then(|s| s.to_str()).unwrap_or("gltf");
-            drop(mr);
+            let label = Path::new(&rel_owned)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("gltf");
             self.apply_gltf_load_output(world, id, out, label, skip_mat)?;
         }
         Ok(())

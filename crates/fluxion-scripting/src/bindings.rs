@@ -104,31 +104,35 @@ pub fn setup_bindings(vm: &JsVm) -> anyhow::Result<()> {
 }
 
 /// Bind Rust's `log` crate into QuickJS console functions.
+#[cfg(not(target_arch = "wasm32"))]
 fn bind_log_functions(vm: &JsVm) -> anyhow::Result<()> {
     vm.ctx.with(|ctx| {
         let globals = ctx.globals();
 
-        // __log_info(msg)
         let log_info = rquickjs::Function::new(ctx.clone(), |msg: String| {
             log::info!("[JS] {}", msg);
         })?;
         globals.set("__log_info", log_info)?;
 
-        // __log_warn(msg)
         let log_warn = rquickjs::Function::new(ctx.clone(), |msg: String| {
             log::warn!("[JS] {}", msg);
         })?;
         globals.set("__log_warn", log_warn)?;
 
-        // __log_error(msg)
         let log_error = rquickjs::Function::new(ctx.clone(), |msg: String| {
             log::error!("[JS] {}", msg);
         })?;
         globals.set("__log_error", log_error)?;
 
         Ok::<_, rquickjs::Error>(())
-    }).map_err(|e| anyhow::anyhow!("Failed to bind log functions: {e}"))?;
+    })
+    .map_err(|e| anyhow::anyhow!("Failed to bind log functions: {e}"))?;
 
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn bind_log_functions(_vm: &JsVm) -> anyhow::Result<()> {
     Ok(())
 }
 

@@ -16,7 +16,6 @@ log              = { workspace = true }
 serde            = { workspace = true }
 serde_json       = { workspace = true }
 
-# QuickJS embedded JS engine.
-# "loader" enables ES module loading support.
-# "rust-alloc" uses Rust's allocator inside the JS heap.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# QuickJS — not built for wasm32 (no rquickjs-sys prebuild); see `vm/stub_wasm.rs`.
 rquickjs = { version = "0.8", features = ["loader", "rust-alloc", "macro"] }

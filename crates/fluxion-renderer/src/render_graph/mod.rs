@@ -25,7 +25,7 @@
 pub mod pass;
 pub mod context;
 
-pub use pass::RenderPass;
+pub use pass::{RenderPass, RenderPassBounds};
 pub use context::{RenderContext, RenderResources};
 
 /// Named injection slots in the render pipeline.

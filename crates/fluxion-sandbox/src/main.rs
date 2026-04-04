@@ -36,10 +36,11 @@ use fluxion_core::{
     components::{Camera, Light, MeshRenderer},
     components::light::LightType,
     components::mesh_renderer::PrimitiveType,
-    scene::{load_scene_file, load_scene_into_world},
     transform::Transform,
     transform::system::TransformSystem,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use fluxion_core::scene::{load_scene_file, load_scene_into_world};
 use fluxion_renderer::{FluxionRenderer, MaterialAsset};
 use fluxion_scripting::{
     JsVm, bindings,
@@ -99,9 +100,20 @@ struct SandboxInner {
     asset_root: Option<PathBuf>,
 }
 
+#[cfg(target_arch = "wasm32")]
+fn performance_now_ms() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+        .unwrap_or(0.0)
+}
+
 impl SandboxInner {
     fn tick(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
         let (fixed_steps, dt) = self.time.tick();
+        #[cfg(target_arch = "wasm32")]
+        let (fixed_steps, dt) = self.time.tick_wasm(performance_now_ms());
 
         for _ in 0..fixed_steps {
             if let Err(e) = self.scripts.fixed_update(self.time.fixed_dt) {
@@ -216,6 +228,11 @@ fn finish_renderer_setup(g: &mut SandboxInner) {
     #[cfg(not(target_arch = "wasm32"))]
     if let Err(e) = renderer.hydrate_mesh_paths(&mut g.world, g.asset_root.as_deref()) {
         log::warn!("hydrate_mesh_paths: {e}");
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    if let Err(e) = renderer.hydrate_mesh_paths_from_memory(&mut g.world, |_| None) {
+        log::warn!("hydrate_mesh_paths_from_memory: {e}");
     }
 
     if let Some(ref demo) = g.pending_demo {
