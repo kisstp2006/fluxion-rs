@@ -93,6 +93,10 @@ pub struct FluxionRenderer {
 
     pub width:  u32,
     pub height: u32,
+
+    /// Offscreen render target for the editor viewport panel.
+    /// Recreated automatically when the window is resized.
+    pub viewport_texture: Option<GpuTexture>,
 }
 
 impl FluxionRenderer {
@@ -250,6 +254,7 @@ impl FluxionRenderer {
             config,
             max_lights,
             width: w, height: h,
+            viewport_texture: None,
         })
     }
 
@@ -695,6 +700,107 @@ impl FluxionRenderer {
     /// Swapchain format (sRGB), for UI backends (`egui-wgpu`, etc.).
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.surface_config.format
+    }
+
+    /// Render the 3-D scene to an offscreen viewport texture (same size as the window).
+    ///
+    /// The result is stored in `self.viewport_texture` and can be retrieved via
+    /// [`Self::viewport_view`].  Call this before [`Self::render_ui_only`] when
+    /// using the editor viewport panel.
+    pub fn render_to_viewport(&mut self, world: &ECSWorld, time: &Time) -> anyhow::Result<()> {
+        if self.width == 0 || self.height == 0 { return Ok(()); }
+        let w      = self.width;
+        let h      = self.height;
+        let format = self.surface_config.format;
+
+        let needs_recreate = self.viewport_texture.as_ref()
+            .map(|t| t.width != w || t.height != h || t.format != format)
+            .unwrap_or(true);
+        if needs_recreate {
+            self.viewport_texture = Some(GpuTexture::render_target(
+                &self.device, "viewport_color", w, h, format,
+            ));
+        }
+
+        let frame = self.extract_frame_data(world, time);
+
+        let mut light_data = LightBufferData::new();
+        for light in &frame.lights { light_data.push(*light); }
+        let s = &self.scene_settings;
+        light_data.ambient_color     = s.ambient_color;
+        light_data.ambient_intensity = s.ambient_intensity;
+        light_data.fog_color         = s.fog_color;
+        light_data.fog_density       = s.fog_density;
+        light_data.fog_enabled       = u32::from(s.fog_enabled);
+        light_data._fog_pad          = [0; 3];
+        self.light_buffer.upload(&self.queue, &light_data);
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("viewport_encoder"),
+        });
+
+        // Safety: viewport_texture is not dropped or reallocated while `encoder` is
+        // being recorded.  render_graph.execute() only accesses the fields of ctx,
+        // none of which include `viewport_texture` itself.
+        let vp_view: *const wgpu::TextureView =
+            &self.viewport_texture.as_ref().unwrap().view;
+        let mut ctx = RenderContext {
+            device:       &self.device,
+            queue:        &self.queue,
+            encoder:      &mut encoder,
+            resources:    &self.resources,
+            frame:        &frame,
+            surface_view: unsafe { &*vp_view },
+            light_buffer: &self.light_buffer.gpu_buffer,
+            meshes:       &self.meshes,
+            materials:    &self.materials,
+        };
+        self.render_graph.execute(&mut ctx);
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+        Ok(())
+    }
+
+    /// View into the last viewport render target, or `None` if `render_to_viewport`
+    /// has not been called yet.
+    pub fn viewport_view(&self) -> Option<&wgpu::TextureView> {
+        self.viewport_texture.as_ref().map(|t| &t.view)
+    }
+
+    /// Acquire the swap-chain surface, clear it to a neutral colour, then call
+    /// `after` for UI-only work (egui).  Does **not** run the 3-D render graph.
+    /// Use after [`Self::render_to_viewport`] in editor mode.
+    pub fn render_ui_only(
+        &mut self,
+        after: impl FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView) -> Vec<wgpu::CommandBuffer>,
+    ) -> Result<(), SurfaceError> {
+        let surface_texture = self.surface.get_current_texture()?;
+        let surface_view    = surface_texture.texture.create_view(&Default::default());
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("ui_encoder"),
+        });
+        {
+            let _clear = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ui_clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view:           &surface_view,
+                    resolve_target: None,
+                    ops:            wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.07, g: 0.07, b: 0.07, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes:         None,
+                occlusion_query_set:      None,
+            });
+        }
+
+        let user_bufs = after(&self.device, &self.queue, &mut encoder, &surface_view);
+        self.queue.submit(user_bufs.into_iter().chain(std::iter::once(encoder.finish())));
+        surface_texture.present();
+        Ok(())
     }
 
     /// Render one frame from the current ECS world state.

@@ -166,13 +166,14 @@ pub fn generate_module_js(registry: &ScriptBindingRegistry) -> String {
         let entries = registry.module_entries(module);
         if entries.is_empty() { continue; }
 
+        // All module names are const-declared in ENGINE_BOOTSTRAP_JS.
+        // We extend them in-place via Object.assign — no redeclaration.
         out.push_str(&format!(
-            "const {m} = Object.assign(typeof {m} !== 'undefined' ? {m} : {{}}, {{\n",
+            "Object.assign({m}, {{\n",
             m = module,
         ));
 
         for e in entries {
-            // JS parameter names
             let param_names: Vec<&str> = e.params.iter().map(|p| p.name).collect();
             let args_joined = param_names.join(", ");
             let invoke_args = if param_names.is_empty() {
@@ -181,7 +182,6 @@ pub fn generate_module_js(registry: &ScriptBindingRegistry) -> String {
                 format!("\"{}\", {}", full_path(module, e.name), args_joined)
             };
 
-            // JSDoc
             if !e.description.is_empty() {
                 out.push_str(&format!("  /** {} */\n", e.description));
             }

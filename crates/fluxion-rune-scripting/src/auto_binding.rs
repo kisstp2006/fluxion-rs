@@ -59,11 +59,27 @@ pub fn build_input_module() -> anyhow::Result<Module> {
     Ok(m)
 }
 
+/// Viewport module: `fluxion::viewport`
+///
+/// Exposes the current editor viewport pixel size so scripts can do
+/// resolution-aware layout without hard-coding dimensions.
+pub fn build_viewport_module() -> anyhow::Result<Module> {
+    use crate::vm::VIEWPORT_SNAPSHOT;
+
+    let mut m = Module::with_crate_item("fluxion", ["viewport"])?;
+
+    m.function("width",  || VIEWPORT_SNAPSHOT.load_width()  as i64).build()?;
+    m.function("height", || VIEWPORT_SNAPSHOT.load_height() as i64).build()?;
+
+    Ok(m)
+}
+
 /// Collect all engine modules for installation into a Rune context.
 pub fn all_modules() -> anyhow::Result<Vec<Module>> {
     Ok(vec![
         build_debug_module()?,
         build_time_module()?,
         build_input_module()?,
+        build_viewport_module()?,
     ])
 }

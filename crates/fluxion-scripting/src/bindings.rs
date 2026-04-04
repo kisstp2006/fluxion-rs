@@ -59,19 +59,22 @@ const Engine = {
 };
 
 // ── Bare global stubs (auto-generated wrappers will extend these) ─────────────
-const Time       = { dt: 0.016, elapsed: 0.0, fixedDt: 0.016667, frameCount: 0, timeScale: 1.0 };
-const Input      = { _keys: {}, _mousePos: {x:0,y:0}, _mouseDelta: {x:0,y:0}, _scrollDelta: {x:0,y:0},
-                     _mouseButtons: {left:false,middle:false,right:false},
-                     _gamepad: {connected:false,lx:0,ly:0,rx:0,ry:0,lt:0,rt:0,buttons:0} };
-const Physics    = {};
-const Screen     = {};
-const Application= {};
-const Cursor     = {};
-const GUI        = {};
-const GUILayout  = {};
-const GameObject = {};
-const SceneManager = {};
-const Debug      = {};
+// Must be `var` (not const/let) so Rust's globals.get("Time") etc. can find them
+// via the global object's property record.  const/let live in the declarative
+// record and are invisible to rquickjs Object::get().
+var Time       = { dt: 0.016, elapsed: 0.0, fixedDt: 0.016667, frameCount: 0, timeScale: 1.0 };
+var Input      = { _keys: {}, _mousePos: {x:0,y:0}, _mouseDelta: {x:0,y:0}, _scrollDelta: {x:0,y:0},
+                   _mouseButtons: {left:false,middle:false,right:false},
+                   _gamepad: {connected:false,lx:0,ly:0,rx:0,ry:0,lt:0,rt:0,buttons:0} };
+var Physics    = {};
+var Screen     = {};
+var Application= {};
+var Cursor     = {};
+var GUI        = {};
+var GUILayout  = {};
+var GameObject = {};
+var SceneManager = {};
+var Debug      = {};
 "#;
 
 // ── Public API ─────────────────────────────────────────────────────────────────

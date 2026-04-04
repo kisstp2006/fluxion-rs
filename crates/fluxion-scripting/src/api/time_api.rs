@@ -107,24 +107,20 @@ pub fn register(reg: &mut ScriptBindingRegistry) {
 // each frame directly via push_time_snapshot.
 pub const TIME_JS_EXTENSION: &str = r#"
 // ── Time property shims (Unity-compatible names) ──────────────────────────────
-// Time.dt / .elapsed / .fixedDt / .frameCount / .timeScale are written directly
-// by the Rust snapshot pusher each frame. The properties below alias them.
+// Time.dt / .elapsed / .fixedDt / .frameCount / .timeScale are plain data
+// properties written each frame by push_time_snapshot.  We ONLY add Unity-style
+// aliases here; redefining frameCount / timeScale as getters with the same name
+// would create circular self-referencing getters → stack overflow.
 Object.defineProperties(Time, {
-    deltaTime:       { get() { return Time.dt;         }, configurable: true },
-    time:            { get() { return Time.elapsed;    }, configurable: true },
+    deltaTime:       { get() { return Time.dt;      }, configurable: true },
+    time:            { get() { return Time.elapsed; }, configurable: true },
     fixedDeltaTime:  {
         get() { return Time.fixedDt; },
         set(v){ Time.fixedDt = v; Time.setFixedDeltaTime(v); },
         configurable: true,
     },
-    frameCount:      { get() { return Time.frameCount; }, configurable: true },
-    timeScale:       {
-        get() { return Time.timeScale; },
-        set(v){ Time.timeScale = v; Time.setTimeScale(v); },
-        configurable: true,
-    },
-    unscaledDeltaTime: { get() { return Time.getUnscaledDeltaTime();   }, configurable: true },
-    unscaledTime:      { get() { return Time.getUnscaledTime();        }, configurable: true },
+    unscaledDeltaTime:    { get() { return Time.getUnscaledDeltaTime();    }, configurable: true },
+    unscaledTime:         { get() { return Time.getUnscaledTime();         }, configurable: true },
     realtimeSinceStartup: { get() { return Time.getRealtimeSinceStartup(); }, configurable: true },
 });
 "#;

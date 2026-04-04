@@ -164,69 +164,73 @@ pub fn register(reg: &mut ScriptBindingRegistry) {
 // ── JS extension ───────────────────────────────────────────────────────────────
 pub const GAMEOBJECT_JS_EXTENSION: &str = r#"
 // ── GameObject instance wrapper ───────────────────────────────────────────────
-// Scripts receive plain {id, name, tag, active, transform} objects from ECS.
-// This wrapper adds Unity-like convenience methods.
-class GameObject {
-    constructor(data) {
-        this.name      = data ? data.name      : "";
-        this.tag       = data ? data.tag       : "Untagged";
-        this.active    = data ? data.active    : true;
-        this.transform = data ? data.transform : null;
-        this._id       = data ? data.id        : null;
-    }
+// Uses a plain constructor function to avoid redeclaring the `const GameObject`
+// namespace object already set up in ENGINE_BOOTSTRAP_JS.
+function _GameObjectInstance(data) {
+    this.name      = data ? data.name      : "";
+    this.tag       = data ? data.tag       : "Untagged";
+    this.active    = data ? data.active    : true;
+    this.transform = data ? data.transform : null;
+    this._id       = data ? data.id        : null;
+}
 
-    SetActive(value)          { GameObject.SetActive(this.name, value); this.active = value; }
-    GetComponent(typeName)    { return __native_invoke("Component.Get",    this.name, typeName); }
-    AddComponent(typeName)    { return __native_invoke("Component.Add",    this.name, typeName); }
-    RemoveComponent(typeName) { return __native_invoke("Component.Remove", this.name, typeName); }
-    CompareTag(tag)           { return this.tag === tag; }
-    SendMessage(methodName, value) {
-        for (const b of __behaviours) {
-            if (b.__scriptTargetName === this.name && typeof b[methodName] === "function") {
-                try { b[methodName](value); } catch(e) { console.error("SendMessage:", e); }
-            }
+_GameObjectInstance.prototype.SetActive = function(value) {
+    GameObject.SetActive(this.name, value);
+    this.active = value;
+};
+_GameObjectInstance.prototype.GetComponent    = function(t) { return __native_invoke("Component.Get",    this.name, t); };
+_GameObjectInstance.prototype.AddComponent    = function(t) { return __native_invoke("Component.Add",    this.name, t); };
+_GameObjectInstance.prototype.RemoveComponent = function(t) { return __native_invoke("Component.Remove", this.name, t); };
+_GameObjectInstance.prototype.CompareTag      = function(tag) { return this.tag === tag; };
+_GameObjectInstance.prototype.SendMessage = function(methodName, value) {
+    for (const b of __behaviours) {
+        if (b.__scriptTargetName === this.name && typeof b[methodName] === "function") {
+            try { b[methodName](value); } catch(e) { console.error("SendMessage:", e); }
         }
     }
-    BroadcastMessage(methodName, value) { this.SendMessage(methodName, value); }
+};
+_GameObjectInstance.prototype.BroadcastMessage = function(methodName, value) {
+    this.SendMessage(methodName, value);
+};
 
-    static Find(name) {
+// ── Extend the existing GameObject namespace with high-level static helpers ────
+Object.assign(GameObject, {
+    _wrap: function(data) { return new _GameObjectInstance(data); },
+    Find: function(name) {
         const raw = __native_invoke("GameObject.Find", name);
         if (!raw || raw === "null") return null;
-        try { return new GameObject(typeof raw === "string" ? JSON.parse(raw) : raw); } catch { return null; }
-    }
-    static FindWithTag(tag) {
+        try { return new _GameObjectInstance(typeof raw === "string" ? JSON.parse(raw) : raw); } catch(e) { return null; }
+    },
+    FindWithTag: function(tag) {
         const raw = __native_invoke("GameObject.FindWithTag", tag);
         if (!raw || raw === "null") return null;
-        try { return new GameObject(typeof raw === "string" ? JSON.parse(raw) : raw); } catch { return null; }
-    }
-    static FindGameObjectsWithTag(tag) {
+        try { return new _GameObjectInstance(typeof raw === "string" ? JSON.parse(raw) : raw); } catch(e) { return null; }
+    },
+    FindGameObjectsWithTag: function(tag) {
         const raw = __native_invoke("GameObject.FindGameObjectsWithTag", tag);
         try {
             const arr = typeof raw === "string" ? JSON.parse(raw) : (Array.isArray(raw) ? raw : []);
-            return arr.map(d => new GameObject(d));
-        } catch { return []; }
-    }
-    static Destroy(obj, delay)    { GameObject.Destroy(typeof obj === "string" ? obj : obj.name, delay ?? 0); }
-    static Instantiate(prefabPath, position, rotation) {
-        return __native_invoke("GameObject.Instantiate", prefabPath, position ?? {x:0,y:0,z:0}, rotation ?? {x:0,y:0,z:0,w:1});
-    }
-    static SetActive(name, active) { __native_invoke("GameObject.SetActive", name, active); }
-}
+            return arr.map(d => new _GameObjectInstance(d));
+        } catch(e) { return []; }
+    },
+    Destroy: function(obj, delay) {
+        __native_invoke("GameObject.Destroy", typeof obj === "string" ? obj : obj.name, delay || 0);
+    },
+    Instantiate: function(prefabPath, position, rotation) {
+        return __native_invoke("GameObject.Instantiate", prefabPath,
+            position || {x:0,y:0,z:0}, rotation || {x:0,y:0,z:0,w:1});
+    },
+    SetActive: function(name, active) { __native_invoke("GameObject.SetActive", name, active); },
+});
 
-// ── Object static shim (Unity Object.Destroy / Object.Instantiate) ───────────
-const Object = Object ?? {};
-Object.Destroy    = (obj, delay) => GameObject.Destroy(obj, delay);
-Object.Instantiate = (path, pos, rot) => GameObject.Instantiate(path, pos, rot);
-Object.DontDestroyOnLoad = (_obj) => {};   // no-op (single scene for now)
+// ── Object shim (Unity Object.Destroy / Object.Instantiate) ───────────────────
+// `Object` is the JS built-in — extend it directly without redeclaring.
+Object.Destroy           = function(obj, delay)     { GameObject.Destroy(obj, delay); };
+Object.Instantiate       = function(path, pos, rot) { return GameObject.Instantiate(path, pos, rot); };
+Object.DontDestroyOnLoad = function(_obj)           {};
 
 // ── SceneManager property shims ───────────────────────────────────────────────
-if (typeof SceneManager !== "undefined") {
-    SceneManager.LoadScene = SceneManager.LoadScene;  // already generated
-}
-
-// ── Component.Get / .Add / .Remove pass-through (registered by sandbox) ───────
-// These are wired at runtime by the physics/renderer integration layers.
-if (!SceneManager.hasOwnProperty("_guarded")) {
+if (typeof SceneManager !== "undefined" && !SceneManager.hasOwnProperty("_guarded")) {
     Object.defineProperty(SceneManager, "_guarded", { value: true, writable: false });
 }
 "#;

@@ -30,6 +30,8 @@ use fluxion_core::{
 pub struct EditorShell {
     state:    egui_winit::State,
     renderer: egui_wgpu::Renderer,
+    /// egui texture id for the scene viewport image (registered from the wgpu render target).
+    pub viewport_egui_id: Option<egui::TextureId>,
 }
 
 impl EditorShell {
@@ -45,7 +47,7 @@ impl EditorShell {
             Some(max_tex),
         );
         let renderer = egui_wgpu::Renderer::new(device, surface_format, None, 1, false);
-        Self { state, renderer }
+        Self { state, renderer, viewport_egui_id: None }
     }
 
     pub fn on_window_event(
@@ -109,6 +111,30 @@ impl EditorShell {
 
         extras
     }
+
+    /// Register (first call) or update (subsequent calls) the wgpu texture used for the
+    /// scene viewport panel.  Must be called before the egui frame that displays it.
+    pub fn update_viewport_texture(
+        &mut self,
+        device: &wgpu::Device,
+        view:   &wgpu::TextureView,
+    ) -> egui::TextureId {
+        match self.viewport_egui_id {
+            Some(id) => {
+                self.renderer.update_egui_texture_from_wgpu_texture(
+                    device, view, wgpu::FilterMode::Linear, id,
+                );
+                id
+            }
+            None => {
+                let id = self.renderer.register_native_texture(
+                    device, view, wgpu::FilterMode::Linear,
+                );
+                self.viewport_egui_id = Some(id);
+                id
+            }
+        }
+    }
 }
 
 // ── Editor state ──────────────────────────────────────────────────────────────
@@ -148,22 +174,25 @@ impl EditorState {
 // ── Main paint function ───────────────────────────────────────────────────────
 
 pub fn paint_editor(
-    shell:         &mut EditorShell,
-    editor:        &mut EditorState,
-    window:        &Arc<Window>,
-    device:        &wgpu::Device,
-    queue:         &wgpu::Queue,
-    encoder:       &mut wgpu::CommandEncoder,
-    surface_view:  &wgpu::TextureView,
-    width:         u32,
-    height:        u32,
-    world:         &ECSWorld,
-    registry:      &ComponentRegistry,
+    shell:          &mut EditorShell,
+    editor:         &mut EditorState,
+    window:         &Arc<Window>,
+    device:         &wgpu::Device,
+    queue:          &wgpu::Queue,
+    encoder:        &mut wgpu::CommandEncoder,
+    surface_view:   &wgpu::TextureView,
+    width:          u32,
+    height:         u32,
+    world:          &ECSWorld,
+    registry:       &ComponentRegistry,
     ui_debug_lines: &[String],
-    dt:            f32,
-    smooth_fps:    f32,
-    elapsed:       f32,
-    frame:         u64,
+    dt:             f32,
+    smooth_fps:     f32,
+    elapsed:        f32,
+    frame:          u64,
+    viewport_id:    Option<egui::TextureId>,
+    vp_w:           u32,
+    vp_h:           u32,
 ) -> Vec<wgpu::CommandBuffer> {
     let result = shell.paint(
         window.as_ref(),
@@ -174,7 +203,11 @@ pub fn paint_editor(
         width,
         height,
         |ctx| {
-            draw_editor_ui(ctx, editor, world, registry, ui_debug_lines, dt, smooth_fps, elapsed, frame);
+            draw_editor_ui(
+                ctx, editor, world, registry, ui_debug_lines,
+                dt, smooth_fps, elapsed, frame,
+                viewport_id, vp_w, vp_h,
+            );
         },
     );
 
@@ -196,6 +229,9 @@ fn draw_editor_ui(
     smooth_fps:     f32,
     elapsed:        f32,
     frame:          u64,
+    viewport_id:    Option<egui::TextureId>,
+    vp_w:           u32,
+    vp_h:           u32,
 ) {
     // ── Top menu bar ──────────────────────────────────────────────────────────
     egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
@@ -244,15 +280,29 @@ fn draw_editor_ui(
             draw_inspector(ui, editor, world, registry);
         });
 
-    // ── Central area (just shows that the viewport lives here) ────────────────
+    // ── Central area — scene viewport ─────────────────────────────────────────
     egui::CentralPanel::default().show(ctx, |ui| {
-        ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::TopDown), |ui| {
-            ui.label(
-                egui::RichText::new("[ Viewport ]")
-                    .color(egui::Color32::from_gray(60))
-                    .size(18.0),
-            );
-        });
+        match viewport_id {
+            Some(tex_id) => {
+                let rect = ui.available_rect_before_wrap();
+                ui.painter().image(
+                    tex_id,
+                    rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                let _ = (vp_w, vp_h); // available for future aspect-ratio logic
+            }
+            None => {
+                ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::TopDown), |ui| {
+                    ui.label(
+                        egui::RichText::new("[ Viewport ]")
+                            .color(egui::Color32::from_gray(60))
+                            .size(18.0),
+                    );
+                });
+            }
+        }
     });
 }
 

@@ -227,13 +227,36 @@ impl SandboxInner {
             // Capture a raw pointer to world so we can share it between render_with
             // (which takes &self.world) and the paint closure without a double-borrow.
             let world_ptr: *const ECSWorld = &self.world;
+            // Push viewport size for Rune scripts (uses renderer dims before render)
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(ref vm) = self.rune_vm {
+                vm.push_viewport(renderer.width, renderer.height);
+            }
+
             let res = {
                 let editor_state = &mut self.editor_state;
                 if let Some(ref mut editor) = self.editor {
                     // SAFETY: world_ptr points to self.world which lives for the duration of
-                    // this block. render_with + the closure both take &ECSWorld (shared).
+                    // this block. Both render calls + closure take &ECSWorld (shared).
                     let world_ref: &ECSWorld = unsafe { &*world_ptr };
-                    renderer.render_with(world_ref, &self.time, |device, queue, enc, view| {
+
+                    // Step 1: render 3D scene to offscreen viewport texture
+                    if let Err(e) = renderer.render_to_viewport(world_ref, &self.time) {
+                        log::error!("Viewport render: {e}");
+                    }
+
+                    // Step 2: register / update the viewport texture with egui
+                    let (vp_w, vp_h) = (renderer.width, renderer.height);
+                    let tex_id = {
+                        if let Some(view) = renderer.viewport_view() {
+                            Some(editor.update_viewport_texture(&renderer.device, view))
+                        } else {
+                            None
+                        }
+                    };
+
+                    // Step 3: render egui UI to surface (no 3D pipeline)
+                    renderer.render_ui_only(|device, queue, enc, surface_view| {
                         editor_shell::paint_editor(
                             editor,
                             editor_state,
@@ -241,7 +264,7 @@ impl SandboxInner {
                             device,
                             queue,
                             enc,
-                            view,
+                            surface_view,
                             w,
                             h,
                             world_ref,
@@ -251,6 +274,9 @@ impl SandboxInner {
                             smooth_fps,
                             elapsed,
                             frame,
+                            tex_id,
+                            vp_w,
+                            vp_h,
                         )
                     })
                 } else {

@@ -22,10 +22,33 @@ use crate::hot_reload::HotReloadWatcher;
 pub static TIME_SNAPSHOT: TimeSnapshot = TimeSnapshot::new();
 /// Atomic snapshot of input state. Accessed via `input_snapshot()`.
 static INPUT_SNAPSHOT_CELL: OnceLock<InputSnapshot> = OnceLock::new();
+/// Atomic snapshot of the editor viewport pixel size.
+pub static VIEWPORT_SNAPSHOT: ViewportSnapshot = ViewportSnapshot::new();
 
 /// Get the global input snapshot (lazily initialized).
 pub fn input_snapshot() -> &'static InputSnapshot {
     INPUT_SNAPSHOT_CELL.get_or_init(InputSnapshot::default)
+}
+
+pub struct ViewportSnapshot {
+    width:  std::sync::atomic::AtomicU32,
+    height: std::sync::atomic::AtomicU32,
+}
+
+impl ViewportSnapshot {
+    pub const fn new() -> Self {
+        Self {
+            width:  std::sync::atomic::AtomicU32::new(1280),
+            height: std::sync::atomic::AtomicU32::new(720),
+        }
+    }
+    pub fn update(&self, w: u32, h: u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.width.store(w, Relaxed);
+        self.height.store(h, Relaxed);
+    }
+    pub fn load_width(&self)  -> u32 { self.width.load(std::sync::atomic::Ordering::Relaxed) }
+    pub fn load_height(&self) -> u32 { self.height.load(std::sync::atomic::Ordering::Relaxed) }
 }
 
 pub struct TimeSnapshot {
@@ -373,6 +396,11 @@ impl RuneVm {
     /// Push current frame timing into the global snapshot read by `fluxion::time`.
     pub fn push_time(&self, dt: f32, elapsed: f32, frame: u64) {
         TIME_SNAPSHOT.update(dt, elapsed, frame);
+    }
+
+    /// Push current viewport pixel size into the global snapshot read by `fluxion::viewport`.
+    pub fn push_viewport(&self, width: u32, height: u32) {
+        VIEWPORT_SNAPSHOT.update(width, height);
     }
 
     /// Push currently held keys into the global snapshot read by `fluxion::input`.
