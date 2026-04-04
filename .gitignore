@@ -1,3 +1,6 @@
+# Local copy of the legacy FluxionJsV3 tree (JS/TS + old Rust); not pushed to GitHub.
+/FluxionJsV3/
+
 # Cargo / Rust build output
 /target/
 **/target/
