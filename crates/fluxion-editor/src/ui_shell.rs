@@ -72,6 +72,17 @@ impl UiShell {
         }
     }
 
+}
+
+impl Drop for UiShell {
+    fn drop(&mut self) {
+        if let Some(id) = self.viewport_texture.take() {
+            self.renderer.free_texture(&id);
+        }
+    }
+}
+
+impl UiShell {
     pub fn on_window_event(
         &mut self,
         window: &Window,

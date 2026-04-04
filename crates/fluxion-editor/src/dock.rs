@@ -8,7 +8,7 @@
 
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
 
-use crate::rune_bindings::{set_current_ui, clear_current_ui};
+use crate::rune_bindings::{set_current_ui, UiContextGuard};
 
 // ── Tab data ─────────────────────────────────────────────────────────────────
 
@@ -44,20 +44,17 @@ impl<'a> egui_dock::TabViewer for RuneTabViewer<'a> {
         // Build the &[&str] path from "module::function".
         let parts: Vec<&str> = tab.rune_fn.split("::").collect();
 
-        // Set thread-local Ui pointer so Rune ui bindings can access it.
-        set_current_ui(ui);
+        // Guard clears CURRENT_UI on drop — safe on both normal return and panic.
+        let _ui_guard: UiContextGuard = set_current_ui(ui);
 
         let result = self.vm.call_fn(&parts, ());
         if let Err(e) = result {
-            clear_current_ui();
             // Use {e:#} to show the full anyhow error chain (not just the wrapper message).
             let msg = format!("{e:#}");
             log::error!("Rune panel '{}': {msg}", tab.rune_fn);
             ui.colored_label(egui::Color32::RED, format!("⚠ {}: {msg}", tab.rune_fn));
-            return;
         }
-
-        clear_current_ui();
+        // _ui_guard drops here (or on early return above), clearing CURRENT_UI.
     }
 
     fn closeable(&mut self, _tab: &mut EditorTab) -> bool {

@@ -21,8 +21,8 @@ use fluxion_rune_scripting::RuneVm;
 
 use crate::rune_bindings::{
     all_editor_modules,
-    clear_world_context, drain_pending_edits, get_selected_id,
-    set_world_context,
+    drain_pending_edits, get_selected_id,
+    set_world_context, WorldContextGuard,
 };
 use crate::rune_bindings::world_module::push_log;
 
@@ -173,14 +173,10 @@ impl EditorHost {
 
     // ── World context helpers ───────────────────────────────────────────────────
 
-    /// Set thread-locals so the Rune world module can access ECS data.
-    pub fn push_world_context(&self) {
-        set_world_context(&self.world, &self.registry);
-    }
-
-    /// Clear thread-locals after the Rune frame is done.
-    pub fn pop_world_context(&self) {
-        clear_world_context();
+    /// Set thread-locals so the Rune world module can access ECS data this frame.
+    /// Returns a `WorldContextGuard`; thread-locals are cleared when it drops.
+    pub fn push_world_context(&self) -> WorldContextGuard {
+        set_world_context(&self.world, &self.registry)
     }
 
     /// Apply queued field mutations produced by Rune inspector panels.

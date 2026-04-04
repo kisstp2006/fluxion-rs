@@ -45,10 +45,24 @@ pub struct PendingEdit {
 
 // ── Public host API ────────────────────────────────────────────────────────────
 
+/// RAII guard returned by `set_world_context`.
+/// Clears all world-related thread-locals on drop, even if a panic unwinds
+/// through the render closure.
+pub struct WorldContextGuard;
+
+impl Drop for WorldContextGuard {
+    fn drop(&mut self) {
+        WORLD_PTR   .with(|c| c.set(None));
+        REG_PTR     .with(|c| c.set(None));
+        ENTITY_CACHE.with(|cache| cache.borrow_mut().clear());
+    }
+}
+
 /// Set world + registry pointers before a Rune panel call.
 /// Also rebuilds the entity ID cache for O(1) lookups this frame.
-/// # Safety: pointers must remain valid until `clear_world_context()` is called.
-pub fn set_world_context(world: &ECSWorld, registry: &ComponentRegistry) {
+/// Returns a `WorldContextGuard` that clears the pointers on drop.
+/// # Safety: pointers must remain valid for the lifetime of the guard.
+pub fn set_world_context(world: &ECSWorld, registry: &ComponentRegistry) -> WorldContextGuard {
     WORLD_PTR.with(|c| c.set(Some(NonNull::from(world))));
     REG_PTR  .with(|c| c.set(Some(NonNull::from(registry))));
     ENTITY_CACHE.with(|cache| {
@@ -58,12 +72,14 @@ pub fn set_world_context(world: &ECSWorld, registry: &ComponentRegistry) {
             map.insert(e.to_bits(), e);
         }
     });
+    WorldContextGuard
 }
 
-/// Clear world + registry pointers after the Rune panel call.
+/// Clear world + registry pointers immediately.
+/// Prefer holding the `WorldContextGuard` from `set_world_context` instead.
 pub fn clear_world_context() {
-    WORLD_PTR.with(|c| c.set(None));
-    REG_PTR  .with(|c| c.set(None));
+    WORLD_PTR   .with(|c| c.set(None));
+    REG_PTR     .with(|c| c.set(None));
     ENTITY_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
@@ -73,8 +89,15 @@ pub fn drain_pending_edits() -> Vec<PendingEdit> {
 }
 
 /// Append a log line from Rust host code.
+/// Caps the log at 10 000 entries; drains the oldest 1 000 when exceeded.
 pub fn push_log(line: String) {
-    LOG_LINES.with(|l| l.borrow_mut().push(line));
+    LOG_LINES.with(|l| {
+        let mut v = l.borrow_mut();
+        if v.len() >= 10_000 {
+            v.drain(..1_000);
+        }
+        v.push(line);
+    });
     LOG_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
 }
 

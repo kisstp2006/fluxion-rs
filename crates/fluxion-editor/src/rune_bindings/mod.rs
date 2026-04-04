@@ -5,9 +5,9 @@ pub mod viewport_module;
 use anyhow::Result;
 use rune::Module;
 
-pub use ui_module::{set_current_ui, clear_current_ui};
+pub use ui_module::{set_current_ui, UiContextGuard};
 pub use world_module::{
-    set_world_context, clear_world_context,
+    set_world_context, clear_world_context, WorldContextGuard,
     drain_pending_edits, PendingEdit,
     push_log, get_selected_id,
 };

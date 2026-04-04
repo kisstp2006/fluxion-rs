@@ -16,15 +16,29 @@ thread_local! {
     static CURRENT_UI: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
 }
 
-/// Set the active UI context before calling a Rune panel function.
-///
-/// # Safety
-/// The caller guarantees that `ui` outlives the Rune call that follows.
-pub fn set_current_ui(ui: &mut egui::Ui) {
-    CURRENT_UI.with(|c| c.set(Some(NonNull::from(ui))));
+/// RAII guard returned by `set_current_ui`.
+/// Clears the `CURRENT_UI` thread-local on drop, even if a panic unwinds
+/// through the panel call.
+pub struct UiContextGuard;
+
+impl Drop for UiContextGuard {
+    fn drop(&mut self) {
+        CURRENT_UI.with(|c| c.set(None));
+    }
 }
 
-/// Clear the active UI context after the Rune panel function returns.
+/// Set the active UI context before calling a Rune panel function.
+/// Returns a `UiContextGuard` that clears the pointer on drop.
+///
+/// # Safety
+/// The caller guarantees that `ui` outlives the returned guard.
+pub fn set_current_ui(ui: &mut egui::Ui) -> UiContextGuard {
+    CURRENT_UI.with(|c| c.set(Some(NonNull::from(ui))));
+    UiContextGuard
+}
+
+/// Clear the active UI context immediately.
+/// Prefer holding the `UiContextGuard` from `set_current_ui` instead.
 pub fn clear_current_ui() {
     CURRENT_UI.with(|c| c.set(None));
 }

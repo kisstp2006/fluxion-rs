@@ -294,7 +294,8 @@ impl EditorInner {
         }
 
         // Push ECS context so Rune panels can read data this frame.
-        self.host.push_world_context();
+        // Guard clears thread-locals on drop (even on panic).
+        let _world_ctx = self.host.push_world_context();
 
         // Render 3-D scene to offscreen viewport texture.
         if let Err(e) = self.renderer.render_to_viewport(&self.host.world, &self.host.time) {
@@ -420,8 +421,8 @@ impl EditorInner {
             self.new_scene();
         }
 
-        // Clear world context after the full frame.
-        self.host.pop_world_context();
+        // _world_ctx drops here, clearing the thread-locals.
+        drop(_world_ctx);
 
         match result {
             Ok(()) => {}

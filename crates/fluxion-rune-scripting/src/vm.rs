@@ -352,7 +352,9 @@ impl RuneVm {
             }
             Err(e) => {
                 let msg = format!("{e:?}");
-                if msg.contains("MissingFunction") || msg.contains("missing function") {
+                if msg.contains("MissingFunction") || msg.contains("missing function")
+                    || msg.contains("MissingEntry")
+                {
                     return Ok(None);
                 }
                 Err(anyhow::anyhow!("Rune call {:?}: {e}", fn_path))
