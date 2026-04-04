@@ -36,14 +36,14 @@ use winit::{
 };
 
 use fluxion_core::{
-    ECSWorld, Time,
+    ECSWorld, EntityId, Time,
     components::{Camera, Light, MeshRenderer},
     components::light::LightType,
     components::mesh_renderer::PrimitiveType,
     transform::Transform,
     transform::system::TransformSystem,
 };
-use fluxion_renderer::FluxionRenderer;
+use fluxion_renderer::{FluxionRenderer, MaterialAsset};
 use fluxion_scripting::{JsVm, bindings};
 
 // ── Entry point ────────────────────────────────────────────────────────────────
@@ -102,12 +102,16 @@ impl RunningState {
         let     time   = Time::new();
 
         // ── Create demo scene ─────────────────────────────────────────────────
-        setup_scene(&mut world);
+        let scene = setup_scene(&mut world);
 
         // ── Renderer init (async, blocked by pollster on native) ──────────────
         #[cfg(not(target_arch = "wasm32"))]
-        let renderer = pollster::block_on(FluxionRenderer::new(window.clone()))
+        let mut renderer = pollster::block_on(FluxionRenderer::new(window.clone()))
             .expect("Renderer init failed");
+
+        // ── Register demo materials and assign to scene entities ──────────────
+        #[cfg(not(target_arch = "wasm32"))]
+        setup_materials(&mut renderer, &mut world, &scene);
 
         // ── JS scripting VM ───────────────────────────────────────────────────
         let scripts = JsVm::new().expect("JS VM init failed");
@@ -125,6 +129,9 @@ impl RunningState {
                 log::info!("No spinner.js found — running without JS demo script");
             }
         }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let renderer = renderer;  // drop mut binding
 
         RunningState { window, world, time, renderer, scripts }
     }
@@ -169,7 +176,13 @@ impl RunningState {
 
 // ── Scene setup ────────────────────────────────────────────────────────────────
 
-fn setup_scene(world: &mut ECSWorld) {
+struct SceneEntities {
+    cube:   EntityId,
+    sphere: EntityId,
+    ground: EntityId,
+}
+
+fn setup_scene(world: &mut ECSWorld) -> SceneEntities {
     // ── Camera ────────────────────────────────────────────────────────────────
     let camera_entity = world.spawn(Some("MainCamera"));
     {
@@ -236,6 +249,44 @@ fn setup_scene(world: &mut ECSWorld) {
     TransformSystem::update(world);
 
     log::info!("Scene created: {} entities", world.entity_count());
+    SceneEntities { cube, sphere, ground }
+}
+
+fn setup_materials(
+    renderer: &mut FluxionRenderer,
+    world:    &mut ECSWorld,
+    scene:    &SceneEntities,
+) {
+    // Warm orange-red PBR material for the cube
+    let cube_mat = renderer.add_material(&MaterialAsset {
+        name:      "Cube_Mat".to_string(),
+        color:     [0.8, 0.3, 0.1, 1.0],   // orange-red
+        roughness: 0.4,
+        metalness: 0.0,
+        ..MaterialAsset::default()
+    }).expect("cube material");
+
+    // Shiny dark metallic material for the sphere
+    let sphere_mat = renderer.add_material(&MaterialAsset {
+        name:      "Sphere_Mat".to_string(),
+        color:     [0.15, 0.15, 0.2, 1.0],  // dark blue-grey
+        roughness: 0.1,
+        metalness: 0.9,
+        ..MaterialAsset::default()
+    }).expect("sphere material");
+
+    // Light grey concrete-like material for the ground
+    let ground_mat = renderer.add_material(&MaterialAsset {
+        name:      "Ground_Mat".to_string(),
+        color:     [0.5, 0.5, 0.48, 1.0],   // warm grey
+        roughness: 0.85,
+        metalness: 0.0,
+        ..MaterialAsset::default()
+    }).expect("ground material");
+
+    renderer.set_entity_material(world, scene.cube,   cube_mat);
+    renderer.set_entity_material(world, scene.sphere, sphere_mat);
+    renderer.set_entity_material(world, scene.ground, ground_mat);
 }
 
 // ── winit ApplicationHandler ──────────────────────────────────────────────────

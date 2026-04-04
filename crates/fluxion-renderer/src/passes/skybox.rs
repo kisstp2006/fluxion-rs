@@ -38,19 +38,18 @@ impl Default for SkyParams {
 }
 
 pub struct SkyboxPass {
-    pub params:   SkyParams,
-    pipeline:     Option<wgpu::RenderPipeline>,
-    bgl:          Option<wgpu::BindGroupLayout>,
-    bind_group:   Option<wgpu::BindGroup>,
-    sky_buf:      Option<wgpu::Buffer>,
-    camera_buf:   Option<wgpu::Buffer>,
-    surface_format: wgpu::TextureFormat,
+    pub params: SkyParams,
+    pipeline:   Option<wgpu::RenderPipeline>,
+    bgl:        Option<wgpu::BindGroupLayout>,
+    bind_group: Option<wgpu::BindGroup>,
+    sky_buf:    Option<wgpu::Buffer>,
+    camera_buf: Option<wgpu::Buffer>,
 }
 
 impl SkyboxPass {
-    pub fn new(surface_format: wgpu::TextureFormat) -> Self {
+    pub fn new() -> Self {
         Self { params: SkyParams::default(), pipeline: None, bgl: None,
-               bind_group: None, sky_buf: None, camera_buf: None, surface_format }
+               bind_group: None, sky_buf: None, camera_buf: None }
     }
 }
 
@@ -107,29 +106,46 @@ impl RenderPass for SkyboxPass {
         self.pipeline = Some(pipeline);
     }
 
+    fn resize(&mut self, _device: &wgpu::Device, _w: u32, _h: u32) {
+        // depth texture was recreated on resize — invalidate cached bind group
+        self.bind_group = None;
+    }
+
     fn execute(&mut self, ctx: &mut RenderContext) {
+        // Lazy-build bind group (depth.view is recreated on resize)
+        if self.bind_group.is_none() {
+            if let (Some(bgl), Some(sky_buf), Some(camera_buf)) =
+                (self.bgl.as_ref(), self.sky_buf.as_ref(), self.camera_buf.as_ref())
+            {
+                self.bind_group = Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("sky_bg"), layout: bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: sky_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: camera_buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&ctx.resources.depth.view) },
+                    ],
+                }));
+            }
+        }
+
         let pipeline   = match self.pipeline.as_ref()   { Some(p) => p, None => return };
-        let sky_buf    = match self.sky_buf.as_ref()    { Some(b) => b, None => return };
-        let camera_buf = match self.camera_buf.as_ref() { Some(b) => b, None => return };
-        let bgl        = match self.bgl.as_ref()        { Some(l) => l, None => return };
+        let sky_buf    = match self.sky_buf.as_ref()     { Some(b) => b, None => return };
+        let camera_buf = match self.camera_buf.as_ref()  { Some(b) => b, None => return };
+        let bind_group = match self.bind_group.as_ref()  { Some(g) => g, None => return };
 
         ctx.queue.write_buffer(sky_buf, 0, bytemuck::bytes_of(&self.params));
 
-        // Upload camera inv_view_proj + position
+        // Upload camera matrices + position
         #[repr(C)] #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
         struct CamData { vp: [[f32;4];4], ivp: [[f32;4];4], pos: [f32;3], _p: f32 }
         let cam = &ctx.frame.camera;
-        let cam_data = CamData { vp: cam.view_proj.to_cols_array_2d(), ivp: cam.inv_view_proj.to_cols_array_2d(), pos: cam.position.to_array(), _p: 0.0 };
+        let cam_data = CamData {
+            vp:  cam.view_proj.to_cols_array_2d(),
+            ivp: cam.inv_view_proj.to_cols_array_2d(),
+            pos: cam.position.to_array(),
+            _p:  0.0,
+        };
         ctx.queue.write_buffer(camera_buf, 0, bytemuck::bytes_of(&cam_data));
-
-        let bg = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("sky_bg"), layout: bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: sky_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: camera_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&ctx.resources.depth.view) },
-            ],
-        });
 
         let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("skybox_pass"),
@@ -140,7 +156,9 @@ impl RenderPass for SkyboxPass {
             depth_stencil_attachment: None, ..Default::default()
         });
         rpass.set_pipeline(pipeline);
-        rpass.set_bind_group(0, &bg, &[]);
+        rpass.set_bind_group(0, bind_group, &[]);
         rpass.draw(0..3, 0..1);
     }
 }
+
+impl Default for SkyboxPass { fn default() -> Self { Self::new() } }

@@ -65,6 +65,10 @@ pub struct FluxionRenderer {
     pub textures:  TextureCache,
     pub shaders:   ShaderCache,
 
+    /// The BindGroupLayout used by all PBR materials (group 2 in geometry pass).
+    /// Stored here so `add_material()` can create new materials after init.
+    pub mat_bgl: wgpu::BindGroupLayout,
+
     light_buffer: LightBuffer,
 
     pub width:  u32,
@@ -174,25 +178,57 @@ impl FluxionRenderer {
         let light_buffer  = LightBuffer::new(&device);
 
         // ── Render graph ──────────────────────────────────────────────────────
+        let mut bloom = BloomPass::new();
+        bloom.config.threshold  = 1.2;  // only very bright pixels (sun disc, emissives)
+        bloom.config.strength   = 0.25;
+        bloom.config.blur_passes = 4;
+
+        let mut tonemap = TonemapPass::new(surface_format);
+        tonemap.config.exposure           = 0.7;   // reduce from 1.0 — scene is very bright
+        tonemap.config.vignette_intensity = 0.25;
+        tonemap.config.film_grain         = 0.01;
+        tonemap.config.chromatic_aberration = 0.3;
+
         let mut render_graph = RenderGraph::new();
         render_graph.add_pass("geometry",  PassSlot::Geometry,  Box::new(GeometryPass::new()));
         render_graph.add_pass("lighting",  PassSlot::Lighting,  Box::new(LightingPass::new()));
-        render_graph.add_pass("skybox",    PassSlot::Skybox,    Box::new(SkyboxPass::new(surface_format)));
+        render_graph.add_pass("skybox",    PassSlot::Skybox,    Box::new(SkyboxPass::new()));
         render_graph.add_pass("ssao",      PassSlot::Ssao,      Box::new(SsaoPass::new()));
-        render_graph.add_pass("bloom",     PassSlot::Bloom,     Box::new(BloomPass::new()));
-        render_graph.add_pass("tonemap",   PassSlot::Tonemap,   Box::new(TonemapPass::new(surface_format)));
+        render_graph.add_pass("bloom",     PassSlot::Bloom,     Box::new(bloom));
+        render_graph.add_pass("tonemap",   PassSlot::Tonemap,   Box::new(tonemap));
         render_graph.prepare(&device, &resources);
 
         Ok(Self {
             device, queue, surface, config,
             render_graph, resources,
             materials, meshes, textures, shaders: ShaderCache::new(),
+            mat_bgl,
             light_buffer,
             width: w, height: h,
         })
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────
+
+    /// Create a material from a descriptor and register it. Returns the handle.
+    pub fn add_material(&mut self, asset: &crate::material::MaterialAsset) -> anyhow::Result<u32> {
+        let mat = crate::material::PbrMaterial::from_asset(
+            &self.device, &self.queue, asset, &self.mat_bgl, &mut self.textures,
+        )?;
+        Ok(self.materials.add(mat))
+    }
+
+    /// Assign a material handle to a MeshRenderer entity in the world.
+    pub fn set_entity_material(
+        &self,
+        world: &mut fluxion_core::ECSWorld,
+        entity: fluxion_core::EntityId,
+        handle: u32,
+    ) {
+        if let Some(mut mr) = world.get_component_mut::<fluxion_core::components::MeshRenderer>(entity) {
+            mr.material_handle = Some(handle);
+        }
+    }
 
     /// Call when the window is resized.
     pub fn resize(&mut self, width: u32, height: u32) {

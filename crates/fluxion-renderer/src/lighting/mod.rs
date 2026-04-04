@@ -38,19 +38,24 @@ pub struct LightUniform {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct LightBufferData {
-    pub count: u32,
-    pub _pad0: u32,
-    pub _pad1: u32,
-    pub _pad2: u32,
+    pub count:           u32,
+    pub _pad0:           u32,
+    pub _pad1:           u32,
+    pub _pad2:           u32,
+    /// Flat ambient light color (linear RGB). Added to all surfaces regardless of normals.
+    pub ambient_color:   [f32; 3],
+    pub ambient_intensity: f32,
     pub lights: [LightUniform; MAX_LIGHTS],
 }
 
 impl LightBufferData {
     pub fn new() -> Self {
         Self {
-            count:  0,
-            _pad0:  0, _pad1: 0, _pad2: 0,
-            lights: [LightUniform::zeroed(); MAX_LIGHTS],
+            count:             0,
+            _pad0:             0, _pad1: 0, _pad2: 0,
+            ambient_color:     [0.5, 0.6, 0.7],  // sky blue tint
+            ambient_intensity: 0.08,
+            lights:            [LightUniform::zeroed(); MAX_LIGHTS],
         }
     }
 

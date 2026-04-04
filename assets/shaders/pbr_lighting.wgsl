@@ -54,11 +54,13 @@ struct LightData {
 }
 
 struct LightBuffer {
-    count:  u32,
-    _pad0:  u32,
-    _pad1:  u32,
-    _pad2:  u32,
-    lights: array<LightData, 64>,
+    count:             u32,
+    _pad0:             u32,
+    _pad1:             u32,
+    _pad2:             u32,
+    ambient_color:     vec3<f32>,
+    ambient_intensity: f32,
+    lights:            array<LightData, 64>,
 }
 
 @group(1) @binding(0) var<uniform> light_buf: LightBuffer;
@@ -232,11 +234,10 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
         total_radiance += brdf * radiance;
     }
 
-    // ── Ambient (simple hemispherical approximation) ──────────────────────────
-    // Real engines use IBL (Image-Based Lighting). We use a cheap constant
-    // ambient here. The SSAO pass will multiply this by the occlusion term.
-    let ambient_color = vec3<f32>(0.03);
-    let ambient = ambient_color * albedo * ao;
+    // ── Ambient (configurable flat ambient from LightBuffer) ─────────────────
+    // Tinted by the sky color set from Rust. SSAO multiplies this by occlusion.
+    // For IBL: replace with irradiance cubemap sample here.
+    let ambient = light_buf.ambient_color * light_buf.ambient_intensity * albedo * ao;
 
     // ── Final composition ─────────────────────────────────────────────────────
     var color = ambient + total_radiance + emission;
