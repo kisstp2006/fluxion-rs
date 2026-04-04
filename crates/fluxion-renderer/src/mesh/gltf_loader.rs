@@ -1,42 +1,118 @@
 // ============================================================
-// fluxion-renderer — glTF / glB mesh import
+// fluxion-renderer — glTF / glB mesh + PBR materials
 //
-// Loads the first mesh in the file (all triangle primitives merged)
-// into our deferred PBR vertex layout (position, normal, tangent, uv).
+// Geometry matches our deferred `Vertex` layout. Materials map to
+// `MaterialAsset` / `PbrMaterial` the same way FluxionJsV3 treats
+// MeshStandardMaterial: baseColor + metallicRoughness + normal +
+// occlusion + emissive (see Three.js glTF loader behaviour).
 //
-// See also: [learn-wgpu — models](https://sotrh.github.io/learn-wgpu/beginner/tutorial9-models/),
-// [renderling](https://github.com/schell/renderling) for larger-scale glTF + wgpu patterns.
+// ORM texture packing matches `geometry.frag.wgsl`: R = occlusion,
+// G = roughness, B = metallic (glTF MR texture uses G/B already).
 // ============================================================
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::Context;
 use glam::{Vec2, Vec3};
+use image::RgbaImage;
+
+use crate::material::material_asset::{AlphaMode, MaterialAsset};
 
 use super::Vertex;
 
-/// Load all **Triangles** primitives of the **first** mesh in `path` (.gltf / .glb).
+/// One triangle list + material index into [`GltfLoadOutput::materials`].
+#[derive(Debug)]
+pub struct GltfPrimitiveData {
+    pub vertices:       Vec<Vertex>,
+    pub indices:        Vec<u32>,
+    /// Index into `materials`; 0 is always a sensible default.
+    pub material_index: usize,
+}
+
+/// CPU-side result of loading a glTF file (meshes + Fluxion-compatible materials).
+#[derive(Debug)]
+pub struct GltfLoadOutput {
+    pub primitives: Vec<GltfPrimitiveData>,
+    pub materials:  Vec<MaterialAsset>,
+    /// Upload these to `TextureCache` (keys must match `MaterialAsset` texture fields).
+    pub textures:   Vec<GltfTextureUpload>,
+}
+
+#[derive(Debug)]
+pub struct GltfTextureUpload {
+    pub key: String,
+    pub rgba: RgbaImage,
+}
+
+/// Load first mesh: all triangle primitives, materials, and texture payloads.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_gltf_path_full(path: &Path) -> anyhow::Result<GltfLoadOutput> {
+    let path_str = path.to_str().context("path must be UTF-8")?;
+    let (doc, buffers, _gltf_images) =
+        gltf::import(path_str).with_context(|| format!("gltf::import({path_str})"))?;
+    let base = path.parent();
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("gltf");
+    let prefix = format!("gltf:{stem}");
+    load_document_full(&doc, &buffers, base, &prefix)
+}
+
+/// In-memory `.glb` (embedded buffers only; external `uri` images error without a base path).
+pub fn load_gltf_slice_full(data: &[u8]) -> anyhow::Result<GltfLoadOutput> {
+    let (doc, buffers, _) = gltf::import_slice(data).context("gltf::import_slice")?;
+    let prefix = "gltf:embedded";
+    load_document_full(&doc, &buffers, None, prefix)
+}
+
+/// Legacy: merged geometry of the first mesh (no materials). Prefer [`load_gltf_path_full`].
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_gltf_path(path: &Path) -> anyhow::Result<(Vec<Vertex>, Vec<u32>)> {
-    let path_str = path.to_str().context("path must be UTF-8")?;
-    let (doc, buffers, _images) = gltf::import(path_str).with_context(|| format!("gltf::import({path_str})"))?;
-    load_first_mesh(&doc, &buffers)
+    let out = load_gltf_path_full(path)?;
+    merge_primitives(&out)
 }
 
-/// Load from an in-memory `.glb` / `.gltf` slice (e.g. after `fetch` on WASM).
 pub fn load_gltf_slice(data: &[u8]) -> anyhow::Result<(Vec<Vertex>, Vec<u32>)> {
-    let (doc, buffers, _images) = gltf::import_slice(data).context("gltf::import_slice")?;
-    load_first_mesh(&doc, &buffers)
+    let out = load_gltf_slice_full(data)?;
+    merge_primitives(&out)
 }
 
-fn load_first_mesh(doc: &gltf::Document, buffers: &[gltf::buffer::Data]) -> anyhow::Result<(Vec<Vertex>, Vec<u32>)> {
-    let mesh = doc
-        .meshes()
-        .next()
-        .context("glTF contains no meshes")?;
+fn merge_primitives(out: &GltfLoadOutput) -> anyhow::Result<(Vec<Vertex>, Vec<u32>)> {
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+    for p in &out.primitives {
+        let base = v.len() as u32;
+        v.extend_from_slice(&p.vertices);
+        for &ix in &p.indices {
+            i.push(base + ix);
+        }
+    }
+    anyhow::ensure!(!v.is_empty() && !i.is_empty(), "empty glTF geometry");
+    Ok((v, i))
+}
 
-    let mut all_vertices: Vec<Vertex> = Vec::new();
-    let mut all_indices: Vec<u32> = Vec::new();
+fn load_document_full(
+    doc: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+    base: Option<&Path>,
+    prefix: &str,
+) -> anyhow::Result<GltfLoadOutput> {
+    let decoded = decode_all_images(doc, buffers, base)?;
+    let n_declared = doc.materials().len();
+    let n_slots = n_declared.max(1);
+    let mut materials = vec![default_gltf_material(0); n_slots];
+    let mut uploads: Vec<GltfTextureUpload> = Vec::new();
+    let mut seen_keys = HashSet::<String>::new();
+
+    for m in doc.materials() {
+        if let Some(idx) = m.index() {
+            if idx < materials.len() {
+                materials[idx] = gltf_material_to_asset(&m, &decoded, prefix, &mut uploads, &mut seen_keys)?;
+            }
+        }
+    }
+
+    let mesh = doc.meshes().next().context("glTF contains no meshes")?;
+    let mut primitives = Vec::new();
 
     for prim in mesh.primitives() {
         if prim.mode() != gltf::mesh::Mode::Triangles {
@@ -96,9 +172,9 @@ fn load_first_mesh(doc: &gltf::Document, buffers: &[gltf::buffer::Data]) -> anyh
             compute_tangents(&positions, &normals, &uvs, &indices)
         };
 
-        let base = all_vertices.len() as u32;
+        let mut vertices = Vec::with_capacity(count);
         for i in 0..count {
-            all_vertices.push(Vertex {
+            vertices.push(Vertex {
                 position: positions[i],
                 normal:   normals[i],
                 tangent:  tangents[i],
@@ -106,20 +182,230 @@ fn load_first_mesh(doc: &gltf::Document, buffers: &[gltf::buffer::Data]) -> anyh
             });
         }
 
-        for idx in &indices {
-            all_indices.push(base + idx);
+        let material_index = prim
+            .material()
+            .index()
+            .unwrap_or(0)
+            .min(materials.len().saturating_sub(1));
+
+        primitives.push(GltfPrimitiveData {
+            vertices,
+            indices,
+            material_index,
+        });
+    }
+
+    anyhow::ensure!(!primitives.is_empty(), "glTF mesh produced no triangle geometry");
+
+    Ok(GltfLoadOutput {
+        primitives,
+        materials,
+        textures: uploads,
+    })
+}
+
+fn default_gltf_material(i: usize) -> MaterialAsset {
+    let mut m = MaterialAsset::default();
+    m.name = format!("gltf_default_{i}");
+    // glTF 2.0 default PBR factors (matches Khronos sample viewer / Three.js glTF path).
+    m.roughness = 1.0;
+    m.metalness = 1.0;
+    m
+}
+
+fn decode_all_images(
+    doc: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+    base: Option<&Path>,
+) -> anyhow::Result<Vec<Option<RgbaImage>>> {
+    let mut out = vec![None; doc.images().len()];
+    for img in doc.images() {
+        let i = img.index();
+        let rgba = match img.source() {
+            gltf::image::Source::View { view, .. } => {
+                let buf: &[u8] = &buffers[view.buffer().index()];
+                let start = view.offset();
+                let end = start + view.length();
+                let slice = buf.get(start..end).context("image buffer view out of range")?;
+                image::load_from_memory(slice)
+                    .with_context(|| format!("decode embedded image {}", i))?
+                    .to_rgba8()
+            }
+            gltf::image::Source::Uri { uri, .. } => {
+                let base = base.context("glTF image uses external URI — need file directory (use .gltf not bare slice, or embed in .glb)")?;
+                let path = base.join(uri);
+                image::open(&path)
+                    .with_context(|| format!("open image URI {}", path.display()))?
+                    .to_rgba8()
+            }
+        };
+        out[i] = Some(rgba);
+    }
+    Ok(out)
+}
+
+fn push_texture(
+    uploads: &mut Vec<GltfTextureUpload>,
+    seen: &mut HashSet<String>,
+    key: String,
+    rgba: RgbaImage,
+) {
+    if seen.insert(key.clone()) {
+        uploads.push(GltfTextureUpload { key, rgba });
+    }
+}
+
+fn image_index_for_texture(tex: gltf::Texture<'_>, decoded: &[Option<RgbaImage>]) -> Option<usize> {
+    let idx = tex.source().index();
+    decoded.get(idx).and_then(|o| o.as_ref()).map(|_| idx)
+}
+
+/// Build `MaterialAsset` aligned with FluxionJsV3 / Three.MeshStandardMaterial + glTF 2.0 PBR.
+fn gltf_material_to_asset(
+    mat: &gltf::Material<'_>,
+    decoded: &[Option<RgbaImage>],
+    prefix: &str,
+    uploads: &mut Vec<GltfTextureUpload>,
+    seen: &mut HashSet<String>,
+) -> anyhow::Result<MaterialAsset> {
+    let pbr = mat.pbr_metallic_roughness();
+    let mut asset = MaterialAsset::default();
+
+    asset.name = mat
+        .name()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            mat.index()
+                .map(|i| format!("gltf_mat_{i}"))
+                .unwrap_or_else(|| "gltf_mat_default".to_string())
+        });
+
+    let c = pbr.base_color_factor();
+    asset.color = [c[0], c[1], c[2], c[3]];
+    asset.roughness = pbr.roughness_factor();
+    asset.metalness = pbr.metallic_factor();
+
+    let e = mat.emissive_factor();
+    asset.emissive = [e[0], e[1], e[2]];
+    asset.emissive_intensity = 1.0;
+
+    asset.normal_scale = mat.normal_texture().map(|n| n.scale()).unwrap_or(1.0);
+    asset.ao_intensity = mat.occlusion_texture().map(|o| o.strength()).unwrap_or(1.0);
+
+    asset.double_sided = mat.double_sided();
+    asset.alpha_mode = match mat.alpha_mode() {
+        gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+        gltf::material::AlphaMode::Mask => AlphaMode::Mask(mat.alpha_cutoff().unwrap_or(0.5)),
+        gltf::material::AlphaMode::Blend => AlphaMode::Blend,
+    };
+
+    // Unlit (KHR_materials_unlit): colour-only, like an unlit StandardMaterial in Three.
+    if mat.unlit() {
+        asset.roughness = 1.0;
+        asset.metalness = 0.0;
+        asset.normal_map = None;
+        asset.roughness_map = None;
+        asset.metalness_map = None;
+        asset.ao_map = None;
+    }
+
+    // ── Base color texture (sRGB — matches GpuTexture Rgba8UnormSrgb) ─────────
+    if let Some(info) = pbr.base_color_texture() {
+        let tex = info.texture();
+        if let Some(img_i) = image_index_for_texture(tex, decoded) {
+            let key = format!("{prefix}|img{img_i}");
+            if let Some(img) = decoded[img_i].clone() {
+                push_texture(uploads, seen, key.clone(), img);
+                asset.albedo_map = Some(key);
+            }
         }
     }
 
-    anyhow::ensure!(
-        !all_vertices.is_empty() && !all_indices.is_empty(),
-        "glTF mesh produced no triangle geometry"
-    );
+    if let Some(nt) = mat.normal_texture() {
+        let tex = nt.texture();
+        if let Some(img_i) = image_index_for_texture(tex, decoded) {
+            let key = format!("{prefix}|img{img_i}");
+            if let Some(img) = decoded[img_i].clone() {
+                push_texture(uploads, seen, key.clone(), img);
+                asset.normal_map = Some(key);
+            }
+        }
+    }
 
-    Ok((all_vertices, all_indices))
+    let mr_img = pbr
+        .metallic_roughness_texture()
+        .and_then(|info| image_index_for_texture(info.texture(), decoded));
+    let occ_img = mat
+        .occlusion_texture()
+        .and_then(|ot| image_index_for_texture(ot.texture(), decoded));
+
+    let orm = compose_orm_texture(
+        occ_img.and_then(|i| decoded[i].as_ref()),
+        mr_img.and_then(|i| decoded[i].as_ref()),
+    );
+    if let Some(rgba) = orm {
+        let mid = mat
+            .index()
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "def".to_string());
+        let key = format!("{prefix}|m{mid}|orm");
+        push_texture(uploads, seen, key.clone(), rgba);
+        asset.roughness_map = Some(key);
+    }
+
+    if let Some(et) = mat.emissive_texture() {
+        let tex = et.texture();
+        if let Some(img_i) = image_index_for_texture(tex, decoded) {
+            let key = format!("{prefix}|img{img_i}");
+            if let Some(img) = decoded[img_i].clone() {
+                push_texture(uploads, seen, key.clone(), img);
+                asset.emissive_map = Some(key);
+            }
+        }
+    }
+
+    Ok(asset)
 }
 
-/// Face normals averaged per vertex when glTF omits NORMAL.
+/// R = occlusion (default 1), G = roughness, B = metallic — matches WGSL `orm` sampling.
+fn compose_orm_texture(
+    occlusion: Option<&RgbaImage>,
+    metallic_roughness: Option<&RgbaImage>,
+) -> Option<RgbaImage> {
+    if occlusion.is_none() && metallic_roughness.is_none() {
+        return None;
+    }
+    let (w, h) = metallic_roughness
+        .map(|i| i.dimensions())
+        .or(occlusion.map(|i| i.dimensions()))
+        .unwrap_or((1, 1));
+
+    let sample = |img: &RgbaImage, x: u32, y: u32| -> image::Rgba<u8> {
+        let x = x.min(img.width().saturating_sub(1));
+        let y = y.min(img.height().saturating_sub(1));
+        *img.get_pixel(x, y)
+    };
+
+    let mut out = RgbaImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let occ_r = occlusion
+                .map(|o| sample(o, x, y)[0])
+                .unwrap_or(255);
+            let (g, b) = metallic_roughness
+                .map(|m| {
+                    let p = sample(m, x, y);
+                    (p[1], p[2])
+                })
+                .unwrap_or((255, 255));
+            out.put_pixel(x, y, image::Rgba([occ_r, g, b, 255]));
+        }
+    }
+    Some(out)
+}
+
+// ── Geometry helpers (unchanged) ────────────────────────────────────────────────
+
 fn compute_vertex_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     let mut acc: Vec<Vec3> = vec![Vec3::ZERO; positions.len()];
     for tri in indices.chunks(3) {
@@ -154,7 +440,6 @@ fn compute_vertex_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 
         .collect()
 }
 
-/// Tangent (xyz) + handedness (w) for normal mapping.
 fn compute_tangents(
     positions: &[[f32; 3]],
     normals: &[[f32; 3]],

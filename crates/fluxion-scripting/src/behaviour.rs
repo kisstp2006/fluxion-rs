@@ -96,7 +96,15 @@ class FluxionBehaviour {
 
 const __behaviours = [];
 
-function __fluxion_register(behaviour) {
+/// Optional second arg: entity display name (must match ECS `spawn(Some("Name"))`).
+/// When set, Rust copies Transform to `behaviour.transform` each frame before update()
+/// and writes changes back after (position / rotation euler XYZ radians / scale).
+function __fluxion_register(behaviour, entityName) {
+    if (entityName != null && entityName !== "") {
+        behaviour.__scriptTargetName = String(entityName);
+    } else {
+        behaviour.__scriptTargetName = null;
+    }
     __behaviours.push(behaviour);
 }
 

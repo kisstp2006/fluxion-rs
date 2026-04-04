@@ -22,7 +22,7 @@ bytemuck     = { workspace = true }
 wgpu         = { workspace = true }
 winit        = { workspace = true }
 image        = { workspace = true }
-gltf         = "1.4"
+gltf         = { version = "1.4", features = ["KHR_materials_unlit"] }
 
 # async runtime: pollster blocks futures on native; wasm-bindgen-futures drives them on web
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -5,12 +5,14 @@
 // a demo scene (or loads a `.scene` JSON path from argv on native),
 // and runs the engine loop.
 //
-// JS scripting demo (native): `assets/scripts/spinner.js`
+// JS scripting demo (native): `crates/fluxion-sandbox/assets/scripts/spinner.js`
 //
 // Controls:
 //   Esc — exit
 //
 // Native: optional first CLI argument — path to a FluxionJS-compatible `.scene` file.
+// If omitted and `assets/demo_gltf.scene` exists (next to this crate), that loads instead
+// of the primitive demo — so `cargo run -p fluxion-sandbox` shows your glTF without extra args.
 //
 // WASM: renderer initializes asynchronously via `wasm_bindgen_futures::spawn_local`.
 // ============================================================
@@ -39,7 +41,10 @@ use fluxion_core::{
     transform::system::TransformSystem,
 };
 use fluxion_renderer::{FluxionRenderer, MaterialAsset};
-use fluxion_scripting::{JsVm, bindings};
+use fluxion_scripting::{
+    JsVm, bindings,
+    apply_transforms_from_scripts_to_world, sync_transforms_from_world_to_scripts,
+};
 
 // ── Entry point ────────────────────────────────────────────────────────────────
 
@@ -115,8 +120,16 @@ impl SandboxInner {
             log::warn!("Input global update failed: {e}");
         }
 
+        if let Err(e) = sync_transforms_from_world_to_scripts(&self.scripts, &self.world) {
+            log::warn!("script transform sync (pre): {e}");
+        }
+
         if let Err(e) = self.scripts.update(dt) {
             log::warn!("Script update error: {e}");
+        }
+
+        if let Err(e) = apply_transforms_from_scripts_to_world(&self.scripts, &mut self.world) {
+            log::warn!("script transform sync (post): {e}");
         }
 
         TransformSystem::update(&mut self.world);
@@ -147,13 +160,15 @@ fn create_inner(window: Arc<Window>) -> Rc<RefCell<SandboxInner>> {
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let script_path = "assets/scripts/spinner.js";
-        if std::path::Path::new(script_path).exists() {
-            if let Err(e) = scripts.load_script(script_path) {
+        let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/scripts/spinner.js");
+        if script_path.is_file() {
+            let script_path = script_path.to_string_lossy();
+            if let Err(e) = scripts.load_script(script_path.as_ref()) {
                 log::warn!("Failed to load spinner script: {e}");
             }
         } else {
-            log::info!("No spinner.js found — running without JS demo script");
+            log::info!("No spinner.js at {} — running without JS demo script", script_path.display());
         }
     }
 
@@ -213,20 +228,29 @@ fn finish_renderer_setup(g: &mut SandboxInner) {
 
 fn bootstrap_world(world: &mut ECSWorld) -> (Option<SceneEntities>, Option<PathBuf>) {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(path) = std::env::args().nth(1) {
-        let p = PathBuf::from(&path);
-        let root = p.parent().map(PathBuf::from);
-        let path_str = p.to_string_lossy();
-        match load_scene_file(path_str.as_ref()).and_then(|data| {
-            load_scene_into_world(world, &data, true).map_err(|e| e)
-        }) {
-            Ok(_) => {
-                log::info!("Loaded scene from {}", path_str);
-                return (None, root);
-            }
-            Err(e) => {
-                log::warn!("Scene load failed ({e}) — using demo scene");
-                world.clear();
+    {
+        let candidate = std::env::args()
+            .nth(1)
+            .map(PathBuf::from)
+            .or_else(|| {
+                let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/demo_gltf.scene");
+                p.is_file().then_some(p)
+            });
+
+        if let Some(p) = candidate {
+            let root = p.parent().map(PathBuf::from);
+            let path_str = p.to_string_lossy();
+            match load_scene_file(path_str.as_ref()).and_then(|data| {
+                load_scene_into_world(world, &data, true).map_err(|e| e)
+            }) {
+                Ok(_) => {
+                    log::info!("Loaded scene from {}", path_str);
+                    return (None, root);
+                }
+                Err(e) => {
+                    log::warn!("Scene load failed ({e}) — using built-in primitive demo");
+                    world.clear();
+                }
             }
         }
     }

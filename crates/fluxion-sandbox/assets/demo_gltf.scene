@@ -1,0 +1,89 @@
+{
+  "name": "Sandbox glTF demo",
+  "version": 2,
+  "settings": {
+    "ambientColor": [0.15, 0.15, 0.2],
+    "ambientIntensity": 0.4,
+    "fogEnabled": false,
+    "fogColor": [0.5, 0.6, 0.7],
+    "fogDensity": 0.01,
+    "skybox": null,
+    "physicsGravity": [0, -9.81, 0]
+  },
+  "entities": [
+    {
+      "id": 1,
+      "name": "MainCamera",
+      "parent": null,
+      "tags": [],
+      "components": [
+        {
+          "type": "Transform",
+          "data": {
+            "position": [0, 1.2, 4],
+            "rotation": [-0.26, 0, 0],
+            "scale": [1, 1, 1]
+          }
+        },
+        {
+          "type": "Camera",
+          "data": {
+            "fov": 60,
+            "near": 0.1,
+            "far": 200,
+            "isMain": true
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Sun",
+      "parent": null,
+      "tags": [],
+      "components": [
+        {
+          "type": "Transform",
+          "data": {
+            "position": [0, 10, 0],
+            "rotation": [-0.8, 0.5, 0],
+            "scale": [1, 1, 1]
+          }
+        },
+        {
+          "type": "Light",
+          "data": {
+            "lightType": "directional",
+            "color": [1, 0.97, 0.9],
+            "intensity": 2.5,
+            "castShadow": true
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Cube",
+      "parent": null,
+      "tags": [],
+      "components": [
+        {
+          "type": "Transform",
+          "data": {
+            "position": [0, 0.5, 0],
+            "rotation": [0, 0, 0],
+            "scale": [1, 1, 1]
+          }
+        },
+        {
+          "type": "MeshRenderer",
+          "data": {
+            "modelPath": "models/CubeTest.glb",
+            "castShadow": true,
+            "receiveShadow": true
+          }
+        }
+      ]
+    }
+  ]
+}

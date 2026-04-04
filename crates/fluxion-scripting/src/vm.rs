@@ -92,6 +92,22 @@ impl JsVm {
         self.load_script(out_path.to_str().unwrap_or(ts_path))
     }
 
+    /// Evaluate an expression and decode the result as a UTF-8 string (e.g. `JSON.stringify(...)`).
+    pub fn eval_string_result(&self, source: &str, name: &str) -> anyhow::Result<String> {
+        self.ctx.with(|ctx| {
+            let v: rquickjs::Value = ctx
+                .eval(source.as_bytes())
+                .map_err(|e| anyhow::anyhow!("JS eval error in '{}': {}", name, e))?;
+            let s: rquickjs::String = v
+                .get()
+                .map_err(|e| anyhow::anyhow!("JS result not a string in '{}': {}", name, e))?;
+            let std = s
+                .to_string()
+                .map_err(|e| anyhow::anyhow!("JS string convert in '{}': {}", name, e))?;
+            Ok(std)
+        })
+    }
+
     /// Execute a one-frame tick: call all registered script behaviours.
     /// `dt` is the frame delta time in seconds.
     pub fn update(&self, dt: f32) -> anyhow::Result<()> {

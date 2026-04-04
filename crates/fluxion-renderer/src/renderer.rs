@@ -39,7 +39,7 @@ use crate::{
     lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT},
     material::MaterialRegistry,
     mesh::{GpuMesh, MeshRegistry},
-    texture::TextureCache,
+    texture::{GpuTexture, TextureCache},
     shader::ShaderCache,
 };
 
@@ -232,6 +232,10 @@ impl FluxionRenderer {
     }
 
     /// Resolve `scene_inline_material` and on-disk `.fluxmat` paths into GPU materials.
+    ///
+    /// Runs after [`Self::hydrate_mesh_paths`]. Scene `.fluxmat` / inline JSON overrides glTF
+    /// materials when present (FluxionJsV3 parity). Direct children that only have GPU mesh
+    /// handles from glTF sub-meshes get the same material as the root.
     pub fn hydrate_scene_materials(
         &mut self,
         world: &mut ECSWorld,
@@ -242,15 +246,14 @@ impl FluxionRenderer {
             let Some(mut mr) = world.get_component_mut::<MeshRenderer>(id) else {
                 continue;
             };
-            if mr.material_handle.is_some() {
-                continue;
-            }
             if let Some(v) = mr.scene_inline_material.take() {
                 let name = format!("scene_inline_{:x}", id.to_bits());
                 let asset =
                     crate::material::MaterialAsset::from_fluxionjs_mesh_material(&v, name);
                 let h = self.add_material(&asset)?;
                 mr.material_handle = Some(h);
+                drop(mr);
+                Self::propagate_scene_material_to_gltf_children(world, id, h);
                 continue;
             }
             if let Some(rel) = mr.material_path.clone() {
@@ -260,9 +263,136 @@ impl FluxionRenderer {
                     let asset = crate::material::MaterialAsset::load_from_file(p_str)?;
                     let h = self.add_material(&asset)?;
                     mr.material_handle = Some(h);
+                    drop(mr);
+                    Self::propagate_scene_material_to_gltf_children(world, id, h);
+                    continue;
                 }
+                continue;
             }
         }
+        Ok(())
+    }
+
+    /// Child entities created for extra glTF primitives: mesh handle set, no asset path.
+    fn propagate_scene_material_to_gltf_children(world: &mut ECSWorld, parent: EntityId, handle: u32) {
+        for child in world.get_children(parent) {
+            let Some(mut mr) = world.get_component_mut::<MeshRenderer>(child) else {
+                continue;
+            };
+            if mr.mesh_path.is_none() && mr.mesh_handle.is_some() {
+                mr.material_handle = Some(handle);
+            }
+        }
+    }
+
+    /// `true` if scene inline / resolvable `.fluxmat` should replace per-primitive glTF materials.
+    fn scene_material_overrides_gltf(mr: &MeshRenderer, asset_base: Option<&Path>) -> bool {
+        if mr.scene_inline_material.is_some() {
+            return true;
+        }
+        let Some(rel) = mr.material_path.as_ref() else {
+            return false;
+        };
+        if let Some(base) = asset_base {
+            if base.join(rel).is_file() {
+                return true;
+            }
+        }
+        Path::new(rel).is_file()
+    }
+
+    fn upload_gltf_textures(&mut self, uploads: &[crate::mesh::gltf_loader::GltfTextureUpload]) {
+        for u in uploads {
+            if self.textures.get(&u.key).is_some() {
+                continue;
+            }
+            let (w, h) = u.rgba.dimensions();
+            let tex = GpuTexture::from_rgba8(
+                &self.device,
+                &self.queue,
+                &u.key,
+                w,
+                h,
+                u.rgba.as_raw(),
+            );
+            self.textures.insert(&u.key, tex);
+        }
+    }
+
+    fn apply_gltf_load_output(
+        &mut self,
+        world: &mut ECSWorld,
+        root: EntityId,
+        out: crate::mesh::gltf_loader::GltfLoadOutput,
+        label: &str,
+        skip_gltf_materials: bool,
+    ) -> anyhow::Result<()> {
+        self.upload_gltf_textures(&out.textures);
+
+        let mut mat_handles: Vec<u32> = Vec::with_capacity(out.materials.len());
+        if !skip_gltf_materials {
+            for asset in &out.materials {
+                mat_handles.push(self.add_material(asset)?);
+            }
+        }
+
+        let Some(mr) = world.get_component_mut::<MeshRenderer>(root) else {
+            anyhow::bail!("[gltf] entity has no MeshRenderer");
+        };
+        let cast_shadow = mr.cast_shadow;
+        let receive_shadow = mr.receive_shadow;
+        let layer = mr.layer;
+        drop(mr);
+
+        let prims = out.primitives;
+        anyhow::ensure!(!prims.is_empty(), "[gltf] no triangle primitives");
+
+        let n_mat = mat_handles.len();
+        let mat_idx = |i: usize| -> Option<u32> {
+            if skip_gltf_materials || n_mat == 0 {
+                return None;
+            }
+            Some(mat_handles[i.min(n_mat.saturating_sub(1))])
+        };
+
+        let p0 = &prims[0];
+        let gpu0 = GpuMesh::upload(&self.device, label, &p0.vertices, &p0.indices);
+        let h0 = self.meshes.add(gpu0);
+        let mut mr = world.get_component_mut::<MeshRenderer>(root).unwrap();
+        mr.mesh_handle = Some(h0);
+        mr.primitive = None;
+        mr.material_handle = mat_idx(p0.material_index);
+        drop(mr);
+
+        for (si, p) in prims.iter().enumerate().skip(1) {
+            let child = world.spawn(Some("gltf_submesh"));
+            world.add_component(child, Transform::new());
+            world.set_parent(child, Some(root), false);
+            let sub_label = format!("{label}_sub{si}");
+            let gpu = GpuMesh::upload(&self.device, &sub_label, &p.vertices, &p.indices);
+            let hm = self.meshes.add(gpu);
+            world.add_component(
+                child,
+                MeshRenderer {
+                    mesh_path: None,
+                    material_path: None,
+                    primitive: None,
+                    cast_shadow,
+                    receive_shadow,
+                    layer,
+                    mesh_handle: Some(hm),
+                    material_handle: mat_idx(p.material_index),
+                    scene_inline_material: None,
+                },
+            );
+        }
+
+        let total_verts: usize = prims.iter().map(|p| p.vertices.len()).sum();
+        log::info!(
+            "[gltf] {label}: {} primitives, {total_verts} vertices, {} materials",
+            prims.len(),
+            out.materials.len()
+        );
         Ok(())
     }
 
@@ -277,7 +407,7 @@ impl FluxionRenderer {
 
         let entities: Vec<EntityId> = world.all_entities().collect();
         for id in entities {
-            let Some(mut mr) = world.get_component_mut::<MeshRenderer>(id) else {
+            let Some(mr) = world.get_component_mut::<MeshRenderer>(id) else {
                 continue;
             };
             if mr.mesh_handle.is_some() {
@@ -300,14 +430,11 @@ impl FluxionRenderer {
                 continue;
             }
 
-            let (vertices, indices) = crate::mesh::gltf_loader::load_gltf_path(&path)?;
-            let n_verts = vertices.len();
+            let skip_mat = Self::scene_material_overrides_gltf(&mr, base);
+            let out = crate::mesh::gltf_loader::load_gltf_path_full(&path)?;
             let label = path.file_name().and_then(|s| s.to_str()).unwrap_or("gltf");
-            let gpu = GpuMesh::upload(&self.device, label, &vertices, &indices);
-            let handle = self.meshes.add(gpu);
-            mr.mesh_handle = Some(handle);
-            mr.primitive = None;
-            log::info!("[gltf] loaded {} ({n_verts} vertices)", path.display());
+            drop(mr);
+            self.apply_gltf_load_output(world, id, out, label, skip_mat)?;
         }
         Ok(())
     }
@@ -323,7 +450,7 @@ impl FluxionRenderer {
 
         let entities: Vec<EntityId> = world.all_entities().collect();
         for id in entities {
-            let Some(mut mr) = world.get_component_mut::<MeshRenderer>(id) else {
+            let Some(mr) = world.get_component_mut::<MeshRenderer>(id) else {
                 continue;
             };
             if mr.mesh_handle.is_some() {
@@ -343,12 +470,11 @@ impl FluxionRenderer {
                 log::warn!("[gltf] no bytes for {rel}");
                 continue;
             };
-            let (vertices, indices) = crate::mesh::gltf_loader::load_gltf_slice(&bytes)?;
+            let skip_mat = Self::scene_material_overrides_gltf(&mr, None);
+            let out = crate::mesh::gltf_loader::load_gltf_slice_full(&bytes)?;
             let label = Path::new(rel).file_name().and_then(|s| s.to_str()).unwrap_or("gltf");
-            let gpu = GpuMesh::upload(&self.device, label, &vertices, &indices);
-            let handle = self.meshes.add(gpu);
-            mr.mesh_handle = Some(handle);
-            mr.primitive = None;
+            drop(mr);
+            self.apply_gltf_load_output(world, id, out, label, skip_mat)?;
         }
         Ok(())
     }
