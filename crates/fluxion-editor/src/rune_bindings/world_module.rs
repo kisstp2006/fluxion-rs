@@ -331,6 +331,8 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                     ReflectFieldType::OptionStr => "option_str",
                     ReflectFieldType::Enum    => "enum",
                     ReflectFieldType::Texture => "texture",
+                    ReflectFieldType::I32     => "i32",
+                    ReflectFieldType::Vec2    => "vec2",
                 }.to_string())
                 .unwrap_or_default()
         }).unwrap_or_default()
@@ -494,6 +496,28 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }).flatten().unwrap_or(0)
     }).build()?;
 
+    m.function("get_i32", |id: i64, component: Ref<str>, field: Ref<str>| -> i64 {
+        with_ctx(|world, registry| {
+            let entity = id_to_entity(world, id)?;
+            let reflect = registry.get_reflect(&component, world, entity)?;
+            match reflect.get_field(&field)? {
+                ReflectValue::I32(v) => Some(v as i64),
+                _ => None,
+            }
+        }).flatten().unwrap_or(0)
+    }).build()?;
+
+    m.function("get_vec2", |id: i64, component: Ref<str>, field: Ref<str>| -> Vec<f64> {
+        with_ctx(|world, registry| {
+            let entity = id_to_entity(world, id)?;
+            let reflect = registry.get_reflect(&component, world, entity)?;
+            match reflect.get_field(&field)? {
+                ReflectValue::Vec2([x, y]) => Some(vec![x as f64, y as f64]),
+                _ => None,
+            }
+        }).flatten().unwrap_or_else(|| vec![0.0, 0.0])
+    }).build()?;
+
     // ── Typed setters (queued — applied after panel call) ─────────────────────
 
     m.function("set_f32", |id: i64, component: String, field: String, val: f64| {
@@ -546,6 +570,21 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
                 queue_edit(e, component, field,
                     ReflectValue::Color4([vals[0] as f32, vals[1] as f32, vals[2] as f32, vals[3] as f32]));
+            }
+        }
+    }).build()?;
+
+    m.function("set_i32", |id: i64, component: String, field: String, val: i64| {
+        if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
+            queue_edit(e, component, field, ReflectValue::I32(val as i32));
+        }
+    }).build()?;
+
+    m.function("set_vec2", |id: i64, component: String, field: String, vals: Vec<f64>| {
+        if vals.len() >= 2 {
+            if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
+                queue_edit(e, component, field,
+                    ReflectValue::Vec2([vals[0] as f32, vals[1] as f32]));
             }
         }
     }).build()?;

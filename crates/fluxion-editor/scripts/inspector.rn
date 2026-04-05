@@ -163,6 +163,28 @@ pub fn draw_component_fields(entity_id, comp_name) {
                 fluxion::ui::prop_context_menu(fid.clone());
             }
 
+        } else if ft == "i32" {
+            let v = fluxion::world::get_i32(sel, c.clone(), f.clone());
+            if ro {
+                fluxion::ui::label(`${lbl}: ${v}`);
+            } else {
+                let nv = fluxion::ui::drag_int(lbl.clone(), v);
+                if nv != v { fluxion::world::set_i32(sel, c.clone(), f.clone(), nv); }
+                fluxion::ui::prop_context_menu(fid.clone());
+            }
+
+        } else if ft == "vec2" {
+            let v = fluxion::world::get_vec2(sel, c.clone(), f.clone());
+            if ro {
+                fluxion::ui::label(`${lbl}: [${v[0]}, ${v[1]}]`);
+            } else {
+                let nv = fluxion::ui::vec2_inline(lbl.clone(), v[0], v[1], 0.01);
+                if nv[0] != v[0] || nv[1] != v[1] {
+                    fluxion::world::set_vec2(sel, c.clone(), f.clone(), [nv[0], nv[1]]);
+                }
+                fluxion::ui::prop_context_menu(fid.clone());
+            }
+
         } else {
             fluxion::ui::small(`${lbl}: (${ft})`);
         }

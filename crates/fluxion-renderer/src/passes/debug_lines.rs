@@ -13,6 +13,10 @@ use glam::Mat4;
 use crate::render_graph::{RenderPass, RenderContext, RenderResources};
 use crate::shader::library as shaders;
 
+// The pipeline uses read-only depth testing (depth_write_enabled = false)
+// so grid lines and other debug primitives are occluded by scene geometry
+// but do not pollute the scene depth buffer.
+
 /// Vertex layout for a single line endpoint: position + RGBA color.
 /// Stride = 28 bytes.
 #[repr(C)]
@@ -158,7 +162,13 @@ impl RenderPass for DebugLinePass {
                 unclipped_depth:   false,
                 conservative:      false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format:              wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: false, // read-only — do not overwrite scene depth
+                depth_compare:       wgpu::CompareFunction::Less,
+                stencil:             wgpu::StencilState::default(),
+                bias:                wgpu::DepthBiasState::default(),
+            }),
             multisample:   wgpu::MultisampleState::default(),
             multiview:     None,
             cache:         None,
@@ -215,7 +225,14 @@ impl RenderPass for DebugLinePass {
                     store: wgpu::StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view:       &ctx.resources.depth.view,
+                depth_ops:  Some(wgpu::Operations {
+                    load:  wgpu::LoadOp::Load,  // read existing scene depth
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
             ..Default::default()
         });
 

@@ -24,6 +24,8 @@ enum ReflectKind {
     U32,
     U8,
     USize,
+    I32,     // i32
+    Vec2,    // [f32; 2]
     Str,
     OptionStr,
     Enum,    // serde round-trip
@@ -44,6 +46,8 @@ impl ReflectKind {
             Self::USize    => quote!(#core::reflect::ReflectFieldType::USize),
             Self::Str      => quote!(#core::reflect::ReflectFieldType::Str),
             Self::OptionStr => quote!(#core::reflect::ReflectFieldType::OptionStr),
+            Self::I32      => quote!(#core::reflect::ReflectFieldType::I32),
+            Self::Vec2     => quote!(#core::reflect::ReflectFieldType::Vec2),
             Self::Enum     => quote!(#core::reflect::ReflectFieldType::Enum),
         }
     }
@@ -62,6 +66,8 @@ impl ReflectKind {
             Self::USize    => quote!(Some(#core::reflect::ReflectValue::USize(#field_expr))),
             Self::Str      => quote!(Some(#core::reflect::ReflectValue::Str(#field_expr.clone()))),
             Self::OptionStr => quote!(Some(#core::reflect::ReflectValue::OptionStr(#field_expr.clone()))),
+            Self::I32      => quote!(Some(#core::reflect::ReflectValue::I32(#field_expr))),
+            Self::Vec2     => quote!(Some(#core::reflect::ReflectValue::Vec2(#field_expr))),
             Self::Enum     => quote!(Some(#core::reflect::ReflectValue::Enum(
                 ::serde_json::to_string(&#field_expr)
                     .unwrap_or_default()
@@ -116,6 +122,12 @@ impl ReflectKind {
             Self::OptionStr => quote! {
                 (#name_str, #core::reflect::ReflectValue::OptionStr(v)) => { #field_ident = v; }
             },
+            Self::I32 => quote! {
+                (#name_str, #core::reflect::ReflectValue::I32(v)) => { #field_ident = v; }
+            },
+            Self::Vec2 => quote! {
+                (#name_str, #core::reflect::ReflectValue::Vec2(v)) => { #field_ident = v; }
+            },
             Self::Enum => quote! {
                 (#name_str, #core::reflect::ReflectValue::Enum(s)) => {
                     #field_ident = ::serde_json::from_str(&::std::format!("\"{}\"", s))
@@ -140,6 +152,7 @@ fn detect_kind(ty: &Type, attrs: &FieldAttrs) -> ReflectKind {
                 Some("u32")    => ReflectKind::U32,
                 Some("u8")     => ReflectKind::U8,
                 Some("usize")  => ReflectKind::USize,
+                Some("i32")    => ReflectKind::I32,
                 Some("String") => ReflectKind::Str,
                 Some("Vec3")   => ReflectKind::Vec3,
                 Some("Quat")   => ReflectKind::Quat,
@@ -148,18 +161,16 @@ fn detect_kind(ty: &Type, attrs: &FieldAttrs) -> ReflectKind {
             }
         }
         Type::Array(arr) => {
-            // [f32; 3] → Color3, [f32; 4] → Color4 (default for arrays)
+            // [f32; 2] → Vec2, [f32; 3] → Color3, [f32; 4] → Color4
             if let syn::Expr::Lit(el) = &arr.len {
                 if let syn::Lit::Int(n) = &el.lit {
                     let n: usize = n.base10_parse().unwrap_or(0);
-                    if attrs.color || true {
-                        // arrays are always treated as Color by default
-                        return match n {
-                            3 => ReflectKind::Color3,
-                            4 => ReflectKind::Color4,
-                            _ => ReflectKind::Enum,
-                        };
-                    }
+                    return match n {
+                        2 => ReflectKind::Vec2,
+                        3 => ReflectKind::Color3,
+                        4 => ReflectKind::Color4,
+                        _ => ReflectKind::Enum,
+                    };
                 }
             }
             ReflectKind::Enum
@@ -248,13 +259,20 @@ pub fn derive_reflect_impl(input: DeriveInput) -> TokenStream {
             _ => quote!(),
         };
 
+        let variants_tokens = if fi.attrs.variants.is_empty() {
+            quote!()
+        } else {
+            let vs: Vec<_> = fi.attrs.variants.iter().map(|s| s.as_str()).collect();
+            quote! { .with_variants(&[ #(#vs),* ]) }
+        };
+
         if read_only {
             quote! {
-                #core::reflect::FieldDescriptor::read_only(#name_lit, #disp_lit, #ft) #range_tokens
+                #core::reflect::FieldDescriptor::read_only(#name_lit, #disp_lit, #ft) #range_tokens #variants_tokens
             }
         } else {
             quote! {
-                #core::reflect::FieldDescriptor::new(#name_lit, #disp_lit, #ft) #range_tokens
+                #core::reflect::FieldDescriptor::new(#name_lit, #disp_lit, #ft) #range_tokens #variants_tokens
             }
         }
     }).collect();

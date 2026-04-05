@@ -49,6 +49,10 @@ pub enum ReflectValue {
     USize(usize),
     Str(String),
     OptionStr(Option<String>),
+    /// Signed 32-bit integer (layer ordering, depth priority, …)
+    I32(i32),
+    /// 2D vector stored as [x, y]
+    Vec2([f32; 2]),
     /// Enum variant name as a string ("Cube", "Directional", …)
     Enum(String),
     /// Project-relative path to an asset file (texture, mesh, audio, …).
@@ -77,6 +81,10 @@ pub enum ReflectFieldType {
     /// Project-relative path to a texture/image asset.
     /// The editor shows a thumbnail + drag-drop target.
     Texture,
+    /// Signed 32-bit integer — shown as drag_int in the editor.
+    I32,
+    /// 2D vector [x, y] — shown as two drag-float fields in the editor.
+    Vec2,
 }
 
 /// Optional numeric range hint for editor sliders / drag fields.
@@ -251,6 +259,8 @@ pub fn reflect_value_to_json(v: &ReflectValue) -> Value {
         ReflectValue::USize(n)      => Value::from(*n),
         ReflectValue::Str(s)        => Value::String(s.clone()),
         ReflectValue::OptionStr(o)  => o.as_ref().map(|s| Value::String(s.clone())).unwrap_or(Value::Null),
+        ReflectValue::I32(n)        => Value::from(*n),
+        ReflectValue::Vec2(a)       => Value::Array(a.iter().map(|&x| Value::from(x)).collect()),
         ReflectValue::Enum(s)       => Value::String(s.clone()),
         ReflectValue::AssetPath(o)  => o.as_ref().map(|s| Value::String(s.clone())).unwrap_or(Value::Null),
     }

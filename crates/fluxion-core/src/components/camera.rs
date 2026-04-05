@@ -82,6 +82,7 @@ pub struct Camera {
     pub far: f32,
 
     /// Projection mode. Default: Perspective.
+    #[reflect(variants("Perspective", "Orthographic"))]
     pub projection_mode: ProjectionMode,
 
     /// Half-height of the orthographic view volume (Orthographic mode only).
@@ -101,6 +102,7 @@ pub struct Camera {
     // ── Clear ─────────────────────────────────────────────────────────────────
 
     /// How the camera clears the render target each frame.
+    #[reflect(variants("Skybox", "SolidColor", "DepthOnly", "Nothing"))]
     pub clear_flags: ClearFlags,
 
     /// Solid background colour used when `clear_flags == SolidColor`.
@@ -111,6 +113,7 @@ pub struct Camera {
 
     /// Normalized screen rectangle `[x, y, width, height]` (0–1).
     /// Default: `[0, 0, 1, 1]` (full screen).
+    #[reflect(skip)]
     pub viewport_rect: [f32; 4],
 
     // ── Quality flags ─────────────────────────────────────────────────────────

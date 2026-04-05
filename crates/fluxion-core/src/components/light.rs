@@ -47,6 +47,7 @@ pub enum LightType {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 pub struct Light {
+    #[reflect(variants("Directional", "Point", "Spot"))]
     pub light_type: LightType,
 
     /// Linear RGB color. Values > 1.0 are valid for HDR rendering.

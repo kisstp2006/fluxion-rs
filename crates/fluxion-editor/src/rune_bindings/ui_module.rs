@@ -125,7 +125,11 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     // ── Interactive widgets ───────────────────────────────────────────────────
 
     m.function("button", |label: Ref<str>| -> bool {
-        with_ui(|ui| ui.button(label.as_ref()).clicked()).unwrap_or(false)
+        with_ui(|ui| {
+            let raw = label.as_ref();
+            let display = raw.split("##").next().unwrap_or(raw);
+            ui.button(display).clicked()
+        }).unwrap_or(false)
     }).build()?;
 
     m.function("checkbox", |label: Ref<str>, value: bool| -> bool {

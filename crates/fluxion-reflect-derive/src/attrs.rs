@@ -65,13 +65,17 @@ impl FieldAttrs {
                         Ok(())
                     })?;
                 } else if meta.path.is_ident("variants") {
-                    meta.parse_nested_meta(|v| {
-                        // `#[reflect(variants("A", "B", "C"))]`
-                        if let Ok(s) = v.input.parse::<syn::LitStr>() {
-                            out.variants.push(s.value());
-                        }
-                        Ok(())
-                    })?;
+                    // `#[reflect(variants("A", "B", "C"))]`
+                    // parse_nested_meta can't handle bare string literals,
+                    // so consume the parenthesised list directly.
+                    let content;
+                    syn::parenthesized!(content in meta.input);
+                    while !content.is_empty() {
+                        let s: syn::LitStr = content.parse()?;
+                        out.variants.push(s.value());
+                        // consume optional trailing comma
+                        let _: Option<syn::Token![,]> = content.parse().ok();
+                    }
                 }
                 Ok(())
             });
