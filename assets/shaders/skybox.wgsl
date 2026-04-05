@@ -75,112 +75,77 @@ fn sky_gradient(view_dir: vec3<f32>) -> vec3<f32> {
     return col;
 }
 
-// ── Preetham analytical atmosphere (Preetham 1999) ───────────────────────────
-// Based on the original paper and the widely-used Three.js Sky shader port.
+// ── Rayleigh + Mie atmospheric scattering ────────────────────────────────────
+// Based on the Three.js Sky shader (A. J. Preetham et al. 1999, Bruneton 2008).
+// Works directly in linear RGB — no XYZ conversion needed.
+// betaR is wavelength-dependent → gives the characteristic blue-sky tinting.
 
-fn preetham_A(turbidity: f32) -> vec3<f32> {
-    return vec3<f32>(-0.0193, -0.0167, 0.1787) * turbidity
-         + vec3<f32>(-0.2592, -0.2608, -1.4630);
-}
-fn preetham_B(turbidity: f32) -> vec3<f32> {
-    return vec3<f32>(-0.0665, -0.0950, -0.0272) * turbidity
-         + vec3<f32>(0.0008, 0.0092, 0.2102);
-}
-fn preetham_C(turbidity: f32) -> vec3<f32> {
-    return vec3<f32>(-0.0004, -0.0079, -0.0619) * turbidity
-         + vec3<f32>(0.2125,  0.2102,  0.2256);
-}
-fn preetham_D(turbidity: f32) -> vec3<f32> {
-    return vec3<f32>(-0.0641, -0.0441,  0.0450) * turbidity
-         + vec3<f32>(0.8989,  0.8810, -0.0137);
-}
-fn preetham_E(turbidity: f32) -> vec3<f32> {
-    return vec3<f32>(-0.0033, -0.0109, -0.0146) * turbidity
-         + vec3<f32>(0.0452,  0.0529,  0.0667);
-}
-
-fn zenith_luminance(turbidity: f32, sun_theta: f32) -> f32 {
-    let chi = (4.0 / 9.0 - turbidity / 120.0) * (3.14159265 - 2.0 * sun_theta);
-    return (4.0453 * turbidity - 4.9710) * tan(chi) - 0.2155 * turbidity + 2.4192;
-}
-
-fn zenith_chroma_x(turbidity: f32, sun_theta: f32) -> f32 {
-    let t2 = sun_theta * sun_theta;
-    let t3 = t2 * sun_theta;
-    return turbidity * turbidity * ( 0.00166 * t3 - 0.00375 * t2 + 0.00209 * sun_theta)
-         + turbidity * (-0.02903 * t3 + 0.06377 * t2 - 0.03202 * sun_theta + 0.00394)
-         + ( 0.11693 * t3 - 0.21196 * t2 + 0.06052 * sun_theta + 0.25886);
-}
-
-fn zenith_chroma_y(turbidity: f32, sun_theta: f32) -> f32 {
-    let t2 = sun_theta * sun_theta;
-    let t3 = t2 * sun_theta;
-    return turbidity * turbidity * ( 0.00275 * t3 - 0.00610 * t2 + 0.00317 * sun_theta)
-         + turbidity * (-0.04214 * t3 + 0.08970 * t2 - 0.04153 * sun_theta + 0.00516)
-         + ( 0.15346 * t3 - 0.26756 * t2 + 0.06670 * sun_theta + 0.26688);
-}
-
-fn perez(cos_theta: f32, gamma: f32, cos_gamma: f32, A: f32, B: f32, C: f32, D: f32, E: f32) -> f32 {
-    return (1.0 + A * exp(B / (cos_theta + 0.01)))
-         * (1.0 + C * exp(D * gamma) + E * cos_gamma * cos_gamma);
-}
-
-fn xyY_to_XYZ(x: f32, y: f32, Y: f32) -> vec3<f32> {
-    let X = (x / y) * Y;
-    let Z = ((1.0 - x - y) / y) * Y;
-    return vec3<f32>(X, Y, Z);
-}
-
-fn XYZ_to_linear_rgb(xyz: vec3<f32>) -> vec3<f32> {
-    // sRGB D65 matrix
-    let r =  3.2404542 * xyz.x - 1.5371385 * xyz.y - 0.4985314 * xyz.z;
-    let g = -0.9692660 * xyz.x + 1.8760108 * xyz.y + 0.0415560 * xyz.z;
-    let b =  0.0556434 * xyz.x - 0.2040259 * xyz.y + 1.0572252 * xyz.z;
-    return max(vec3<f32>(r, g, b), vec3<f32>(0.0));
+fn mie_phase(cos_a: f32, g: f32) -> f32 {
+    let g2 = g * g;
+    return (3.0 / (8.0 * 3.14159265))
+         * ((1.0 - g2) * (1.0 + cos_a * cos_a))
+         / ((2.0 + g2) * pow(max(1.0 + g2 - 2.0 * g * cos_a, 1e-6), 1.5));
 }
 
 fn sky_preetham(view_dir: vec3<f32>) -> vec3<f32> {
-    let turb   = sky_params.turbidity;
-    let sun_d  = sky_params.sun_direction;
-    // Sun zenith angle
-    let sun_theta = acos(clamp(sun_d.y, 0.0, 1.0));
+    let PI    = 3.14159265;
+    let sun   = sky_params.sun_direction;
+    let ray   = sky_params.rayleigh;
+    let turb  = sky_params.turbidity;
+    let mie_c = sky_params.mie_coefficient;
+    let mie_g = sky_params.mie_directional_g;
 
-    // Zenith reference values
-    let Yz  = zenith_luminance(turb, sun_theta);
-    let xz  = zenith_chroma_x(turb, sun_theta);
-    let yz2 = zenith_chroma_y(turb, sun_theta);
+    // Rayleigh scattering — wavelength-dependent (R<G<B → blue sky)
+    let betaR = vec3<f32>(5.5e-6, 13.0e-6, 22.4e-6) * ray;
+    // Mie scattering — wavelength-independent, driven by turbidity + coefficient
+    let betaM = vec3<f32>(2.1e-5) * turb * mie_c;
 
-    let Av = preetham_A(turb); let Bv = preetham_B(turb);
-    let Cv = preetham_C(turb); let Dv = preetham_D(turb);
-    let Ev = preetham_E(turb);
+    // Chapman-approximated optical depth along view ray
+    let vH  = max(view_dir.y, 0.001);
+    let inv = 1.0 / (vH + 0.025 * exp(-22.26 * vH));
+    let sR  = 8400.0 * inv;   // Rayleigh scale height ~8.4 km
+    let sM  = 1200.0 * inv;   // Mie    scale height ~1.2 km
 
-    // View angle above horizon
-    let cos_theta_v = clamp(view_dir.y, 0.001, 1.0);
-    let cos_gamma   = dot(view_dir, sun_d);
-    let gamma       = acos(clamp(cos_gamma, -1.0, 1.0));
+    // Extinction (atmospheric absorption)
+    let Fex = exp(-(betaR * sR + betaM * sM));
 
-    // Perez distribution — normalised against zenith
-    let f_v   = vec3<f32>(
-        perez(cos_theta_v, gamma, cos_gamma, Av.x, Bv.x, Cv.x, Dv.x, Ev.x),
-        perez(cos_theta_v, gamma, cos_gamma, Av.y, Bv.y, Cv.y, Dv.y, Ev.y),
-        perez(cos_theta_v, gamma, cos_gamma, Av.z, Bv.z, Cv.z, Dv.z, Ev.z)
+    // Phase functions
+    let cos_a  = clamp(dot(view_dir, sun), -1.0, 1.0);
+    let rPhase = (3.0 / (16.0 * PI)) * (1.0 + cos_a * cos_a);
+    let mPhase = mie_phase(cos_a, mie_g);
+
+    let betaRTheta = betaR * rPhase;
+    let betaMTheta = betaM * mPhase;
+    let betaTotal  = betaR + betaM;
+
+    // Sun irradiance increases as sun rises above horizon
+    let sunE = 20.0 * max(sun.y, 0.0) + 2.0;
+
+    // Primary in-scattering
+    var Lin = pow(
+        sunE * ((betaRTheta + betaMTheta) / betaTotal) * (1.0 - Fex),
+        vec3<f32>(1.5)
     );
-    let f_0 = vec3<f32>(
-        perez(1.0, sun_theta, sun_d.y, Av.x, Bv.x, Cv.x, Dv.x, Ev.x),
-        perez(1.0, sun_theta, sun_d.y, Av.y, Bv.y, Cv.y, Dv.y, Ev.y),
-        perez(1.0, sun_theta, sun_d.y, Av.z, Bv.z, Cv.z, Dv.z, Ev.z)
+    // Horizon blend at sunset/sunrise
+    Lin *= mix(
+        vec3<f32>(1.0),
+        pow(sunE * ((betaRTheta + betaMTheta) / betaTotal) * Fex, vec3<f32>(0.5)),
+        clamp(pow(1.0 - max(sun.y, 0.0), 5.0), 0.0, 1.0)
     );
 
-    let Y = Yz * f_v.x / f_0.x;
-    let x = xz  * f_v.y / f_0.y;
-    let y = yz2 * f_v.z / f_0.z;
+    // Ambient sky light + sun disc
+    var L0 = vec3<f32>(0.1) * Fex;
+    L0 += sun_disc(view_dir);
 
-    let xyz = xyY_to_XYZ(x, y, Y * 0.01); // scale to ~0..1 range
-    var col = XYZ_to_linear_rgb(xyz);
+    // Scale to HDR range (~0..1 for average sky brightness); tonemap handles the rest
+    var col = (Lin + L0) * 0.04 + vec3<f32>(0.0, 0.0003, 0.0006);
 
-    // Add sun disc on top
-    col += sun_disc(view_dir);
-    return col;
+    // Tint with user-set horizon/zenith colors (same blend as gradient mode)
+    let t    = clamp(view_dir.y * 0.5 + 0.5, 0.0, 1.0);
+    let tint = mix(sky_params.horizon_color, sky_params.zenith_color, t * t);
+    col *= tint * 2.0;
+
+    return max(col, vec3<f32>(0.0));
 }
 
 // ── Panorama (equirectangular) ────────────────────────────────────────────────
