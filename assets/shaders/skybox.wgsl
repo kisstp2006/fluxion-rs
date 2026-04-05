@@ -18,12 +18,15 @@ struct SkyParams {
     sun_direction:     vec3<f32>,   // normalised, toward sun
     sun_intensity:     f32,
     sun_size:          f32,         // angular radius (radians)
-    solid_color:       vec3<f32>,   // packed: solid_color.xyz
+    _pad2a:            f32,         // padding to align solid_color to 16-byte boundary
+    _pad2b:            f32,
+    _pad2c:            f32,
+    solid_color:       vec3<f32>,   // used in SolidColor mode (offset 64)
     turbidity:         f32,
     rayleigh:          f32,
     mie_coefficient:   f32,
     mie_directional_g: f32,
-    _pad2:             f32,
+    _pad3:             f32,
 }
 
 struct CameraUniforms {

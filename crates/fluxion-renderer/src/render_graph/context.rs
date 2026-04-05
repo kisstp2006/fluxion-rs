@@ -32,32 +32,45 @@ use crate::material::MaterialRegistry;
 /// Default shadow map resolution (pixels per side). Power of two.
 pub const SHADOW_MAP_SIZE: u32 = 2048;
 
-/// GPU layout for [`SkyboxPass`](crate::passes::SkyboxPass); uploaded from [`FrameData::sky`].
+/// GPU layout for [`SkyboxPass`](crate::passes::SkyboxPass).
+/// All offsets are manually verified for std140/WGSL alignment.
 ///
-/// `sky_mode`:
-///   0 = gradient + sun disc (horizon/zenith colors)
-///   1 = Preetham analytical atmosphere
-///   2 = solid color
-///   3 = panorama texture (sampling done via separate texture binding)
+/// Byte layout (96 bytes total):
+///   0: horizon_color  [f32;3]  (12)
+///  12: sky_mode       u32      ( 4) → 16
+///  16: zenith_color   [f32;3]  (12)
+///  28: _pad1          f32      ( 4) → 32
+///  32: sun_direction  [f32;3]  (12)
+///  44: sun_intensity  f32      ( 4) → 48
+///  48: sun_size       f32      ( 4)
+///  52: _pad2a         f32      ( 4)
+///  56: _pad2b         f32      ( 4)
+///  60: _pad2c         f32      ( 4) → 64  (solid_color must be 16-byte aligned)
+///  64: solid_color    [f32;3]  (12)
+///  76: turbidity      f32      ( 4) → 80
+///  80: rayleigh       f32      ( 4)
+///  84: mie_coefficient f32     ( 4)
+///  88: mie_directional_g f32   ( 4)
+///  92: _pad3          f32      ( 4) → 96
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct SkyParams {
-    // gradient / shared
     pub horizon_color:      [f32; 3],
-    pub sky_mode:           u32,         // 0=gradient 1=preetham 2=solid 3=panorama
+    pub sky_mode:           u32,
     pub zenith_color:       [f32; 3],
     pub _pad1:              f32,
-    pub sun_direction:      [f32; 3],    // normalised, toward sun
+    pub sun_direction:      [f32; 3],
     pub sun_intensity:      f32,
-    pub sun_size:           f32,         // angular radius (radians)
-    // solid color
+    pub sun_size:           f32,
+    pub _pad2a:             f32,
+    pub _pad2b:             f32,
+    pub _pad2c:             f32,
     pub solid_color:        [f32; 3],
-    // Preetham params
     pub turbidity:          f32,
     pub rayleigh:           f32,
     pub mie_coefficient:    f32,
     pub mie_directional_g:  f32,
-    pub _pad2:              f32,
+    pub _pad3:              f32,
 }
 
 impl Default for SkyParams {
@@ -70,12 +83,15 @@ impl Default for SkyParams {
             sun_direction:     [0.5, 0.8, 0.3],
             sun_intensity:     20.0,
             sun_size:          0.02,
+            _pad2a:            0.0,
+            _pad2b:            0.0,
+            _pad2c:            0.0,
             solid_color:       [0.05, 0.07, 0.10],
             turbidity:         2.0,
             rayleigh:          1.0,
             mie_coefficient:   0.005,
             mie_directional_g: 0.8,
-            _pad2:             0.0,
+            _pad3:             0.0,
         }
     }
 }
