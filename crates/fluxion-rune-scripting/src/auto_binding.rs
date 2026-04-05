@@ -90,6 +90,39 @@ pub fn build_viewport_module() -> anyhow::Result<Module> {
     Ok(m)
 }
 
+/// Math module: `fluxion::math`
+///
+/// Exposes common f64 math functions as free functions because Rune 0.14
+/// does not install method syntax (e.g. `x.sin()`) on primitive floats.
+pub fn build_math_module() -> anyhow::Result<Module> {
+    let mut m = Module::with_crate_item("fluxion", ["math"])?;
+
+    m.function("sin",   |x: f64| -> f64 { x.sin()   }).build()?;
+    m.function("cos",   |x: f64| -> f64 { x.cos()   }).build()?;
+    m.function("tan",   |x: f64| -> f64 { x.tan()   }).build()?;
+    m.function("asin",  |x: f64| -> f64 { x.asin()  }).build()?;
+    m.function("acos",  |x: f64| -> f64 { x.acos()  }).build()?;
+    m.function("atan",  |x: f64| -> f64 { x.atan()  }).build()?;
+    m.function("atan2", |y: f64, x: f64| -> f64 { y.atan2(x) }).build()?;
+    m.function("sqrt",  |x: f64| -> f64 { x.sqrt()  }).build()?;
+    m.function("abs",   |x: f64| -> f64 { x.abs()   }).build()?;
+    m.function("floor", |x: f64| -> f64 { x.floor() }).build()?;
+    m.function("ceil",  |x: f64| -> f64 { x.ceil()  }).build()?;
+    m.function("round", |x: f64| -> f64 { x.round() }).build()?;
+    m.function("min",   |a: f64, b: f64| -> f64 { if a < b { a } else { b } }).build()?;
+    m.function("max",   |a: f64, b: f64| -> f64 { if a > b { a } else { b } }).build()?;
+    m.function("clamp", |x: f64, lo: f64, hi: f64| -> f64 { x.clamp(lo, hi) }).build()?;
+    m.function("pow",   |x: f64, e: f64| -> f64 { x.powf(e) }).build()?;
+    m.function("exp",   |x: f64| -> f64 { x.exp()   }).build()?;
+    m.function("ln",    |x: f64| -> f64 { x.ln()    }).build()?;
+    m.function("log2",  |x: f64| -> f64 { x.log2()  }).build()?;
+    m.function("sign",  |x: f64| -> f64 { x.signum() }).build()?;
+    m.function("pi",    || -> f64 { std::f64::consts::PI }).build()?;
+    m.function("tau",   || -> f64 { std::f64::consts::TAU }).build()?;
+
+    Ok(m)
+}
+
 /// Collect all engine modules for installation into a Rune context.
 pub fn all_modules() -> anyhow::Result<Vec<Module>> {
     Ok(vec![
@@ -97,5 +130,6 @@ pub fn all_modules() -> anyhow::Result<Vec<Module>> {
         build_time_module()?,
         build_input_module()?,
         build_viewport_module()?,
+        build_math_module()?,
     ])
 }

@@ -25,13 +25,10 @@ pub fn panel() {
         return;
     }
 
-    // Show the scene texture — this also sets VP_RECT and VP_RESPONSE
-    // (needed by editor_camera for viewport_hovered/drag_delta etc.)
+    // Show the scene texture — sets VP_RECT and VP_RESPONSE used by editor_camera.
+    // editor_camera::update(dt) is called by the Rust host after this panel returns,
+    // so VP_RESPONSE is already populated when the camera update runs.
     fluxion::ui::image_interactive(tid, w, h);
-
-    // Run editor camera controller (reads VP_RESPONSE set above)
-    let dt = fluxion::time::delta_time();
-    editor_camera::update(dt);
 }
 
 } // pub mod viewport

@@ -486,6 +486,16 @@ impl EditorInner {
                 // ── Dock area ───────────────────────────────────────────────
                 show_dock(ctx, dock_state, vm);
 
+                // ── Editor camera update ─────────────────────────────────────
+                // Called after show_dock so VP_RESPONSE is already set by viewport::panel.
+                // Runs only in Editing/Paused mode (editor_camera.rn checks mode internally).
+                {
+                    let dt = self.host.time.dt as f64;
+                    if let Err(e) = vm.call_fn(&["editor_camera", "update"], (dt,)) {
+                        log::warn!("editor_camera::update: {e:#}");
+                    }
+                }
+
                 // ── Viewport gizmo overlay ───────────────────────────────────
                 // VP_RECT is set by viewport.rn after image_interactive.
                 // We read it here and overlay the gizmo using an egui Area.
