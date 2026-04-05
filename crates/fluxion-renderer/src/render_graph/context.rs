@@ -22,7 +22,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use wgpu::TextureView;
 
-use fluxion_core::DebugLine;
+use fluxion_core::{DebugLine, ClearFlags};
 
 use crate::texture::GpuTexture;
 use crate::lighting::LightUniform;
@@ -66,27 +66,36 @@ impl Default for SkyParams {
 /// Camera matrices for this frame.
 #[derive(Debug, Clone)]
 pub struct CameraData {
-    pub view:          Mat4,
-    pub projection:    Mat4,
-    pub view_proj:     Mat4,
-    pub inv_view_proj: Mat4,
-    pub inv_proj:      Mat4,
-    pub position:      Vec3,
-    pub near:          f32,
-    pub far:           f32,
+    pub view:             Mat4,
+    pub projection:       Mat4,
+    pub view_proj:        Mat4,
+    pub inv_view_proj:    Mat4,
+    pub inv_proj:         Mat4,
+    pub position:         Vec3,
+    pub near:             f32,
+    pub far:              f32,
+    /// Normalized viewport rect `[x, y, w, h]` (0–1).
+    pub viewport_rect:    [f32; 4],
+    /// How this camera clears the render target.
+    pub clear_flags:      ClearFlags,
+    /// Background colour used when `clear_flags == SolidColor`.
+    pub background_color: [f32; 4],
 }
 
 impl CameraData {
     pub fn identity() -> Self {
         CameraData {
-            view:          Mat4::IDENTITY,
-            projection:    Mat4::IDENTITY,
-            view_proj:     Mat4::IDENTITY,
-            inv_view_proj: Mat4::IDENTITY,
-            inv_proj:      Mat4::IDENTITY,
-            position:      Vec3::ZERO,
-            near:          0.1,
-            far:           1000.0,
+            view:             Mat4::IDENTITY,
+            projection:       Mat4::IDENTITY,
+            view_proj:        Mat4::IDENTITY,
+            inv_view_proj:    Mat4::IDENTITY,
+            inv_proj:         Mat4::IDENTITY,
+            position:         Vec3::ZERO,
+            near:             0.1,
+            far:              1000.0,
+            viewport_rect:    [0.0, 0.0, 1.0, 1.0],
+            clear_flags:      ClearFlags::Skybox,
+            background_color: [0.1, 0.1, 0.1, 1.0],
         }
     }
 }

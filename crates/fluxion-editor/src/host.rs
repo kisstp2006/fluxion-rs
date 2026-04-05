@@ -29,6 +29,7 @@ use crate::rune_bindings::{
     set_physics_context, clear_physics_context,
     set_audio_context, clear_audio_context,
     set_input_context, clear_input_context,
+    set_camera_world, clear_camera_world, drain_camera_edits,
 };
 use crate::rune_bindings::world_module::push_log;
 use crate::undo::UndoStack;
@@ -211,6 +212,7 @@ impl EditorHost {
             set_audio_context(audio);
         }
         set_input_context(&mut self.input);
+        set_camera_world(&self.world);
         set_world_context(&self.world, &self.registry)
     }
 
@@ -219,10 +221,29 @@ impl EditorHost {
         clear_physics_context();
         clear_audio_context();
         clear_input_context();
+        clear_camera_world();
     }
 
     /// Apply queued field mutations produced by Rune inspector panels.
     fn flush_pending_edits(&mut self) {
+        // Drain camera-specific edits (direct Camera component field mutations).
+        for cam_edit in drain_camera_edits() {
+            if let Some(mut cam) = self.world.get_component_mut::<fluxion_core::Camera>(cam_edit.entity) {
+                use fluxion_core::reflect::Reflect;
+                match cam_edit.field.as_str() {
+                    "viewport_rect_x" => if let fluxion_core::reflect::ReflectValue::F32(v) = cam_edit.value { cam.viewport_rect[0] = v; }
+                    "viewport_rect_y" => if let fluxion_core::reflect::ReflectValue::F32(v) = cam_edit.value { cam.viewport_rect[1] = v; }
+                    "viewport_rect_w" => if let fluxion_core::reflect::ReflectValue::F32(v) = cam_edit.value { cam.viewport_rect[2] = v; }
+                    "viewport_rect_h" => if let fluxion_core::reflect::ReflectValue::F32(v) = cam_edit.value { cam.viewport_rect[3] = v; }
+                    "sensor_size_w"   => if let fluxion_core::reflect::ReflectValue::F32(v) = cam_edit.value { cam.sensor_size[0] = v; }
+                    "sensor_size_h"   => if let fluxion_core::reflect::ReflectValue::F32(v) = cam_edit.value { cam.sensor_size[1] = v; }
+                    "lens_shift_x"    => if let fluxion_core::reflect::ReflectValue::F32(v) = cam_edit.value { cam.lens_shift[0] = v; }
+                    "lens_shift_y"    => if let fluxion_core::reflect::ReflectValue::F32(v) = cam_edit.value { cam.lens_shift[1] = v; }
+                    field => { let _ = cam.set_field(field, cam_edit.value); }
+                }
+            }
+        }
+
         for edit in drain_pending_edits() {
             match edit.component.as_str() {
                 "__spawn__" => {

@@ -331,6 +331,29 @@ impl EditorInner {
             log::error!("render_to_viewport: {e}");
         }
 
+        // Push camera snapshot so Rune scripts can use screen↔world math.
+        {
+            use crate::rune_bindings::{set_camera_snapshot, CameraSnapshot};
+            let vp = self.renderer.last_view_matrix * self.renderer.last_proj_matrix;
+            let vp = self.renderer.last_proj_matrix * self.renderer.last_view_matrix;
+            let inv_vp = vp.inverse();
+            let cam_pos = {
+                use fluxion_core::components::Camera;
+                let mut pos = glam::Vec3::ZERO;
+                self.host.world.query_active::<(&fluxion_core::Transform, &Camera), _>(|_, (t, c)| {
+                    if c.is_active { pos = t.world_position; }
+                });
+                pos
+            };
+            set_camera_snapshot(CameraSnapshot {
+                view_proj:     vp.to_cols_array_2d(),
+                inv_view_proj: inv_vp.to_cols_array_2d(),
+                position:      cam_pos.to_array(),
+                viewport_w:    self.renderer.width,
+                viewport_h:    self.renderer.height,
+            });
+        }
+
         // Register / update the viewport texture with egui.
         if let Some(view) = self.renderer.viewport_view() {
             let vp_w = self.renderer.width;

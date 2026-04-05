@@ -893,10 +893,20 @@ impl FluxionRenderer {
         self.last_proj_matrix = camera.projection;
 
         // ── Mesh draw calls ───────────────────────────────────────────────────
+        let culling_mask = {
+            let mut mask = 0xFFFF_FFFFu32;
+            world.query_active::<&Camera, _>(|_, cam| {
+                if cam.is_active { mask = cam.culling_mask; }
+            });
+            mask
+        };
         let mut draw_calls: Vec<MeshDrawCall> = Vec::new();
         let default_mat = self.materials.default_handle();
         let meshes      = &self.meshes;
         world.query_active::<(&Transform, &MeshRenderer), _>(|_id, (transform, mesh_renderer)| {
+            // Culling mask: skip entities whose layer is not in the mask.
+            if (culling_mask >> mesh_renderer.layer) & 1 == 0 { return; }
+
             let mesh_handle = match mesh_renderer.mesh_handle {
                 Some(h) => h,
                 None => {
@@ -1148,35 +1158,43 @@ impl FluxionRenderer {
     }
 
     fn extract_camera(&self, world: &ECSWorld) -> CameraData {
-        let mut result: Option<CameraData> = None;
         let (w, h) = (self.width, self.height);
 
+        // Collect all active cameras with their depth, then pick the lowest depth.
+        let mut candidates: Vec<(i32, CameraData)> = Vec::new();
+
         world.query_active::<(&Transform, &Camera), _>(|_id, (transform, camera)| {
-            if result.is_some() || !camera.is_active { return; }
+            if !camera.is_active { return; }
 
             let view = Mat4::look_at_rh(
                 transform.world_position,
                 transform.world_position + transform.world_forward(),
                 transform.world_up(),
             );
-            let proj        = camera.projection_matrix(w, h);
+            let proj        = camera.projection_matrix_ex(w, h);
             let view_proj   = proj * view;
             let inv_vp      = view_proj.inverse();
             let inv_proj    = proj.inverse();
 
-            result = Some(CameraData {
+            candidates.push((camera.depth, CameraData {
                 view,
-                projection:    proj,
+                projection:       proj,
                 view_proj,
-                inv_view_proj: inv_vp,
+                inv_view_proj:    inv_vp,
                 inv_proj,
-                position:      transform.world_position,
-                near:          camera.near,
-                far:           camera.far,
-            });
+                position:         transform.world_position,
+                near:             camera.near,
+                far:              camera.far,
+                viewport_rect:    camera.viewport_rect,
+                clear_flags:      camera.clear_flags,
+                background_color: camera.background_color,
+            }));
         });
 
-        result.unwrap_or_else(|| {
+        // Sort by depth ascending; lowest depth renders first / is "primary".
+        candidates.sort_by_key(|(d, _)| *d);
+
+        candidates.into_iter().next().map(|(_, data)| data).unwrap_or_else(|| {
             log::warn!("No active camera found in the scene");
             CameraData::identity()
         })

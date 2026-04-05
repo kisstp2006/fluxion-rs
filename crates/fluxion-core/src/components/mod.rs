@@ -24,7 +24,7 @@ pub mod animation_system;
 pub mod lod;
 
 pub use mesh_renderer::MeshRenderer;
-pub use camera::{Camera, ProjectionMode};
+pub use camera::{Camera, ProjectionMode, ClearFlags};
 pub use light::{Light, LightType};
 pub use particle_emitter::{Particle, ParticleEmitter};
 pub use rigid_body::{RigidBody, PhysicsShape, BodyType};

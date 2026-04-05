@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 
 use glam::{EulerRot, Quat, Vec3};
 
-use crate::components::camera::{Camera, ProjectionMode};
+use crate::components::camera::{Camera, ClearFlags, ProjectionMode};
 use crate::components::light::{Light, LightType};
 use crate::components::mesh_renderer::{MeshRenderer, PrimitiveType};
 use crate::components::particle_emitter::ParticleEmitter;
@@ -181,16 +181,25 @@ static CAMERA_FIELDS: OnceLock<Vec<FieldDescriptor>> = OnceLock::new();
 
 fn camera_fields() -> &'static [FieldDescriptor] {
     CAMERA_FIELDS.get_or_init(|| vec![
-        FieldDescriptor::new("fov",        "Field of View",   ReflectFieldType::F32)
+        FieldDescriptor::new("fov",              "Field of View",    ReflectFieldType::F32)
             .with_range(RangeHint::min_max(1.0, 179.0)),
-        FieldDescriptor::new("near",       "Near Plane",      ReflectFieldType::F32)
+        FieldDescriptor::new("near",             "Near Plane",       ReflectFieldType::F32)
             .with_range(RangeHint::min_max(0.001, 10.0)),
-        FieldDescriptor::new("far",        "Far Plane",       ReflectFieldType::F32)
+        FieldDescriptor::new("far",              "Far Plane",        ReflectFieldType::F32)
             .with_range(RangeHint::min_max(1.0, 100_000.0)),
-        FieldDescriptor::new("projection", "Projection Mode", ReflectFieldType::Enum),
-        FieldDescriptor::new("ortho_size", "Ortho Size",      ReflectFieldType::F32)
+        FieldDescriptor::new("projection",       "Projection Mode",  ReflectFieldType::Enum),
+        FieldDescriptor::new("ortho_size",       "Ortho Size",       ReflectFieldType::F32)
             .with_range(RangeHint::min_max(0.1, 1000.0)),
-        FieldDescriptor::new("is_active",  "Is Active",       ReflectFieldType::Bool),
+        FieldDescriptor::new("is_active",        "Is Active",        ReflectFieldType::Bool),
+        FieldDescriptor::new("depth",            "Depth",            ReflectFieldType::F32),
+        FieldDescriptor::new("culling_mask",     "Culling Mask",     ReflectFieldType::U32),
+        FieldDescriptor::new("clear_flags",      "Clear Flags",      ReflectFieldType::Enum),
+        FieldDescriptor::new("background_color", "Background Color", ReflectFieldType::Color4),
+        FieldDescriptor::new("allow_hdr",        "Allow HDR",        ReflectFieldType::Bool),
+        FieldDescriptor::new("allow_msaa",       "Allow MSAA",       ReflectFieldType::Bool),
+        FieldDescriptor::new("use_physical",     "Physical Camera",  ReflectFieldType::Bool),
+        FieldDescriptor::new("focal_length",     "Focal Length (mm)",ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(1.0, 300.0)),
     ])
 }
 
@@ -200,32 +209,50 @@ impl Reflect for Camera {
 
     fn get_field(&self, name: &str) -> Option<ReflectValue> {
         match name {
-            "fov"        => Some(ReflectValue::F32(self.fov)),
-            "near"       => Some(ReflectValue::F32(self.near)),
-            "far"        => Some(ReflectValue::F32(self.far)),
-            "projection" => Some(ReflectValue::Enum(match self.projection_mode {
+            "fov"              => Some(ReflectValue::F32(self.fov)),
+            "near"             => Some(ReflectValue::F32(self.near)),
+            "far"              => Some(ReflectValue::F32(self.far)),
+            "projection"       => Some(ReflectValue::Enum(match self.projection_mode {
                 ProjectionMode::Perspective  => "Perspective".into(),
                 ProjectionMode::Orthographic => "Orthographic".into(),
             })),
-            "ortho_size" => Some(ReflectValue::F32(self.ortho_size)),
-            "is_active"  => Some(ReflectValue::Bool(self.is_active)),
+            "ortho_size"       => Some(ReflectValue::F32(self.ortho_size)),
+            "is_active"        => Some(ReflectValue::Bool(self.is_active)),
+            "depth"            => Some(ReflectValue::F32(self.depth as f32)),
+            "culling_mask"     => Some(ReflectValue::U32(self.culling_mask)),
+            "clear_flags"      => Some(ReflectValue::Enum(self.clear_flags.as_str().into())),
+            "background_color" => Some(ReflectValue::Color4(self.background_color)),
+            "allow_hdr"        => Some(ReflectValue::Bool(self.allow_hdr)),
+            "allow_msaa"       => Some(ReflectValue::Bool(self.allow_msaa)),
+            "use_physical"     => Some(ReflectValue::Bool(self.use_physical)),
+            "focal_length"     => Some(ReflectValue::F32(self.focal_length)),
             _ => None,
         }
     }
 
     fn set_field(&mut self, name: &str, value: ReflectValue) -> Result<(), String> {
         match (name, value) {
-            ("fov",        ReflectValue::F32(f))  => self.fov = f.clamp(1.0, 179.0),
-            ("near",       ReflectValue::F32(f))  => self.near = f.max(0.0001),
-            ("far",        ReflectValue::F32(f))  => self.far = f.max(self.near + 0.1),
-            ("ortho_size", ReflectValue::F32(f))  => self.ortho_size = f.max(0.01),
-            ("is_active",  ReflectValue::Bool(b)) => self.is_active = b,
+            ("fov",              ReflectValue::F32(f))     => self.fov = f.clamp(1.0, 179.0),
+            ("near",             ReflectValue::F32(f))     => self.near = f.max(0.0001),
+            ("far",              ReflectValue::F32(f))     => self.far = f.max(self.near + 0.1),
+            ("ortho_size",       ReflectValue::F32(f))     => self.ortho_size = f.max(0.01),
+            ("is_active",        ReflectValue::Bool(b))    => self.is_active = b,
+            ("depth",            ReflectValue::F32(f))     => self.depth = f as i32,
+            ("culling_mask",     ReflectValue::U32(u))     => self.culling_mask = u,
+            ("allow_hdr",        ReflectValue::Bool(b))    => self.allow_hdr = b,
+            ("allow_msaa",       ReflectValue::Bool(b))    => self.allow_msaa = b,
+            ("use_physical",     ReflectValue::Bool(b))    => self.use_physical = b,
+            ("focal_length",     ReflectValue::F32(f))     => self.focal_length = f.max(1.0),
+            ("background_color", ReflectValue::Color4(c))  => self.background_color = c,
             ("projection", ReflectValue::Enum(s)) => {
                 self.projection_mode = match s.as_str() {
                     "Perspective"  => ProjectionMode::Perspective,
                     "Orthographic" => ProjectionMode::Orthographic,
                     other => return Err(format!("Unknown projection mode '{}'", other)),
                 };
+            }
+            ("clear_flags", ReflectValue::Enum(s)) => {
+                self.clear_flags = ClearFlags::from_str(&s);
             }
             (n, _) => return Err(format!("Unknown or type-mismatched field '{}' on Camera", n)),
         }
