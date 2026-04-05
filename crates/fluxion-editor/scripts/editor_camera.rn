@@ -93,7 +93,7 @@ pub fn update(dt) {
 
         if rdx != 0.0 || rdy != 0.0 {
             nyaw   = nyaw   - rdx * LOOK_SENS;
-            npitch = npitch + rdy * LOOK_SENS;
+            npitch = npitch - rdy * LOOK_SENS;
             if npitch >  PITCH_LIMIT { npitch =  PITCH_LIMIT; }
             if npitch < -PITCH_LIMIT { npitch = -PITCH_LIMIT; }
             dirty = true;
