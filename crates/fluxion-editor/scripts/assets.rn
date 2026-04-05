@@ -13,50 +13,36 @@
 
 pub mod assets {
 
-// ── Type badge ────────────────────────────────────────────────────────────────
+// ── Type → icon name mapping ──────────────────────────────────────────────────
 
-fn type_badge(t) {
-    if t == "texture"  { return "[TEX]"; }
-    if t == "model"    { return "[MDL]"; }
-    if t == "audio"    { return "[SND]"; }
-    if t == "script"   { return " [RN]"; }
-    if t == "shader"   { return "[SHD]"; }
-    if t == "scene"    { return "[SCN]"; }
-    if t == "material" { return "[MAT]"; }
-    if t == "prefab"   { return "[PRF]"; }
-    if t == "json"     { return "[JSN]"; }
-    "[   ]"
+fn type_icon(t) {
+    if t == "texture"  { return "image"; }
+    if t == "model"    { return "box"; }
+    if t == "audio"    { return "music"; }
+    if t == "script"   { return "code"; }
+    if t == "shader"   { return "layers"; }
+    if t == "scene"    { return "film"; }
+    if t == "material" { return "droplet"; }
+    if t == "prefab"   { return "package"; }
+    if t == "json"     { return "file-text"; }
+    "file"
 }
 
 // ── Render one asset row ──────────────────────────────────────────────────────
 //
-// path   — project-relative path  ("textures/sky.hdr")
-// in_dir — true when shown inside a collapsing section (indent already applied)
+// path — project-relative path ("textures/sky.hdr")
 
-fn draw_asset_row(path, in_dir) {
+fn draw_asset_row(path) {
     let t     = fluxion::world::asset_type(path.clone());
-    let badge = type_badge(t.clone());
+    let icon  = type_icon(t.clone());
     let fname = fluxion::world::asset_filename(path.clone());
     let sz    = fluxion::world::asset_size_display(path.clone());
-    let guid  = fluxion::world::asset_guid(path.clone());
 
-    // Short GUID suffix for tooltip-like display (last 8 chars).
-    let guid_short = if guid.len() >= 8 {
-        guid.clone()
-    } else {
-        guid.clone()
-    };
-
-    let btn_label = `${badge} ${fname}`;
-
-    if fluxion::ui::button(btn_label) {
+    if fluxion::ui::asset_row_button(icon, fname, sz, 16.0) {
         if t == "scene" {
             fluxion::world::log(`[Assets] Load scene: ${path}`);
         }
     }
-
-    // Size on the same logical row (as a dimmed small label).
-    fluxion::ui::small(`  ${sz}`);
 }
 
 // ── Main panel ────────────────────────────────────────────────────────────────
@@ -69,8 +55,8 @@ pub fn panel() {
     fluxion::ui::colored_label(`Assets  (${count})`, 0.85, 0.85, 0.85);
     fluxion::ui::separator();
 
-    // Rescan button
-    if fluxion::ui::button("Rescan##asset_rescan") {
+    // Rescan button with icon
+    if fluxion::ui::icon_button("refresh-cw", "Rescan assets", 14.0) {
         fluxion::world::asset_rescan();
     }
 
@@ -96,7 +82,7 @@ pub fn panel() {
             let ri = 0;
             while ri < results.len() {
                 let path = results[ri].clone();
-                draw_asset_row(path, false);
+                draw_asset_row(path);
                 ri += 1;
             }
         }
@@ -121,7 +107,7 @@ pub fn panel() {
         if fluxion::ui::collapsing_begin("/ (root)##asset_root") {
             let i = 0;
             while i < root_files.len() {
-                draw_asset_row(root_files[i].clone(), true);
+                draw_asset_row(root_files[i].clone());
                 i += 1;
             }
             fluxion::ui::collapsing_end();
@@ -142,7 +128,7 @@ pub fn panel() {
             } else {
                 let fi = 0;
                 while fi < files.len() {
-                    draw_asset_row(files[fi].clone(), true);
+                    draw_asset_row(files[fi].clone());
                     fi += 1;
                 }
             }

@@ -868,5 +868,77 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
+    // ── SVG icon widgets ──────────────────────────────────────────────────────
+
+    // icon(name, size) — render a Feather SVG icon inline (no interaction).
+    // name: icon filename without path/extension, e.g. "image", "box", "music".
+    // size: pixel size (square).
+    m.function("icon", |name: Ref<str>, size: f64| {
+        with_ui(|ui| {
+            let sz   = size as f32;
+            let tint = ui.visuals().text_color();
+            if let Some(bytes) = crate::icons::icon_bytes(name.as_ref()) {
+                let uri = crate::icons::icon_uri(name.as_ref());
+                ui.add(
+                    egui::Image::from_bytes(uri, bytes)
+                        .fit_to_exact_size(egui::vec2(sz, sz))
+                        .tint(tint),
+                );
+            }
+        });
+    }).build()?;
+
+    // icon_button(name, tooltip, size) — clickable icon, returns true when clicked.
+    m.function("icon_button", |name: Ref<str>, tooltip: Ref<str>, size: f64| -> bool {
+        with_ui(|ui| {
+            let sz   = size as f32;
+            let tint = ui.visuals().text_color();
+            if let Some(bytes) = crate::icons::icon_bytes(name.as_ref()) {
+                let uri  = crate::icons::icon_uri(name.as_ref());
+                let img  = egui::Image::from_bytes(uri, bytes)
+                    .fit_to_exact_size(egui::vec2(sz, sz))
+                    .tint(tint);
+                let resp = ui.add(egui::ImageButton::new(img));
+                let resp = if tooltip.as_ref().is_empty() { resp } else { resp.on_hover_text(tooltip.as_ref()) };
+                return resp.clicked();
+            }
+            false
+        }).unwrap_or(false)
+    }).build()?;
+
+    // asset_row_button(icon, label, meta, size) — composite row: icon + label + dim meta text.
+    // Returns true when the row is clicked.
+    m.function("asset_row_button", |icon: Ref<str>, label: Ref<str>, meta: Ref<str>, size: f64| -> bool {
+        with_ui(|ui| {
+            let sz    = size as f32;
+            let tint  = ui.visuals().text_color();
+            let weak  = ui.visuals().weak_text_color();
+            let mut clicked = false;
+            ui.horizontal(|ui| {
+                // Icon column
+                if let Some(bytes) = crate::icons::icon_bytes(icon.as_ref()) {
+                    let uri = crate::icons::icon_uri(icon.as_ref());
+                    ui.add(
+                        egui::Image::from_bytes(uri, bytes)
+                            .fit_to_exact_size(egui::vec2(sz, sz))
+                            .tint(tint),
+                    );
+                }
+                // Label + secondary text
+                ui.vertical(|ui| {
+                    if ui.button(label.as_ref()).clicked() {
+                        clicked = true;
+                    }
+                    if !meta.as_ref().is_empty() {
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(meta.as_ref()).small().color(weak),
+                        ));
+                    }
+                });
+            });
+            clicked
+        }).unwrap_or(false)
+    }).build()?;
+
     Ok(m)
 }

@@ -8,6 +8,7 @@
 
 mod dock;
 mod host;
+mod icons;
 mod project_chooser;
 mod rune_bindings;
 mod theme;

@@ -24,6 +24,8 @@ impl UiShell {
         surface_format: wgpu::TextureFormat,
     ) -> Self {
         let ctx     = egui::Context::default();
+        // Install image loaders (SVG, PNG, JPEG …) for icon rendering.
+        crate::icons::install_loaders(&ctx);
         let max_tex = device.limits().max_texture_dimension_2d as usize;
         let state   = egui_winit::State::new(
             ctx,
