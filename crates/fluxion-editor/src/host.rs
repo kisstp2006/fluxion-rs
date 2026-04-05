@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use serde_json;
 
 use fluxion_core::{
+    AssetDatabase,
     ComponentRegistry, ECSWorld, InputState, Time,
     transform::Transform,
     transform::system::TransformSystem,
@@ -31,6 +32,7 @@ use crate::rune_bindings::{
     set_input_context, clear_input_context,
     set_camera_world, clear_camera_world, drain_camera_edits,
     set_environment_world, clear_environment_world, drain_environment_edits, EnvEditValue,
+    set_asset_db_context, clear_asset_db_context,
 };
 use crate::rune_bindings::world_module::push_log;
 use crate::undo::UndoStack;
@@ -46,6 +48,8 @@ pub struct EditorHost {
     pub physics:  Option<fluxion_physics::PhysicsEcsWorld>,
     pub audio:    Option<fluxion_audio::AudioEngine>,
     pub undo:     UndoStack,
+    /// Indexed asset catalogue — populated at project open, refreshed on rescan.
+    pub asset_db:   AssetDatabase,
 
     /// Scripts directory — watched for hot reload.
     pub scripts_dir: PathBuf,
@@ -108,6 +112,7 @@ impl EditorHost {
             physics,
             audio,
             undo:        UndoStack::new(),
+            asset_db:    AssetDatabase::new(),
             scripts_dir,
         })
     }
@@ -225,6 +230,7 @@ impl EditorHost {
         set_input_context(&mut self.input);
         set_camera_world(&self.world);
         set_environment_world(&self.world);
+        set_asset_db_context(&self.asset_db);
         set_world_context(&self.world, &self.registry)
     }
 
@@ -235,6 +241,7 @@ impl EditorHost {
         clear_input_context();
         clear_camera_world();
         clear_environment_world();
+        clear_asset_db_context();
     }
 
     /// Apply queued field mutations produced by Rune inspector panels.

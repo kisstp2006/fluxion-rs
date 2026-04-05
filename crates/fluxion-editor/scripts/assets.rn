@@ -1,70 +1,154 @@
 // ============================================================
 // assets.rn — Asset Browser panel
 //
-// Lists files in the project assets/ directory, grouped by
-// subdirectory.  Clicking a .fluxscene file loads the scene.
+// Powered by AssetDatabase — GUID-tracked, .fluxmeta sidecar.
+//
+// Features:
+//   - Live search  (name or "type:texture" / "type:model" …)
+//   - Type badges  [TEX] [MDL] [SND] [SCN] …
+//   - File size display
+//   - Rescan button
+//   - Scene load on click
 // ============================================================
 
 pub mod assets {
 
-fn file_icon(name) {
-    // name is passed by value; .ends_with() snapshots it — use clone between calls.
-    if name.clone().ends_with(".fluxscene") { return "[SCN]"; }
-    if name.clone().ends_with(".obj") || name.clone().ends_with(".gltf") || name.clone().ends_with(".glb") { return "[MDL]"; }
-    if name.clone().ends_with(".png") || name.clone().ends_with(".jpg") || name.clone().ends_with(".jpeg") || name.clone().ends_with(".webp") { return "[TEX]"; }
-    if name.clone().ends_with(".rn")  { return " [RN]"; }
-    if name.clone().ends_with(".wav") || name.clone().ends_with(".ogg") || name.clone().ends_with(".mp3")  { return "[SND]"; }
+// ── Type badge ────────────────────────────────────────────────────────────────
+
+fn type_badge(t) {
+    if t == "texture"  { return "[TEX]"; }
+    if t == "model"    { return "[MDL]"; }
+    if t == "audio"    { return "[SND]"; }
+    if t == "script"   { return " [RN]"; }
+    if t == "shader"   { return "[SHD]"; }
+    if t == "scene"    { return "[SCN]"; }
+    if t == "material" { return "[MAT]"; }
+    if t == "prefab"   { return "[PRF]"; }
+    if t == "json"     { return "[JSN]"; }
     "[   ]"
 }
 
+// ── Render one asset row ──────────────────────────────────────────────────────
+//
+// path   — project-relative path  ("textures/sky.hdr")
+// in_dir — true when shown inside a collapsing section (indent already applied)
+
+fn draw_asset_row(path, in_dir) {
+    let t     = fluxion::world::asset_type(path.clone());
+    let badge = type_badge(t.clone());
+    let fname = fluxion::world::asset_filename(path.clone());
+    let sz    = fluxion::world::asset_size_display(path.clone());
+    let guid  = fluxion::world::asset_guid(path.clone());
+
+    // Short GUID suffix for tooltip-like display (last 8 chars).
+    let guid_short = if guid.len() >= 8 {
+        guid.clone()
+    } else {
+        guid.clone()
+    };
+
+    let btn_label = `${badge} ${fname}`;
+
+    if fluxion::ui::button(btn_label) {
+        if t == "scene" {
+            fluxion::world::log(`[Assets] Load scene: ${path}`);
+        }
+    }
+
+    // Size on the same logical row (as a dimmed small label).
+    fluxion::ui::small(`  ${sz}`);
+}
+
+// ── Main panel ────────────────────────────────────────────────────────────────
+
 pub fn panel() {
-    fluxion::ui::label("Assets");
+    let count = fluxion::world::asset_count();
+
+    // ── Header ───────────────────────────────────────────────────────────────
+
+    fluxion::ui::colored_label(`Assets  (${count})`, 0.85, 0.85, 0.85);
     fluxion::ui::separator();
 
-    // Root-level files
-    let root_files = fluxion::world::list_assets("");
+    // Rescan button
+    if fluxion::ui::button("Rescan##asset_rescan") {
+        fluxion::world::asset_rescan();
+    }
+
+    fluxion::ui::separator();
+
+    // ── Search bar ───────────────────────────────────────────────────────────
+
+    let query = fluxion::world::get_asset_search();
+    let new_query = fluxion::ui::input_text("Search##asset_search", query.clone());
+    if new_query != query {
+        fluxion::world::set_asset_search(new_query.clone());
+    }
+
+    // ── Search results ───────────────────────────────────────────────────────
+
+    if new_query.len() > 0 {
+        fluxion::ui::separator();
+        let results = fluxion::world::asset_search(new_query.clone());
+        if results.is_empty() {
+            fluxion::ui::small("No results.");
+        } else {
+            fluxion::ui::small(`${results.len()} result(s) for "${new_query}"`);
+            let ri = 0;
+            while ri < results.len() {
+                let path = results[ri].clone();
+                draw_asset_row(path, false);
+                ri += 1;
+            }
+        }
+        return;
+    }
+
+    // ── Empty state ──────────────────────────────────────────────────────────
+
+    if count == 0 {
+        fluxion::ui::separator();
+        fluxion::ui::small("No assets indexed.");
+        fluxion::ui::small("Place files in assets/ and click Rescan.");
+        return;
+    }
+
+    fluxion::ui::separator();
+
+    // ── Root-level files ─────────────────────────────────────────────────────
+
+    let root_files = fluxion::world::asset_list("");
     if root_files.len() > 0 {
-        if fluxion::ui::collapsing_begin("/ (root)") {
+        if fluxion::ui::collapsing_begin("/ (root)##asset_root") {
             let i = 0;
             while i < root_files.len() {
-                let f    = root_files[i].clone();
-                let icon = file_icon(f.clone());
-                fluxion::ui::label(`${icon} ${f}`);
+                draw_asset_row(root_files[i].clone(), true);
                 i += 1;
             }
             fluxion::ui::collapsing_end();
         }
     }
 
-    // Subdirectories
-    let dirs = fluxion::world::list_asset_dirs();
+    // ── Subdirectories ───────────────────────────────────────────────────────
+
+    let dirs = fluxion::world::asset_dirs();
     let di = 0;
     while di < dirs.len() {
         let dir = dirs[di].clone();
-        if fluxion::ui::collapsing_begin(dir.clone()) {
-            let files = fluxion::world::list_assets(dir.clone());
-            let fi = 0;
-            while fi < files.len() {
-                let f     = files[fi].clone();
-                let icon  = file_icon(f.clone());
-                let label = `${icon} ${f}`;
-                if fluxion::ui::button(label) {
-                    if f.clone().ends_with(".fluxscene") {
-                        fluxion::world::log(`[Assets] Load scene: ${dir}/${f}`);
-                    }
-                }
-                fi += 1;
-            }
+        let header = `${dir}##asset_dir_${di}`;
+        if fluxion::ui::collapsing_begin(header) {
+            let files = fluxion::world::asset_list(dir.clone());
             if files.is_empty() {
                 fluxion::ui::small("(empty)");
+            } else {
+                let fi = 0;
+                while fi < files.len() {
+                    draw_asset_row(files[fi].clone(), true);
+                    fi += 1;
+                }
             }
             fluxion::ui::collapsing_end();
         }
         di += 1;
-    }
-
-    if dirs.is_empty() && root_files.is_empty() {
-        fluxion::ui::small("(no assets found)");
     }
 }
 

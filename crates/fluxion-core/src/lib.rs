@@ -78,6 +78,7 @@ pub use project::{
 pub use debug_draw::{DebugDraw, DebugLine, draw_line, draw_ray, draw_sphere,
     draw_aabb, draw_box_rotated, draw_capsule, draw_cross, draw_grid,
     draw_cone, draw_frustum, drain_debug_lines};
+pub use assets::{AssetDatabase, AssetRecord, AssetType};
 
 // WASM entry-point: sets up the browser panic hook so Rust panics appear
 // as readable messages in the browser console instead of "unreachable".

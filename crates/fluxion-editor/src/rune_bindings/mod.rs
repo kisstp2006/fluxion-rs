@@ -17,6 +17,7 @@ pub use world_module::{
     set_editor_shell_state, drain_action_signals, get_editor_mode_str, get_transform_tool_str,
     get_editor_cam_pos, get_editor_cam_yaw, get_editor_cam_pitch,
     init_editor_cam, take_editor_cam_dirty,
+    set_asset_db_context, clear_asset_db_context,
 };
 pub use camera_module::{
     set_camera_snapshot, set_camera_world, clear_camera_world,

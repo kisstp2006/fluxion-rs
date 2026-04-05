@@ -16,6 +16,7 @@ use std::ptr::NonNull;
 use rune::{Module, runtime::Ref};
 
 use fluxion_core::{
+    AssetDatabase,
     ComponentRegistry, ECSWorld, EntityId,
     reflect::{FieldDescriptor, ReflectFieldType, ReflectValue},
 };
@@ -46,6 +47,10 @@ thread_local! {
     static EDITOR_MODE: RefCell<String> = RefCell::new(String::from("Editing"));
     /// Transform tool string: "Translate" | "Rotate" | "Scale".
     static TRANSFORM_TOOL: RefCell<String> = RefCell::new(String::from("Translate"));
+    /// AssetDatabase pointer — set by set_asset_db_context each frame.
+    static ASSET_DB_PTR: Cell<Option<NonNull<AssetDatabase>>> = Cell::new(None);
+    /// Persistent search query for the asset browser panel.
+    static ASSET_SEARCH_QUERY: RefCell<String> = RefCell::new(String::new());
     /// Project name for display in toolbar.
     static PROJECT_NAME: RefCell<String> = RefCell::new(String::new());
     /// Scene name for display in toolbar.
@@ -83,7 +88,19 @@ impl Drop for WorldContextGuard {
         WORLD_PTR   .with(|c| c.set(None));
         REG_PTR     .with(|c| c.set(None));
         ENTITY_CACHE.with(|cache| cache.borrow_mut().clear());
+        ASSET_DB_PTR.with(|c| c.set(None));
     }
+}
+
+/// Set the AssetDatabase pointer for the current Rune call frame.
+/// # Safety: pointer must remain valid for the duration of the guard lifetime.
+pub fn set_asset_db_context(db: &AssetDatabase) {
+    ASSET_DB_PTR.with(|c| c.set(Some(NonNull::from(db))));
+}
+
+/// Clear the AssetDatabase pointer (called from clear_rune_context).
+pub fn clear_asset_db_context() {
+    ASSET_DB_PTR.with(|c| c.set(None));
 }
 
 /// Set world + registry pointers before a Rune panel call.
@@ -211,6 +228,10 @@ pub fn take_editor_cam_dirty() -> bool {
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
+
+fn with_adb<R>(f: impl FnOnce(&AssetDatabase) -> R) -> Option<R> {
+    ASSET_DB_PTR.with(|c| c.get().map(|ptr| unsafe { f(ptr.as_ref()) }))
+}
 
 fn with_ctx<R>(f: impl FnOnce(&ECSWorld, &ComponentRegistry) -> R) -> Option<R> {
     let world = WORLD_PTR.with(|c| c.get())?;
@@ -645,12 +666,27 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         -1 // actual id is not available synchronously; host assigns it next flush
     }).build()?;
 
-    // ── Asset browser ─────────────────────────────────────────────────────────
+    // ── Asset browser (legacy + AssetDatabase-backed) ────────────────────────
+
+    // list_assets / list_asset_dirs: kept for backward compat; now delegate to
+    // AssetDatabase when available, fall back to direct FS scan otherwise.
 
     m.function("list_assets", |subdir: Ref<str>| -> Vec<String> {
+        if let Some(names) = with_adb(|db| {
+            db.list_dir(subdir.as_ref())
+              .into_iter()
+              .map(|r| {
+                  // Return filename only (legacy callers expect just the name).
+                  r.path.rsplit('/').next().unwrap_or(&r.path).to_string()
+              })
+              .collect::<Vec<_>>()
+        }) {
+            return names;
+        }
+        // Fallback: direct filesystem scan.
         PROJECT_ROOT.with(|root| {
             let base = root.borrow();
-            let dir = if subdir.is_empty() {
+            let dir  = if subdir.is_empty() {
                 base.join("assets")
             } else {
                 base.join("assets").join(subdir.as_ref())
@@ -660,8 +696,11 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                 for entry in entries.flatten() {
                     let p = entry.path();
                     if p.is_file() {
-                        if let Some(name) = p.file_name() {
-                            paths.push(name.to_string_lossy().to_string());
+                        let name = p.file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if !name.ends_with(".fluxmeta") {
+                            paths.push(name);
                         }
                     }
                 }
@@ -672,8 +711,11 @@ pub fn build_world_module() -> anyhow::Result<Module> {
     }).build()?;
 
     m.function("list_asset_dirs", || -> Vec<String> {
+        if let Some(dirs) = with_adb(|db| db.list_dirs()) {
+            return dirs;
+        }
         PROJECT_ROOT.with(|root| {
-            let dir = root.borrow().join("assets");
+            let dir  = root.borrow().join("assets");
             let mut dirs = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -688,6 +730,100 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             dirs.sort();
             dirs
         })
+    }).build()?;
+
+    // ── AssetDatabase API (Unity-like: AssetDatabase.load / .find / .guid …) ──
+
+    m.function("asset_count", || -> i64 {
+        with_adb(|db| db.count() as i64).unwrap_or(0)
+    }).build()?;
+
+    // asset_list(subdir) — full relative paths; empty subdir = root-level files.
+    m.function("asset_list", |subdir: Ref<str>| -> Vec<String> {
+        with_adb(|db| {
+            db.list_dir(subdir.as_ref())
+              .into_iter()
+              .map(|r| r.path.clone())
+              .collect()
+        }).unwrap_or_default()
+    }).build()?;
+
+    // asset_dirs() — immediate subdirectory names (sorted).
+    m.function("asset_dirs", || -> Vec<String> {
+        with_adb(|db| db.list_dirs()).unwrap_or_default()
+    }).build()?;
+
+    // asset_guid(path) — stable GUID from .fluxmeta sidecar.
+    m.function("asset_guid", |path: Ref<str>| -> String {
+        with_adb(|db| {
+            db.get_by_path(path.as_ref()).map(|r| r.guid.clone())
+        }).flatten().unwrap_or_default()
+    }).build()?;
+
+    // asset_type(path) — "texture" | "model" | "audio" | "script" | … | "unknown"
+    m.function("asset_type", |path: Ref<str>| -> String {
+        with_adb(|db| {
+            db.get_by_path(path.as_ref()).map(|r| r.type_str().to_string())
+        }).flatten().unwrap_or_else(|| "unknown".to_string())
+    }).build()?;
+
+    // asset_size(path) — file size in bytes.
+    m.function("asset_size", |path: Ref<str>| -> i64 {
+        with_adb(|db| {
+            db.get_by_path(path.as_ref()).map(|r| r.file_size as i64)
+        }).flatten().unwrap_or(0)
+    }).build()?;
+
+    // asset_size_display(path) — human-readable size ("1.2 MB").
+    m.function("asset_size_display", |path: Ref<str>| -> String {
+        with_adb(|db| {
+            db.get_by_path(path.as_ref()).map(|r| r.size_display())
+        }).flatten().unwrap_or_default()
+    }).build()?;
+
+    // asset_tags(path) — user tags from .fluxmeta.
+    m.function("asset_tags", |path: Ref<str>| -> Vec<String> {
+        with_adb(|db| {
+            db.get_by_path(path.as_ref()).map(|r| r.tags.clone())
+        }).flatten().unwrap_or_default()
+    }).build()?;
+
+    // asset_search(query) — name search or "type:texture" / "name:sky" syntax.
+    m.function("asset_search", |query: Ref<str>| -> Vec<String> {
+        with_adb(|db| {
+            db.find(query.as_ref())
+              .into_iter()
+              .map(|r| r.path.clone())
+              .collect()
+        }).unwrap_or_default()
+    }).build()?;
+
+    // asset_rescan() — signal main.rs to re-run AssetDatabase::scan.
+    m.function("asset_rescan", || {
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+    }).build()?;
+
+    // get/set_asset_search — persistent search query across frames.
+    m.function("get_asset_search", || -> String {
+        ASSET_SEARCH_QUERY.with(|q| q.borrow().clone())
+    }).build()?;
+
+    m.function("set_asset_search", |query: String| {
+        ASSET_SEARCH_QUERY.with(|q| *q.borrow_mut() = query);
+    }).build()?;
+
+    // asset_filename(path) — "models/cube.glb" → "cube.glb" (last path segment).
+    m.function("asset_filename", |path: Ref<str>| -> String {
+        path.as_ref().rsplit('/').next().unwrap_or(path.as_ref()).to_string()
+    }).build()?;
+
+    // asset_basename(path) — "models/cube.glb" → "cube" (no extension).
+    m.function("asset_basename", |path: Ref<str>| -> String {
+        let filename = path.as_ref().rsplit('/').next().unwrap_or(path.as_ref());
+        match filename.rfind('.') {
+            Some(dot) => filename[..dot].to_string(),
+            None      => filename.to_string(),
+        }
     }).build()?;
 
     // ── Component add / remove ────────────────────────────────────────────────

@@ -1,3 +1,6 @@
+pub mod database;
+pub use database::{AssetDatabase, AssetRecord, AssetType, new_guid};
+
 // ============================================================
 // fluxion-core — Asset pipeline (FluxionJS parity)
 //

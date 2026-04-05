@@ -306,7 +306,7 @@ impl EditorApp {
             .unwrap_or_else(|| "Untitled".to_string());
         let _ = scene_name;
 
-        let inner = EditorInner {
+        let mut inner = EditorInner {
             window,
             host,
             renderer,
@@ -325,6 +325,10 @@ impl EditorApp {
 
         // Push project root so Rune asset browser can enumerate files.
         crate::rune_bindings::set_project_root(&inner.project_root);
+
+        // Scan the asset database now that we know the project root.
+        inner.host.asset_db.scan(&inner.project_root);
+        log::info!("AssetDatabase: {} assets indexed", inner.host.asset_db.count());
 
         *self = EditorApp::Running(Rc::new(RefCell::new(inner)));
     }
@@ -540,11 +544,15 @@ impl EditorInner {
         // Consume action signals queued by Rune scripts this frame.
         for signal in crate::rune_bindings::drain_action_signals() {
             match signal.as_str() {
-                "new_scene"  => do_new_scene  = true,
-                "open_scene" => do_open_scene = true,
-                "save_scene" => do_save_scene = true,
-                "exit"       => std::process::exit(0),
-                _            => {}
+                "new_scene"      => do_new_scene  = true,
+                "open_scene"     => do_open_scene = true,
+                "save_scene"     => do_save_scene = true,
+                "exit"           => std::process::exit(0),
+                "rescan_assets"  => {
+                    self.host.asset_db.scan(&self.project_root);
+                    log::info!("AssetDatabase rescan: {} assets", self.host.asset_db.count());
+                }
+                _                => {}
             }
         }
 
