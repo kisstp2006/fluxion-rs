@@ -911,7 +911,13 @@ impl FluxionRenderer {
             frame.sky.horizon_color = sky.horizon_color;
             frame.sky.zenith_color = sky.zenith_color;
             frame.sky.solid_color = sky.solid_color;
-            frame.sky.sun_direction = sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth);
+            // Drive sky sun direction from the directional light so rotation is respected.
+            // light.direction = where light shines TOWARD (world_forward); negate = toward sun.
+            let dir_light_sun: Option<[f32; 3]> = frame.lights.iter()
+                .find(|l| l.light_type == LIGHT_DIRECTIONAL)
+                .map(|l| [-l.direction[0], -l.direction[1], -l.direction[2]]);
+            frame.sky.sun_direction = dir_light_sun
+                .unwrap_or_else(|| sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth));
             frame.sky.sun_intensity = sky.sun_intensity;
             frame.sky.sun_size = sky.sun_size;
             frame.sky.turbidity = sky.turbidity;
@@ -934,20 +940,6 @@ impl FluxionRenderer {
             light_data.fog_mode          = env.fog.mode.as_u32();
             light_data.fog_near          = env.fog.near;
             light_data.fog_far           = env.fog.far;
-
-            // Sync directional light direction with the sky sun position.
-            // sun_direction_from_angles returns the vector *toward* the sun;
-            // LightUniform.direction is the vector the light shines *from* (source→surface),
-            // so we negate it to keep shadow/shading consistent with the visible sun disc.
-            use fluxion_core::components::environment::sun_direction_from_angles;
-            let sun = sun_direction_from_angles(env.sky.sun_elevation, env.sky.sun_azimuth);
-            let light_dir = [-sun[0], -sun[1], -sun[2]];
-            for lu in light_data.lights.iter_mut().take(light_data.count as usize) {
-                if lu.light_type == LIGHT_DIRECTIONAL {
-                    lu.direction = light_dir;
-                    break;
-                }
-            }
         } else {
             let s = &self.scene_settings;
             light_data.ambient_color     = s.ambient_color;
@@ -1071,7 +1063,11 @@ impl FluxionRenderer {
             frame.sky.horizon_color = sky.horizon_color;
             frame.sky.zenith_color = sky.zenith_color;
             frame.sky.solid_color = sky.solid_color;
-            frame.sky.sun_direction = sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth);
+            let dir_light_sun: Option<[f32; 3]> = frame.lights.iter()
+                .find(|l| l.light_type == LIGHT_DIRECTIONAL)
+                .map(|l| [-l.direction[0], -l.direction[1], -l.direction[2]]);
+            frame.sky.sun_direction = dir_light_sun
+                .unwrap_or_else(|| sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth));
             frame.sky.sun_intensity = sky.sun_intensity;
             frame.sky.sun_size = sky.sun_size;
             frame.sky.turbidity = sky.turbidity;
@@ -1095,16 +1091,6 @@ impl FluxionRenderer {
             light_data.fog_mode          = env.fog.mode.as_u32();
             light_data.fog_near          = env.fog.near;
             light_data.fog_far           = env.fog.far;
-
-            use fluxion_core::components::environment::sun_direction_from_angles;
-            let sun = sun_direction_from_angles(env.sky.sun_elevation, env.sky.sun_azimuth);
-            let light_dir = [-sun[0], -sun[1], -sun[2]];
-            for lu in light_data.lights.iter_mut().take(light_data.count as usize) {
-                if lu.light_type == LIGHT_DIRECTIONAL {
-                    lu.direction = light_dir;
-                    break;
-                }
-            }
         } else {
             let s = &self.scene_settings;
             light_data.ambient_color     = s.ambient_color;
@@ -1408,7 +1394,9 @@ impl FluxionRenderer {
         ];
         for lu in lights {
             if lu.light_type == LIGHT_DIRECTIONAL {
-                sky.sun_direction = lu.direction;
+                // lu.direction = world_forward (where light shines TOWARD).
+                // sky shader expects sun_direction = toward the sun, so negate.
+                sky.sun_direction = [-lu.direction[0], -lu.direction[1], -lu.direction[2]];
                 break;
             }
         }
