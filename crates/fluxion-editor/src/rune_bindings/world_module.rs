@@ -50,6 +50,15 @@ thread_local! {
     static SCENE_NAME: RefCell<String> = RefCell::new(String::new());
     /// Signals queued by Rune scripts for main.rs to consume.
     static ACTION_SIGNALS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+
+    // ── Editor camera state (persisted between frames, mutated by editor_camera.rn) ──
+    static EDITOR_CAM_POS:    RefCell<[f64; 3]> = RefCell::new([0.0, 2.0, 8.0]);
+    static EDITOR_CAM_YAW:    Cell<f64>         = Cell::new(0.0);
+    static EDITOR_CAM_PITCH:  Cell<f64>         = Cell::new(-0.15);
+    static EDITOR_CAM_TARGET: RefCell<[f64; 3]> = RefCell::new([0.0, 0.0, 0.0]);
+    static EDITOR_CAM_SPEED:  Cell<f64>         = Cell::new(5.0);
+    /// True when the editor camera has been mutated this frame (main.rs reads this to push to Transform).
+    static EDITOR_CAM_DIRTY:  Cell<bool>        = Cell::new(false);
 }
 
 /// A deferred field mutation queued by Rune, applied after the panel call.
@@ -159,6 +168,40 @@ pub fn get_editor_mode_str() -> String {
 /// Read the transform tool as set by Rune.
 pub fn get_transform_tool_str() -> String {
     TRANSFORM_TOOL.with(|c| c.borrow().clone())
+}
+
+// ── Editor camera host API ────────────────────────────────────────────────────
+
+/// Read editor camera position [x,y,z] (for main.rs to push to renderer).
+pub fn get_editor_cam_pos() -> [f64; 3] {
+    EDITOR_CAM_POS.with(|c| *c.borrow())
+}
+
+/// Read editor camera yaw (radians).
+pub fn get_editor_cam_yaw() -> f64 {
+    EDITOR_CAM_YAW.with(|c| c.get())
+}
+
+/// Read editor camera pitch (radians).
+pub fn get_editor_cam_pitch() -> f64 {
+    EDITOR_CAM_PITCH.with(|c| c.get())
+}
+
+/// Initialize editor camera position from the active Camera entity transform (called once at startup).
+pub fn init_editor_cam(pos: [f64; 3], yaw: f64, pitch: f64) {
+    EDITOR_CAM_POS  .with(|c| *c.borrow_mut() = pos);
+    EDITOR_CAM_YAW  .with(|c| c.set(yaw));
+    EDITOR_CAM_PITCH.with(|c| c.set(pitch));
+    EDITOR_CAM_DIRTY.with(|c| c.set(false));
+}
+
+/// Returns true if the editor camera was mutated by Rune this frame, then clears the flag.
+pub fn take_editor_cam_dirty() -> bool {
+    EDITOR_CAM_DIRTY.with(|c| {
+        let v = c.get();
+        c.set(false);
+        v
+    })
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -839,6 +882,56 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     m.function("exit_app", || {
         ACTION_SIGNALS.with(|s| s.borrow_mut().push("exit".to_string()));
+    }).build()?;
+
+    // ── Editor camera state (read/write by editor_camera.rn) ─────────────────
+
+    m.function("get_editor_cam_pos", || -> Vec<f64> {
+        EDITOR_CAM_POS.with(|c| c.borrow().to_vec())
+    }).build()?;
+
+    m.function("set_editor_cam_pos", |vals: Vec<f64>| {
+        if vals.len() >= 3 {
+            EDITOR_CAM_POS.with(|c| *c.borrow_mut() = [vals[0], vals[1], vals[2]]);
+            EDITOR_CAM_DIRTY.with(|c| c.set(true));
+        }
+    }).build()?;
+
+    m.function("get_editor_cam_yaw", || -> f64 {
+        EDITOR_CAM_YAW.with(|c| c.get())
+    }).build()?;
+
+    m.function("set_editor_cam_yaw", |v: f64| {
+        EDITOR_CAM_YAW.with(|c| c.set(v));
+        EDITOR_CAM_DIRTY.with(|c| c.set(true));
+    }).build()?;
+
+    m.function("get_editor_cam_pitch", || -> f64 {
+        EDITOR_CAM_PITCH.with(|c| c.get())
+    }).build()?;
+
+    m.function("set_editor_cam_pitch", |v: f64| {
+        EDITOR_CAM_PITCH.with(|c| c.set(v));
+        EDITOR_CAM_DIRTY.with(|c| c.set(true));
+    }).build()?;
+
+    m.function("get_editor_cam_target", || -> Vec<f64> {
+        EDITOR_CAM_TARGET.with(|c| c.borrow().to_vec())
+    }).build()?;
+
+    m.function("set_editor_cam_target", |vals: Vec<f64>| {
+        if vals.len() >= 3 {
+            EDITOR_CAM_TARGET.with(|c| *c.borrow_mut() = [vals[0], vals[1], vals[2]]);
+            EDITOR_CAM_DIRTY.with(|c| c.set(true));
+        }
+    }).build()?;
+
+    m.function("get_editor_cam_speed", || -> f64 {
+        EDITOR_CAM_SPEED.with(|c| c.get())
+    }).build()?;
+
+    m.function("set_editor_cam_speed", |v: f64| {
+        EDITOR_CAM_SPEED.with(|c| c.set(v.max(0.1)));
     }).build()?;
 
     Ok(m)

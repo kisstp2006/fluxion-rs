@@ -270,6 +270,24 @@ impl EditorApp {
             log::warn!("on_editor_init: {e}");
         }
 
+        // Seed editor camera state from the active Camera entity's Transform.
+        {
+            use fluxion_core::{Transform, Camera};
+            let mut pos   = [0.0f64; 3];
+            let mut yaw   = 0.0f64;
+            let mut pitch = 0.0f64;
+            host.world.query_active::<(&Transform, &Camera), _>(|_, (t, c)| {
+                if c.is_active {
+                    pos = [t.position.x as f64, t.position.y as f64, t.position.z as f64];
+                    // Extract yaw/pitch from the transform rotation (assumed Euler XYZ).
+                    let (p, y, _) = t.rotation.to_euler(glam::EulerRot::XYZ);
+                    yaw   = y as f64;
+                    pitch = p as f64;
+                }
+            });
+            crate::rune_bindings::init_editor_cam(pos, yaw, pitch);
+        }
+
         let scene_name = scene_path
             .as_ref()
             .and_then(|p| p.file_name())
@@ -504,6 +522,27 @@ impl EditorInner {
                 "exit"       => std::process::exit(0),
                 _            => {}
             }
+        }
+
+        // Apply editor camera position/orientation to the Camera entity Transform.
+        // Only done in Editing/Paused modes — Playing mode lets the game control the camera.
+        if *editor_mode != crate::toolbar::EditorMode::Playing
+            && crate::rune_bindings::take_editor_cam_dirty()
+        {
+            use fluxion_core::{Transform, Camera};
+            let pos   = crate::rune_bindings::get_editor_cam_pos();
+            let yaw   = crate::rune_bindings::get_editor_cam_yaw()  as f32;
+            let pitch = crate::rune_bindings::get_editor_cam_pitch() as f32;
+            let rotation = glam::Quat::from_euler(glam::EulerRot::YXZ, yaw, pitch, 0.0);
+            let mut applied = false;
+            self.host.world.query_active::<(&mut Transform, &Camera), _>(|_, (t, c)| {
+                if c.is_active && !applied {
+                    t.position   = glam::Vec3::new(pos[0] as f32, pos[1] as f32, pos[2] as f32);
+                    t.rotation   = rotation;
+                    t.dirty      = true;
+                    applied      = true;
+                }
+            });
         }
 
         // Sync editor mode and transform tool from Rune state.

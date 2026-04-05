@@ -1,0 +1,229 @@
+// ============================================================
+// editor_camera.rn — Editor viewport camera controller
+//
+// WickedEngine-style navigation (only active in Editing/Paused mode):
+//
+//   RMB held + WASD/QE    — Fly-through (FPS-style)
+//   RMB held + mouse move — Look around (yaw/pitch)
+//   RMB held + scroll     — Change fly speed
+//   MMB drag              — Pan (strafe + lift)
+//   Alt + LMB drag        — Orbit around target
+//   Scroll (no button)    — Dolly forward/back
+//   Shift (any move)      — 3× speed boost
+//   F key (hovered)       — Focus: set orbit target to selected entity
+//
+// All state is persisted in fluxion::world thread-locals between frames.
+// ============================================================
+
+pub mod editor_camera {
+
+const PI          = 3.14159265358979;
+const PITCH_LIMIT = 1.5533;
+const LOOK_SENS   = 0.005;
+const PAN_SENS    = 0.003;
+const ORBIT_SENS  = 0.005;
+const SCROLL_ZOOM = 0.15;
+const SPEED_MIN   = 0.5;
+const SPEED_MAX   = 200.0;
+
+// ── Vector helpers ────────────────────────────────────────────────────────────
+
+fn vec3_add(a, b)       { [a[0]+b[0], a[1]+b[1], a[2]+b[2]] }
+fn vec3_sub(a, b)       { [a[0]-b[0], a[1]-b[1], a[2]-b[2]] }
+fn vec3_scale(v, s)     { [v[0]*s,    v[1]*s,    v[2]*s] }
+fn vec3_dot(a, b)       { a[0]*b[0] + a[1]*b[1] + a[2]*b[2] }
+fn vec3_len(v)          { (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt() }
+fn vec3_norm(v) {
+    let l = vec3_len(v);
+    if l < 0.00001 { return [0.0, 0.0, 1.0]; }
+    [v[0]/l, v[1]/l, v[2]/l]
+}
+fn vec3_cross(a, b) {
+    [a[1]*b[2] - a[2]*b[1],
+     a[2]*b[0] - a[0]*b[2],
+     a[0]*b[1] - a[1]*b[0]]
+}
+
+// ── Build camera basis from yaw/pitch ─────────────────────────────────────────
+//
+// yaw   = rotation around world Y axis (left/right)
+// pitch = rotation around local X axis (up/down)
+//
+// Forward: -Z in view space → rotated by yaw then pitch.
+// Returns (forward, right, up) as unit vectors.
+
+fn camera_basis(yaw, pitch) {
+    let sy = yaw.sin();
+    let cy = yaw.cos();
+    let sp = pitch.sin();
+    let cp = pitch.cos();
+
+    // Forward vector (into the scene)
+    let fwd = [sy * cp, -sp, cy * cp];
+    // Right vector (always in XZ plane, no roll)
+    let right = [cy, 0.0, -sy];
+    // Up = cross(right, forward)
+    let up = vec3_cross(right, fwd);
+    [fwd, right, vec3_norm(up)]
+}
+
+// ── Main update — called every frame from viewport.rn ─────────────────────────
+
+pub fn update(dt) {
+    let mode = fluxion::world::get_editor_mode();
+    if mode == "Playing" {
+        return;
+    }
+
+    let hovered = fluxion::ui::viewport_hovered();
+
+    let rmb     = fluxion::ui::viewport_right_dragging();
+    let mmb     = fluxion::ui::viewport_middle_dragging();
+    let alt     = fluxion::ui::viewport_alt_held();
+    let shift   = fluxion::ui::viewport_shift_held();
+    let scroll  = fluxion::ui::viewport_scroll_delta();
+
+    // Raw mouse delta from egui viewport response
+    let mdelta  = fluxion::ui::viewport_drag_delta();
+    let mdx     = mdelta[0];
+    let mdy     = mdelta[1];
+
+    let pos     = fluxion::world::get_editor_cam_pos();
+    let yaw     = fluxion::world::get_editor_cam_yaw();
+    let pitch   = fluxion::world::get_editor_cam_pitch();
+    let target  = fluxion::world::get_editor_cam_target();
+    let speed   = fluxion::world::get_editor_cam_speed();
+
+    let basis   = camera_basis(yaw, pitch);
+    let fwd     = basis[0];
+    let right   = basis[1];
+    let up      = basis[2];
+
+    let speed_mult = if shift { 3.0 } else { 1.0 };
+    let mut new_pos   = pos;
+    let mut new_yaw   = yaw;
+    let mut new_pitch = pitch;
+    let mut new_target = target;
+    let mut new_speed  = speed;
+    let mut dirty      = false;
+
+    // ── Mode 1: RMB held — fly camera ────────────────────────────────────────
+    if rmb && hovered {
+        // Mouse look
+        if mdx != 0.0 || mdy != 0.0 {
+            new_yaw   = new_yaw   + mdx * LOOK_SENS;
+            new_pitch = new_pitch + mdy * LOOK_SENS;
+            new_pitch = new_pitch.max(-PITCH_LIMIT).min(PITCH_LIMIT);
+            dirty = true;
+        }
+
+        // Recalculate basis with updated angles for WASD movement
+        let new_basis = camera_basis(new_yaw, new_pitch);
+        let nfwd   = new_basis[0];
+        let nright = new_basis[1];
+        let nup    = new_basis[2];
+
+        // WASD + QE movement
+        let fw = fluxion::input::key_down("KeyW") || fluxion::input::key_down("ArrowUp");
+        let bw = fluxion::input::key_down("KeyS") || fluxion::input::key_down("ArrowDown");
+        let rt = fluxion::input::key_down("KeyD") || fluxion::input::key_down("ArrowRight");
+        let lt = fluxion::input::key_down("KeyA") || fluxion::input::key_down("ArrowLeft");
+        let up_k = fluxion::input::key_down("KeyE");
+        let dn_k = fluxion::input::key_down("KeyQ");
+
+        let move_speed = speed * speed_mult * dt;
+
+        if fw {
+            new_pos = vec3_add(new_pos, vec3_scale(nfwd,  move_speed));
+            dirty = true;
+        }
+        if bw {
+            new_pos = vec3_add(new_pos, vec3_scale(nfwd, -move_speed));
+            dirty = true;
+        }
+        if rt {
+            new_pos = vec3_add(new_pos, vec3_scale(nright,  move_speed));
+            dirty = true;
+        }
+        if lt {
+            new_pos = vec3_add(new_pos, vec3_scale(nright, -move_speed));
+            dirty = true;
+        }
+        if up_k {
+            new_pos = vec3_add(new_pos, vec3_scale([0.0, 1.0, 0.0],  move_speed));
+            dirty = true;
+        }
+        if dn_k {
+            new_pos = vec3_add(new_pos, vec3_scale([0.0, 1.0, 0.0], -move_speed));
+            dirty = true;
+        }
+
+        // Scroll while RMB = adjust fly speed
+        if scroll != 0.0 {
+            let factor = 1.0 + scroll * 0.1;
+            new_speed = (new_speed * factor).max(SPEED_MIN).min(SPEED_MAX);
+        }
+    }
+    // ── Mode 2: Alt + LMB — orbit around target ───────────────────────────────
+    else if alt && hovered && (mdx != 0.0 || mdy != 0.0) {
+        // Orbit: rotate around target point
+        new_yaw   = new_yaw   + mdx * ORBIT_SENS;
+        new_pitch = new_pitch + mdy * ORBIT_SENS;
+        new_pitch = new_pitch.max(-PITCH_LIMIT).min(PITCH_LIMIT);
+
+        // Reposition camera: keep same distance from target, new orientation
+        let dist_vec = vec3_sub(pos, target);
+        let dist = vec3_len(dist_vec).max(0.01);
+        let new_bas = camera_basis(new_yaw, new_pitch);
+        let nfwd = new_bas[0];
+        // Camera sits behind target along new forward
+        new_pos = vec3_sub(target, vec3_scale(nfwd, dist));
+        dirty = true;
+    }
+    // ── Mode 3: MMB drag — pan ────────────────────────────────────────────────
+    else if mmb && hovered && (mdx != 0.0 || mdy != 0.0) {
+        // Pan speed scales with distance to target so it feels consistent
+        let dist = vec3_len(vec3_sub(pos, target)).max(1.0);
+        let pan_speed = dist * PAN_SENS * speed_mult;
+        let pan_r = vec3_scale(right,              -mdx * pan_speed);
+        let pan_u = vec3_scale([0.0, 1.0, 0.0],    mdy * pan_speed);
+        new_pos    = vec3_add(new_pos,    vec3_add(pan_r, pan_u));
+        new_target = vec3_add(new_target, vec3_add(pan_r, pan_u));
+        dirty = true;
+    }
+
+    // ── Scroll without buttons — dolly (zoom) ────────────────────────────────
+    if scroll != 0.0 && !rmb && hovered {
+        let dist = vec3_len(vec3_sub(pos, target)).max(0.1);
+        let dolly = scroll * dist * SCROLL_ZOOM * speed_mult;
+        new_pos = vec3_add(new_pos, vec3_scale(fwd, dolly));
+        new_target = vec3_add(new_target, vec3_scale(fwd, dolly));
+        dirty = true;
+    }
+
+    // ── F key — focus on selected entity ─────────────────────────────────────
+    if hovered && fluxion::input::key_down("KeyF") {
+        let sel = fluxion::world::selected();
+        if sel >= 0 {
+            let p = fluxion::world::get_vec3(sel, "Transform", "position");
+            if p.len() >= 3 {
+                // Move target to entity, back off along current forward
+                let focus_dist = 5.0;
+                new_target = [p[0], p[1], p[2]];
+                new_pos    = vec3_sub(new_target, vec3_scale(fwd, focus_dist));
+                dirty = true;
+            }
+        }
+    }
+
+    // ── Commit dirty state ────────────────────────────────────────────────────
+    if dirty {
+        fluxion::world::set_editor_cam_pos(new_pos);
+        fluxion::world::set_editor_cam_yaw(new_yaw);
+        fluxion::world::set_editor_cam_pitch(new_pitch);
+        fluxion::world::set_editor_cam_target(new_target);
+        fluxion::world::set_editor_cam_speed(new_speed);
+    }
+}
+
+} // pub mod editor_camera

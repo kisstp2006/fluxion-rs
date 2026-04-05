@@ -3,6 +3,9 @@
 //
 // Shows the rendered 3D scene. Gizmo overlay is drawn in Rust
 // (viewport_gizmo.rs) after this panel runs — no gizmo code here.
+//
+// Editor camera movement is handled by editor_camera::update()
+// which runs every frame while in Editing/Paused mode.
 // ============================================================
 
 pub mod viewport {
@@ -22,8 +25,13 @@ pub fn panel() {
         return;
     }
 
-    // Show the scene texture — this also sets VP_RECT for the gizmo overlay.
+    // Show the scene texture — this also sets VP_RECT and VP_RESPONSE
+    // (needed by editor_camera for viewport_hovered/drag_delta etc.)
     fluxion::ui::image_interactive(tid, w, h);
+
+    // Run editor camera controller (reads VP_RESPONSE set above)
+    let dt = fluxion::time::delta_time();
+    editor_camera::update(dt);
 }
 
 } // pub mod viewport

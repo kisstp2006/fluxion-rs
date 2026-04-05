@@ -15,6 +15,8 @@ pub use world_module::{
     drain_pending_edits, PendingEdit,
     push_log, get_selected_id, set_project_root, set_undo_state, set_frame_time,
     set_editor_shell_state, drain_action_signals, get_editor_mode_str, get_transform_tool_str,
+    get_editor_cam_pos, get_editor_cam_yaw, get_editor_cam_pitch,
+    init_editor_cam, take_editor_cam_dirty,
 };
 pub use camera_module::{
     set_camera_snapshot, set_camera_world, clear_camera_world,

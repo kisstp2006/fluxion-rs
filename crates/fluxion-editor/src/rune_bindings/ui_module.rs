@@ -325,6 +325,46 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or_else(|| vec![-1.0, -1.0])
     }).build()?;
 
+    m.function("viewport_scroll_delta", || -> f64 {
+        VP_RESPONSE.with(|r| {
+            r.borrow().as_ref().map(|resp| {
+                resp.ctx.input(|i| i.smooth_scroll_delta.y) as f64
+            }).unwrap_or(0.0)
+        })
+    }).build()?;
+
+    m.function("viewport_right_dragging", || -> bool {
+        VP_RESPONSE.with(|r| {
+            r.borrow().as_ref().map(|resp| {
+                resp.ctx.input(|i| i.pointer.button_down(egui::PointerButton::Secondary))
+            }).unwrap_or(false)
+        })
+    }).build()?;
+
+    m.function("viewport_middle_dragging", || -> bool {
+        VP_RESPONSE.with(|r| {
+            r.borrow().as_ref().map(|resp| {
+                resp.ctx.input(|i| i.pointer.button_down(egui::PointerButton::Middle))
+            }).unwrap_or(false)
+        })
+    }).build()?;
+
+    m.function("viewport_alt_held", || -> bool {
+        VP_RESPONSE.with(|r| {
+            r.borrow().as_ref().map(|resp| {
+                resp.ctx.input(|i| i.modifiers.alt)
+            }).unwrap_or(false)
+        })
+    }).build()?;
+
+    m.function("viewport_shift_held", || -> bool {
+        VP_RESPONSE.with(|r| {
+            r.borrow().as_ref().map(|resp| {
+                resp.ctx.input(|i| i.modifiers.shift)
+            }).unwrap_or(false)
+        })
+    }).build()?;
+
     m.function("painter_line", |pts: Vec<f64>, style: Vec<f64>| {
         if pts.len() < 4 || style.len() < 5 { return; }
         VP_RESPONSE.with(|resp_ref| {
