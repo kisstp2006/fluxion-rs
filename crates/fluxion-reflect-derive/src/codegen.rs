@@ -141,7 +141,7 @@ impl ReflectKind {
 }
 
 /// Detect the reflect kind from a Rust type + field attributes.
-fn detect_kind(ty: &Type, attrs: &FieldAttrs) -> ReflectKind {
+fn detect_kind(ty: &Type, _attrs: &FieldAttrs) -> ReflectKind {
     match ty {
         Type::Path(tp) => {
             let segs: Vec<_> = tp.path.segments.iter().collect();

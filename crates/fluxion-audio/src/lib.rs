@@ -46,8 +46,10 @@ struct AudioClip {
     /// Interleaved f32 samples (left, right, left, right, …).
     samples:     Vec<f32>,
     /// Number of audio channels (usually 2).
+    #[allow(dead_code)]
     channels:    usize,
     /// Sample rate (Hz).
+    #[allow(dead_code)]
     sample_rate: u32,
 }
 
@@ -164,6 +166,7 @@ struct MixerState {
     voices:    HashMap<u64, Voice>,
     next_id:   u64,
     /// Device channel count (1 or 2).
+    #[allow(dead_code)]
     channels:  usize,
 }
 

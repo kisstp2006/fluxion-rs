@@ -371,7 +371,6 @@ impl EditorInner {
         // Push camera snapshot so Rune scripts can use screen↔world math.
         {
             use crate::rune_bindings::{set_camera_snapshot, CameraSnapshot};
-            let vp = self.renderer.last_view_matrix * self.renderer.last_proj_matrix;
             let vp = self.renderer.last_proj_matrix * self.renderer.last_view_matrix;
             let inv_vp = vp.inverse();
             let cam_pos = {
@@ -430,7 +429,7 @@ impl EditorInner {
         let project         = &self.project;
         let scene_path      = &self.scene_path;
         let scene_dirty     = self.scene_dirty;
-        let project_root    = &self.project_root;
+        let _project_root   = &self.project_root;
 
         let scene_name = scene_path
             .as_ref()

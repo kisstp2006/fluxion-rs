@@ -336,11 +336,11 @@ impl ComponentRegistry {
     /// Call this on every registry before use. Third-party crates call
     /// `register()` on top of this to add their own component types.
     pub fn register_builtins(&mut self) {
-        use glam::{EulerRot, Quat, Vec3};
+        use glam::{EulerRot, Quat};
 
         use crate::components::camera::{Camera, ProjectionMode};
         use crate::components::light::{Light, LightType};
-        use crate::components::mesh_renderer::{MeshRenderer, PrimitiveType};
+        use crate::components::mesh_renderer::MeshRenderer;
         use crate::transform::Transform;
 
         // ── Transform ─────────────────────────────────────────────────────────

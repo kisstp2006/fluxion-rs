@@ -598,7 +598,7 @@ pub fn extract_skeleton(
             let target_node = channel.target().node().index();
             let Some(&joint_index) = node_to_joint.get(&target_node) else { continue };
 
-            let sampler = channel.sampler();
+            let _sampler = channel.sampler();
             let reader = channel.reader(|buf| buffers.get(buf.index()).map(|d| d.as_ref()));
 
             // Read timestamps.

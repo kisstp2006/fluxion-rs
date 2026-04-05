@@ -75,8 +75,10 @@ pub fn apply_theme(ctx: &Context) {
 }
 
 /// The editor accent color (Unity orange-yellow).
+#[allow(dead_code)]
 pub const ACCENT: Color32 = Color32::from_rgb(220, 180, 60);
 /// Panel background color.
+#[allow(dead_code)]
 pub const PANEL_BG: Color32 = Color32::from_rgb(24, 24, 28);
 /// Toolbar background color.
 pub const TOOLBAR_BG: Color32 = Color32::from_rgb(36, 36, 42);

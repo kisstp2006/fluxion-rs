@@ -16,7 +16,6 @@ use std::ptr::NonNull;
 use rune::Module;
 
 use fluxion_core::{ECSWorld, Environment};
-use fluxion_core::components::environment::{ToneMapMode, FogMode, BackgroundMode};
 
 // ── Thread-local world pointer ────────────────────────────────────────────────
 

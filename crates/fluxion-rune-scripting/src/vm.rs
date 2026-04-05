@@ -320,7 +320,7 @@ impl RuneVm {
                 .with_context(|| format!("Failed to read {:?}", path))?;
             let source = Source::new(stem, content)
                 .with_context(|| format!("Failed to create source for {:?}", path))?;
-            sources.insert(source);
+            let _ = sources.insert(source);
         }
 
         let mut diagnostics = Diagnostics::new();

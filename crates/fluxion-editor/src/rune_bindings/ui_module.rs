@@ -72,6 +72,7 @@ pub fn set_current_ui(ui: &mut egui::Ui) -> UiContextGuard {
     UiContextGuard
 }
 
+#[allow(dead_code)]
 pub fn clear_current_ui() {
     CURRENT_UI.with(|c| c.set(None));
 }

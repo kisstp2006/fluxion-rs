@@ -128,6 +128,7 @@ pub fn set_world_context(world: &ECSWorld, registry: &ComponentRegistry) -> Worl
 
 /// Clear world + registry pointers immediately.
 /// Prefer holding the `WorldContextGuard` from `set_world_context` instead.
+#[allow(dead_code)]
 pub fn clear_world_context() {
     WORLD_PTR   .with(|c| c.set(None));
     REG_PTR     .with(|c| c.set(None));

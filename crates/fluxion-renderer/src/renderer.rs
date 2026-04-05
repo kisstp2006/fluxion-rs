@@ -41,7 +41,7 @@ use fluxion_core::{
 use crate::{
     config::RendererConfig,
     render_graph::{RenderGraph, PassSlot, RenderContext, RenderResources},
-    render_graph::context::{FrameData, CameraData, MeshDrawCall, SkinnedDrawCall, SkyParams, ParticleInstance},
+    render_graph::context::{FrameData, CameraData, MeshDrawCall, SkyParams, ParticleInstance},
     passes::{GeometryPass, SkinnedGeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, DofPass, ParticleOverlayPass, DebugLinePass, ShadowPass},
     lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT, MAX_LIGHTS},
     material::MaterialRegistry,
@@ -212,7 +212,7 @@ impl FluxionRenderer {
             ],
         });
 
-        let mut textures  = TextureCache::new();
+        let textures  = TextureCache::new();
         let materials     = MaterialRegistry::new(&device, &queue, &mat_bgl);
         let meshes        = MeshRegistry::new(&device);
         let light_buffer  = LightBuffer::new(&device);

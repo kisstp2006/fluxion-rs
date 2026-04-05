@@ -25,6 +25,7 @@ pub enum TransformTool {
 // ── Show ─────────────────────────────────────────────────────────────────────
 
 /// Render the toolbar panel.  Returns the new `EditorMode` if it changed.
+#[allow(dead_code)]
 pub fn show_toolbar(
     ctx:        &Context,
     mode:       EditorMode,

@@ -9,6 +9,7 @@ use rquickjs::{Context, Runtime};
 
 /// The QuickJS VM. One instance per engine.
 pub struct JsVm {
+    #[allow(dead_code)]
     rt: Runtime,
     pub ctx: Context,
 }

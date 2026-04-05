@@ -43,6 +43,7 @@ pub struct JsRenderPass {
     ///
     /// In a production implementation these would be rquickjs::Persistent<Function>.
     /// For Phase 1 we call by name via the VM's global scope.
+    #[allow(dead_code)]
     execute_fn_name: String,
 }
 

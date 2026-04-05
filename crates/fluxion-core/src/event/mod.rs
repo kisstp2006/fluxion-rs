@@ -230,6 +230,7 @@ impl Drop for EventHandle {
 /// to avoid typos.
 ///
 /// Custom events are fine too — just use your own string constants.
+#[allow(non_snake_case)]
 pub mod EngineEvent {
     /// Fired once after all subsystems are initialized. No data.
     pub const INIT:          &str = "engine:init";

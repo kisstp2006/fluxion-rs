@@ -5,8 +5,6 @@
 // rendering for the editor window.  One instance per window.
 // ============================================================
 
-use std::sync::Arc;
-
 use egui_wgpu::wgpu;
 use egui_wgpu::ScreenDescriptor;
 use winit::window::Window;
@@ -39,6 +37,7 @@ impl UiShell {
         Self { state, renderer, viewport_texture: None }
     }
 
+    #[allow(dead_code)]
     pub fn context(&self) -> &egui::Context {
         self.state.egui_ctx()
     }

@@ -16,7 +16,7 @@ use rune::Module;
 
 use fluxion_core::{
     ECSWorld, Camera,
-    components::camera::{ClearFlags, ProjectionMode},
+    components::camera::ProjectionMode,
 };
 
 // ── CameraSnapshot (pushed each frame by main.rs) ─────────────────────────────

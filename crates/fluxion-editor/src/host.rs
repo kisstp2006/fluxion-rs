@@ -59,6 +59,7 @@ pub struct EditorHost {
     pub asset_db:   AssetDatabase,
 
     /// Scripts directory — watched for hot reload.
+    #[allow(dead_code)]
     pub scripts_dir: PathBuf,
 
     /// Per-entity gameplay Rune scripts, keyed by (entity, script_name).
@@ -369,7 +370,6 @@ impl EditorHost {
         let env_edits = drain_environment_edits();
         if !env_edits.is_empty() {
             use fluxion_core::reflect::ReflectValue;
-            use fluxion_core::reflect::Reflect;
             let mut env_entity = None;
             self.world.query_active::<&fluxion_core::Environment, _>(|id, _| {
                 if env_entity.is_none() { env_entity = Some(id); }
@@ -610,6 +610,7 @@ impl EditorHost {
         }
     }
 
+    #[allow(dead_code)]
     pub fn log(&mut self, line: impl Into<String>) {
         push_log(line.into());
     }

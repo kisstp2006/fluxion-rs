@@ -46,10 +46,12 @@ impl UndoStack {
     pub fn can_undo(&self) -> bool { !self.undos.is_empty() }
     pub fn can_redo(&self) -> bool { !self.redos.is_empty() }
 
+    #[allow(dead_code)]
     pub fn undo_label(&self) -> Option<&str> {
         self.undos.last().map(|e| e.label.as_str())
     }
 
+    #[allow(dead_code)]
     pub fn redo_label(&self) -> Option<&str> {
         self.redos.last().map(|e| e.label.as_str())
     }

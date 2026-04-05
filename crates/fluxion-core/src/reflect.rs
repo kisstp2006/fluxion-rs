@@ -412,17 +412,17 @@ pub trait ReflectMethods {
     fn methods() -> &'static [MethodDescriptor] where Self: Sized;
     
     /// Invoke a static method by name
-    fn invoke_static(method_name: &str, args: &[ReflectValue]) -> Result<Option<ReflectValue>, String> where Self: Sized {
+    fn invoke_static(method_name: &str, _args: &[ReflectValue]) -> Result<Option<ReflectValue>, String> where Self: Sized {
         Err(format!("Static method '{}' not implemented for type", method_name))
     }
     
     /// Invoke an instance method by name
-    fn invoke_method(&self, method_name: &str, args: &[ReflectValue]) -> Result<Option<ReflectValue>, String> {
+    fn invoke_method(&self, method_name: &str, _args: &[ReflectValue]) -> Result<Option<ReflectValue>, String> {
         Err(format!("Instance method '{}' not implemented", method_name))
     }
     
     /// Invoke a mutable instance method by name
-    fn invoke_method_mut(&mut self, method_name: &str, args: &[ReflectValue]) -> Result<Option<ReflectValue>, String> {
+    fn invoke_method_mut(&mut self, method_name: &str, _args: &[ReflectValue]) -> Result<Option<ReflectValue>, String> {
         Err(format!("Mutable instance method '{}' not implemented", method_name))
     }
 }

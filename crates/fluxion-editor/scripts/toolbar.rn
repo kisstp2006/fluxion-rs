@@ -45,6 +45,7 @@ pub fn panel() {
     }
 
     fluxion::ui::toolbar_separator();
+    
 
     // ── Project / scene name ─────────────────────────────────────────────────
     let proj  = fluxion::world::get_project_name();

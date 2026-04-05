@@ -35,7 +35,7 @@ pub fn cube() -> (Vec<Vertex>, Vec<u32>) {
     let mut indices  = Vec::with_capacity(36);
     let h = 0.5_f32;
 
-    for (i, &(n_off, normal, tangent, bitan_sign)) in faces.iter().enumerate() {
+    for (i, &(_n_off, normal, tangent, bitan_sign)) in faces.iter().enumerate() {
         let n = glam::Vec3::from(normal);
         let t = glam::Vec3::from(tangent);
         let b = n.cross(t) * bitan_sign;
@@ -50,7 +50,7 @@ pub fn cube() -> (Vec<Vertex>, Vec<u32>) {
         let uvs = [[0.0, 0.0_f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 
         let base = (i * 4) as u32;
-        for (j, (pos, uv)) in corners.iter().zip(uvs.iter()).enumerate() {
+        for (_j, (pos, uv)) in corners.iter().zip(uvs.iter()).enumerate() {
             vertices.push(Vertex {
                 position: pos.to_array(),
                 normal,
@@ -152,7 +152,7 @@ pub fn cylinder(slices: u32) -> (Vec<Vertex>, Vec<u32>) {
         vertices.push(Vertex { position: [cos_t * r, -h, sin_t * r], normal, tangent, uv: [uv_u, 0.0] });
         vertices.push(Vertex { position: [cos_t * r,  h, sin_t * r], normal, tangent, uv: [uv_u, 1.0] });
     }
-    let side_verts = vertices.len() as u32;
+    let _side_verts = vertices.len() as u32;
     for s in 0..slices {
         let b = s * 2;
         indices.extend_from_slice(&[b, b+1, b+2, b+1, b+3, b+2]);

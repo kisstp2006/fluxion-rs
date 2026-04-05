@@ -10,7 +10,7 @@
 //   The renderer uploads these as a storage/uniform buffer per entity.
 // ============================================================
 
-use glam::{Mat4, Vec3, Quat};
+use glam::Mat4;
 
 use crate::ecs::world::ECSWorld;
 use crate::components::animator::{Animator, MAX_JOINTS};
