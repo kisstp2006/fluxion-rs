@@ -33,4 +33,4 @@ pub use camera_controller::{CameraController, ControllerType, CameraControllerSy
 pub use animator::{Animator, AnimationClip, Skeleton, JointDef, JointChannel, KeyframeVec3, KeyframeQuat, MAX_JOINTS};
 pub use animation_system::AnimationSystem;
 pub use lod::{LodGroup, LodLevel, LodSystem};
-pub use environment::{Environment, ToneMapMode, FogMode, AmbientSettings, FogSettings, ToneMapSettings, BloomSettings as EnvBloomSettings, SsaoSettings as EnvSsaoSettings, DofSettings, VignetteSettings, FilmSettings};
+pub use environment::{Environment, BackgroundMode, SkySettings, ToneMapMode, FogMode, AmbientSettings, FogSettings, ToneMapSettings, BloomSettings as EnvBloomSettings, SsaoSettings as EnvSsaoSettings, DofSettings, VignetteSettings, FilmSettings, sun_direction_from_angles};

@@ -16,7 +16,7 @@ use std::ptr::NonNull;
 use rune::Module;
 
 use fluxion_core::{ECSWorld, Environment};
-use fluxion_core::components::environment::{ToneMapMode, FogMode};
+use fluxion_core::components::environment::{ToneMapMode, FogMode, BackgroundMode};
 
 // ── Thread-local world pointer ────────────────────────────────────────────────
 
@@ -79,6 +79,114 @@ fn with_env<R>(mut f: impl FnMut(&Environment) -> R) -> Option<R> {
 
 pub fn build_environment_module() -> Result<Module, rune::ContextError> {
     let mut m = Module::with_crate_item("fluxion", ["environment"])?;
+
+    // ── Sky ───────────────────────────────────────────────────────────────────
+    m.function("get_sky_mode", || -> String {
+        with_env(|e| e.sky.mode.as_str().to_string()).unwrap_or_else(|| "Gradient".to_string())
+    }).build()?;
+
+    m.function("set_sky_mode", |s: String| {
+        push_edit("sky_mode", EnvEditValue::Str(s));
+    }).build()?;
+
+    m.function("get_sky_solid_color", || -> Vec<f64> {
+        with_env(|e| vec![e.sky.solid_color[0] as f64, e.sky.solid_color[1] as f64, e.sky.solid_color[2] as f64])
+            .unwrap_or_else(|| vec![0.05, 0.07, 0.10])
+    }).build()?;
+
+    m.function("set_sky_solid_color", |r: f64, g: f64, b: f64| {
+        push_edit("sky_solid_color", EnvEditValue::Color([r as f32, g as f32, b as f32]));
+    }).build()?;
+
+    m.function("get_sky_horizon_color", || -> Vec<f64> {
+        with_env(|e| vec![e.sky.horizon_color[0] as f64, e.sky.horizon_color[1] as f64, e.sky.horizon_color[2] as f64])
+            .unwrap_or_else(|| vec![0.6, 0.75, 1.0])
+    }).build()?;
+
+    m.function("set_sky_horizon_color", |r: f64, g: f64, b: f64| {
+        push_edit("sky_horizon_color", EnvEditValue::Color([r as f32, g as f32, b as f32]));
+    }).build()?;
+
+    m.function("get_sky_zenith_color", || -> Vec<f64> {
+        with_env(|e| vec![e.sky.zenith_color[0] as f64, e.sky.zenith_color[1] as f64, e.sky.zenith_color[2] as f64])
+            .unwrap_or_else(|| vec![0.1, 0.3, 0.8])
+    }).build()?;
+
+    m.function("set_sky_zenith_color", |r: f64, g: f64, b: f64| {
+        push_edit("sky_zenith_color", EnvEditValue::Color([r as f32, g as f32, b as f32]));
+    }).build()?;
+
+    m.function("get_sky_sun_intensity", || -> f64 {
+        with_env(|e| e.sky.sun_intensity as f64).unwrap_or(20.0)
+    }).build()?;
+
+    m.function("set_sky_sun_intensity", |v: f64| {
+        push_edit("sky_sun_intensity", EnvEditValue::F32(v as f32));
+    }).build()?;
+
+    m.function("get_sky_sun_size", || -> f64 {
+        with_env(|e| e.sky.sun_size as f64).unwrap_or(0.02)
+    }).build()?;
+
+    m.function("set_sky_sun_size", |v: f64| {
+        push_edit("sky_sun_size", EnvEditValue::F32(v as f32));
+    }).build()?;
+
+    m.function("get_sky_sun_elevation", || -> f64 {
+        with_env(|e| e.sky.sun_elevation as f64).unwrap_or(45.0)
+    }).build()?;
+
+    m.function("set_sky_sun_elevation", |v: f64| {
+        push_edit("sky_sun_elevation", EnvEditValue::F32(v as f32));
+    }).build()?;
+
+    m.function("get_sky_sun_azimuth", || -> f64 {
+        with_env(|e| e.sky.sun_azimuth as f64).unwrap_or(180.0)
+    }).build()?;
+
+    m.function("set_sky_sun_azimuth", |v: f64| {
+        push_edit("sky_sun_azimuth", EnvEditValue::F32(v as f32));
+    }).build()?;
+
+    m.function("get_sky_turbidity", || -> f64 {
+        with_env(|e| e.sky.turbidity as f64).unwrap_or(2.0)
+    }).build()?;
+
+    m.function("set_sky_turbidity", |v: f64| {
+        push_edit("sky_turbidity", EnvEditValue::F32(v as f32));
+    }).build()?;
+
+    m.function("get_sky_rayleigh", || -> f64 {
+        with_env(|e| e.sky.rayleigh as f64).unwrap_or(1.0)
+    }).build()?;
+
+    m.function("set_sky_rayleigh", |v: f64| {
+        push_edit("sky_rayleigh", EnvEditValue::F32(v as f32));
+    }).build()?;
+
+    m.function("get_sky_mie_coefficient", || -> f64 {
+        with_env(|e| e.sky.mie_coefficient as f64).unwrap_or(0.005)
+    }).build()?;
+
+    m.function("set_sky_mie_coefficient", |v: f64| {
+        push_edit("sky_mie_coeff", EnvEditValue::F32(v as f32));
+    }).build()?;
+
+    m.function("get_sky_mie_directional_g", || -> f64 {
+        with_env(|e| e.sky.mie_directional_g as f64).unwrap_or(0.8)
+    }).build()?;
+
+    m.function("set_sky_mie_directional_g", |v: f64| {
+        push_edit("sky_mie_dir_g", EnvEditValue::F32(v as f32));
+    }).build()?;
+
+    m.function("get_sky_panorama_path", || -> String {
+        with_env(|e| e.sky.skybox_path.clone()).unwrap_or_default()
+    }).build()?;
+
+    m.function("set_sky_panorama_path", |path: String| {
+        push_edit("sky_panorama_path", EnvEditValue::Str(path));
+    }).build()?;
 
     // ── Ambient ──────────────────────────────────────────────────────────────
     m.function("get_ambient_color", || -> Vec<f64> {

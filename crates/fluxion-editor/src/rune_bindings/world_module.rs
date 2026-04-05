@@ -248,6 +248,7 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                     ReflectFieldType::Str     => "str",
                     ReflectFieldType::OptionStr => "option_str",
                     ReflectFieldType::Enum    => "enum",
+                    ReflectFieldType::Texture => "texture",
                 }.to_string())
                 .unwrap_or_default()
         }).unwrap_or_default()

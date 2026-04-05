@@ -33,30 +33,49 @@ use crate::material::MaterialRegistry;
 pub const SHADOW_MAP_SIZE: u32 = 2048;
 
 /// GPU layout for [`SkyboxPass`](crate::passes::SkyboxPass); uploaded from [`FrameData::sky`].
+///
+/// `sky_mode`:
+///   0 = gradient + sun disc (horizon/zenith colors)
+///   1 = Preetham analytical atmosphere
+///   2 = solid color
+///   3 = panorama texture (sampling done via separate texture binding)
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct SkyParams {
-    pub horizon_color: [f32; 3],
-    pub _pad0:         f32,
-    pub zenith_color:  [f32; 3],
-    pub _pad1:         f32,
-    pub sun_direction: [f32; 3],
-    pub sun_intensity: f32,
-    pub sun_size:      f32,
-    pub _pad2:         f32,
-    pub _pad3:         f32,
-    pub _pad4:         f32,
+    // gradient / shared
+    pub horizon_color:      [f32; 3],
+    pub sky_mode:           u32,         // 0=gradient 1=preetham 2=solid 3=panorama
+    pub zenith_color:       [f32; 3],
+    pub _pad1:              f32,
+    pub sun_direction:      [f32; 3],    // normalised, toward sun
+    pub sun_intensity:      f32,
+    pub sun_size:           f32,         // angular radius (radians)
+    // solid color
+    pub solid_color:        [f32; 3],
+    // Preetham params
+    pub turbidity:          f32,
+    pub rayleigh:           f32,
+    pub mie_coefficient:    f32,
+    pub mie_directional_g:  f32,
+    pub _pad2:              f32,
 }
 
 impl Default for SkyParams {
     fn default() -> Self {
         Self {
-            horizon_color: [0.6, 0.75, 1.0],
-            zenith_color:  [0.1, 0.3, 0.8],
-            sun_direction: [0.5, 0.8, 0.3],
-            sun_intensity: 20.0,
-            sun_size:      0.02,
-            _pad0: 0.0, _pad1: 0.0, _pad2: 0.0, _pad3: 0.0, _pad4: 0.0,
+            horizon_color:     [0.6, 0.75, 1.0],
+            sky_mode:          0,
+            zenith_color:      [0.1, 0.3, 0.8],
+            _pad1:             0.0,
+            sun_direction:     [0.5, 0.8, 0.3],
+            sun_intensity:     20.0,
+            sun_size:          0.02,
+            solid_color:       [0.05, 0.07, 0.10],
+            turbidity:         2.0,
+            rayleigh:          1.0,
+            mie_coefficient:   0.005,
+            mie_directional_g: 0.8,
+            _pad2:             0.0,
         }
     }
 }

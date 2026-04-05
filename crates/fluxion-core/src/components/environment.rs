@@ -75,6 +75,46 @@ impl Default for ToneMapMode {
     fn default() -> Self { Self::Aces }
 }
 
+// ── Background / sky mode ───────────────────────────────────────────────────
+
+/// How the scene background is rendered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BackgroundMode {
+    /// Flat solid color — no sky.
+    SolidColor,
+    /// Gradient sky with configurable horizon / zenith colors + sun disc.
+    Gradient,
+    /// Preetham analytical atmospheric sky (turbidity, Rayleigh, Mie) + sun.
+    ProceduralSky,
+    /// Equirectangular panorama texture (.png / .hdr) used as sky background.
+    Panorama,
+}
+
+impl BackgroundMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SolidColor    => "SolidColor",
+            Self::Gradient      => "Gradient",
+            Self::ProceduralSky => "ProceduralSky",
+            Self::Panorama      => "Panorama",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "SolidColor"    => Self::SolidColor,
+            "Gradient"      => Self::Gradient,
+            "ProceduralSky" => Self::ProceduralSky,
+            "Panorama"      => Self::Panorama,
+            _               => Self::Gradient,
+        }
+    }
+}
+
+impl Default for BackgroundMode {
+    fn default() -> Self { Self::Gradient }
+}
+
 // ── Fog mode ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +143,60 @@ impl FogMode {
 
 impl Default for FogMode {
     fn default() -> Self { Self::Exponential }
+}
+
+// ── Sky settings ────────────────────────────────────────────────────────────
+
+/// Controls the scene background / sky.
+///
+/// Modes:
+/// - `SolidColor`    — flat RGB clear colour
+/// - `Gradient`      — two-color horizon→zenith gradient with a simple sun disc
+/// - `ProceduralSky` — Preetham analytical atmosphere (turbidity, Rayleigh, Mie)
+/// - `Panorama`      — equirectangular HDR/PNG texture
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkySettings {
+    pub mode: BackgroundMode,
+
+    // Solid color background
+    pub solid_color: [f32; 3],
+
+    // Gradient sky (also used as fallback for procedural)
+    pub horizon_color: [f32; 3],
+    pub zenith_color:  [f32; 3],
+    pub sun_intensity: f32,
+    pub sun_size:      f32,      // angular radius in radians
+
+    // Procedural sky (Preetham model) — also drives sun direction in gradient mode
+    pub sun_elevation:      f32,  // degrees above horizon  (0–90)
+    pub sun_azimuth:        f32,  // degrees, 0=north, 180=south
+    pub turbidity:          f32,  // atmosphere haziness (2–20)
+    pub rayleigh:           f32,  // Rayleigh scattering (0–5)
+    pub mie_coefficient:    f32,  // Mie scattering (0–0.1)
+    pub mie_directional_g:  f32,  // Mie asymmetry (0–1)
+
+    // Panorama texture — project-relative path to .png / .hdr
+    pub skybox_path: String,
+}
+
+impl Default for SkySettings {
+    fn default() -> Self {
+        Self {
+            mode:              BackgroundMode::Gradient,
+            solid_color:       [0.05, 0.07, 0.10],
+            horizon_color:     [0.60, 0.75, 1.00],
+            zenith_color:      [0.10, 0.30, 0.80],
+            sun_intensity:     20.0,
+            sun_size:          0.02,
+            sun_elevation:     45.0,
+            sun_azimuth:       180.0,
+            turbidity:         2.0,
+            rayleigh:          1.0,
+            mie_coefficient:   0.005,
+            mie_directional_g: 0.8,
+            skybox_path:       String::new(),
+        }
+    }
 }
 
 // ── Sub-setting structs ───────────────────────────────────────────────────────
@@ -240,6 +334,7 @@ impl Default for FilmSettings {
 /// component and uses it to override the global RendererConfig.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Environment {
+    pub sky:      SkySettings,
     pub ambient:  AmbientSettings,
     pub fog:      FogSettings,
     pub tonemap:  ToneMapSettings,
@@ -253,6 +348,7 @@ pub struct Environment {
 impl Default for Environment {
     fn default() -> Self {
         Self {
+            sky:      SkySettings::default(),
             ambient:  AmbientSettings::default(),
             fog:      FogSettings::default(),
             tonemap:  ToneMapSettings::default(),
@@ -267,6 +363,16 @@ impl Default for Environment {
 
 impl Component for Environment {}
 
+/// Compute sun direction vector from elevation (deg) and azimuth (deg).
+pub fn sun_direction_from_angles(elevation_deg: f32, azimuth_deg: f32) -> [f32; 3] {
+    let el = elevation_deg.to_radians();
+    let az = azimuth_deg.to_radians();
+    let x = el.cos() * az.sin();
+    let y = el.sin();
+    let z = el.cos() * az.cos();
+    [x, y, z]
+}
+
 // ── Reflect ───────────────────────────────────────────────────────────────────
 
 static ENV_FIELDS: OnceLock<Vec<FieldDescriptor>> = OnceLock::new();
@@ -277,6 +383,28 @@ fn env_fields() -> &'static [FieldDescriptor] {
             min: Some(min), max: Some(max), step: Some(step),
         };
         vec![
+            // Sky
+            FieldDescriptor::new("sky_mode",          "Sky / Mode",             ReflectFieldType::Enum),
+            FieldDescriptor::new("sky_solid_color",    "Sky / Solid Color",       ReflectFieldType::Color3),
+            FieldDescriptor::new("sky_horizon_color",  "Sky / Horizon Color",     ReflectFieldType::Color3),
+            FieldDescriptor::new("sky_zenith_color",   "Sky / Zenith Color",      ReflectFieldType::Color3),
+            FieldDescriptor::new("sky_sun_intensity",  "Sky / Sun Intensity",     ReflectFieldType::F32)
+                .with_range(r(0.0, 100.0, 0.5)),
+            FieldDescriptor::new("sky_sun_size",       "Sky / Sun Size",          ReflectFieldType::F32)
+                .with_range(r(0.001, 0.2, 0.001)),
+            FieldDescriptor::new("sky_sun_elevation",  "Sky / Sun Elevation",     ReflectFieldType::F32)
+                .with_range(r(-10.0, 90.0, 0.5)),
+            FieldDescriptor::new("sky_sun_azimuth",    "Sky / Sun Azimuth",       ReflectFieldType::F32)
+                .with_range(r(0.0, 360.0, 1.0)),
+            FieldDescriptor::new("sky_turbidity",      "Sky / Turbidity",         ReflectFieldType::F32)
+                .with_range(r(1.0, 20.0, 0.1)),
+            FieldDescriptor::new("sky_rayleigh",       "Sky / Rayleigh",          ReflectFieldType::F32)
+                .with_range(r(0.0, 5.0, 0.05)),
+            FieldDescriptor::new("sky_mie_coeff",      "Sky / Mie Coefficient",   ReflectFieldType::F32)
+                .with_range(r(0.0, 0.1, 0.001)),
+            FieldDescriptor::new("sky_mie_dir_g",      "Sky / Mie Directional G", ReflectFieldType::F32)
+                .with_range(r(0.0, 1.0, 0.01)),
+            FieldDescriptor::new("sky_panorama_path",  "Sky / Panorama Texture",  ReflectFieldType::Texture),
             // Ambient
             FieldDescriptor::new("ambient_color",     "Ambient / Color",     ReflectFieldType::Color3),
             FieldDescriptor::new("ambient_intensity", "Ambient / Intensity", ReflectFieldType::F32)
@@ -343,6 +471,19 @@ impl Reflect for Environment {
 
     fn get_field(&self, name: &str) -> Option<ReflectValue> {
         match name {
+            "sky_mode"          => Some(ReflectValue::Enum(self.sky.mode.as_str().to_string())),
+            "sky_solid_color"   => Some(ReflectValue::Color3(self.sky.solid_color)),
+            "sky_horizon_color" => Some(ReflectValue::Color3(self.sky.horizon_color)),
+            "sky_zenith_color"  => Some(ReflectValue::Color3(self.sky.zenith_color)),
+            "sky_sun_intensity" => Some(ReflectValue::F32(self.sky.sun_intensity)),
+            "sky_sun_size"      => Some(ReflectValue::F32(self.sky.sun_size)),
+            "sky_sun_elevation" => Some(ReflectValue::F32(self.sky.sun_elevation)),
+            "sky_sun_azimuth"   => Some(ReflectValue::F32(self.sky.sun_azimuth)),
+            "sky_turbidity"     => Some(ReflectValue::F32(self.sky.turbidity)),
+            "sky_rayleigh"      => Some(ReflectValue::F32(self.sky.rayleigh)),
+            "sky_mie_coeff"     => Some(ReflectValue::F32(self.sky.mie_coefficient)),
+            "sky_mie_dir_g"     => Some(ReflectValue::F32(self.sky.mie_directional_g)),
+            "sky_panorama_path" => Some(ReflectValue::AssetPath(if self.sky.skybox_path.is_empty() { None } else { Some(self.sky.skybox_path.clone()) })),
             "ambient_color"     => Some(ReflectValue::Color3(self.ambient.color)),
             "ambient_intensity" => Some(ReflectValue::F32(self.ambient.intensity)),
             "fog_enabled"  => Some(ReflectValue::Bool(self.fog.enabled)),
@@ -377,6 +518,19 @@ impl Reflect for Environment {
 
     fn set_field(&mut self, name: &str, value: ReflectValue) -> Result<(), String> {
         match (name, value) {
+            ("sky_mode",          ReflectValue::Enum(s))       => self.sky.mode = BackgroundMode::from_str(&s),
+            ("sky_solid_color",   ReflectValue::Color3(c))     => self.sky.solid_color = c,
+            ("sky_horizon_color", ReflectValue::Color3(c))     => self.sky.horizon_color = c,
+            ("sky_zenith_color",  ReflectValue::Color3(c))     => self.sky.zenith_color = c,
+            ("sky_sun_intensity", ReflectValue::F32(f))        => self.sky.sun_intensity = f,
+            ("sky_sun_size",      ReflectValue::F32(f))        => self.sky.sun_size = f,
+            ("sky_sun_elevation", ReflectValue::F32(f))        => self.sky.sun_elevation = f,
+            ("sky_sun_azimuth",   ReflectValue::F32(f))        => self.sky.sun_azimuth = f,
+            ("sky_turbidity",     ReflectValue::F32(f))        => self.sky.turbidity = f,
+            ("sky_rayleigh",      ReflectValue::F32(f))        => self.sky.rayleigh = f,
+            ("sky_mie_coeff",     ReflectValue::F32(f))        => self.sky.mie_coefficient = f,
+            ("sky_mie_dir_g",     ReflectValue::F32(f))        => self.sky.mie_directional_g = f,
+            ("sky_panorama_path", ReflectValue::AssetPath(p))  => self.sky.skybox_path = p.unwrap_or_default(),
             ("ambient_color",     ReflectValue::Color3(c)) => self.ambient.color = c,
             ("ambient_intensity", ReflectValue::F32(f))    => self.ambient.intensity = f,
             ("fog_enabled",  ReflectValue::Bool(b))        => self.fog.enabled = b,

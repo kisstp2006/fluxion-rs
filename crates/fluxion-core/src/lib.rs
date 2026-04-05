@@ -62,7 +62,7 @@ pub use components::{Animator, AnimationClip, Skeleton, JointDef, JointChannel, 
 pub use components::AnimationSystem;
 pub use components::{LodGroup, LodLevel, LodSystem};
 pub use components::{CameraController, ControllerType, CameraControllerSystem};
-pub use components::{Environment, ToneMapMode, FogMode, AmbientSettings, FogSettings, ToneMapSettings, DofSettings, VignetteSettings, FilmSettings};
+pub use components::{Environment, BackgroundMode, SkySettings, ToneMapMode, FogMode, AmbientSettings, FogSettings, ToneMapSettings, DofSettings, VignetteSettings, FilmSettings, sun_direction_from_angles};
 pub use components::{EnvBloomSettings, EnvSsaoSettings};
 pub use particles::step_particle_emitters;
 pub use color::Color;

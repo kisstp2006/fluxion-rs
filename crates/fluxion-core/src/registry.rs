@@ -265,6 +265,7 @@ impl ComponentRegistry {
                     FT::Color3                              => "[number, number, number]",
                     FT::Color4                              => "[number, number, number, number]",
                     FT::Enum                                => "string",
+                    FT::Texture                             => "string | undefined",
                 };
                 let readonly = if f.read_only { "readonly " } else { "" };
                 out.push_str(&format!("  /** {} */\n", f.display_name));

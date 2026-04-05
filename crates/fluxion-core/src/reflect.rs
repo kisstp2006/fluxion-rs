@@ -51,6 +51,9 @@ pub enum ReflectValue {
     OptionStr(Option<String>),
     /// Enum variant name as a string ("Cube", "Directional", …)
     Enum(String),
+    /// Project-relative path to an asset file (texture, mesh, audio, …).
+    /// Shown as an asset-picker widget in the editor (drag-and-drop from asset browser).
+    AssetPath(Option<String>),
 }
 
 // ── Field metadata ─────────────────────────────────────────────────────────────
@@ -71,6 +74,9 @@ pub enum ReflectFieldType {
     Str,
     OptionStr,
     Enum,
+    /// Project-relative path to a texture/image asset.
+    /// The editor shows a thumbnail + drag-drop target.
+    Texture,
 }
 
 /// Optional numeric range hint for editor sliders / drag fields.
@@ -193,6 +199,7 @@ pub fn reflect_value_to_json(v: &ReflectValue) -> Value {
         ReflectValue::Str(s)        => Value::String(s.clone()),
         ReflectValue::OptionStr(o)  => o.as_ref().map(|s| Value::String(s.clone())).unwrap_or(Value::Null),
         ReflectValue::Enum(s)       => Value::String(s.clone()),
+        ReflectValue::AssetPath(o)  => o.as_ref().map(|s| Value::String(s.clone())).unwrap_or(Value::Null),
     }
 }
 

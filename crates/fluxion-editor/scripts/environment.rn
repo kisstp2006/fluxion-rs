@@ -33,6 +33,88 @@ pub fn panel() {
     fluxion::ui::heading("Environment");
     fluxion::ui::separator();
 
+    // ── Sky / Background ──────────────────────────────────────────────────────
+    if fluxion::ui::collapsing_begin("Sky") {
+        let sky_modes = ["Gradient", "ProceduralSky", "SolidColor", "Panorama"];
+        let cur_mode = fluxion::environment::get_sky_mode();
+        let nm = fluxion::ui::combo_box("Mode##sky", sky_modes);
+        if nm != "" && nm != cur_mode {
+            fluxion::environment::set_sky_mode(nm);
+        }
+        let mode = fluxion::environment::get_sky_mode();
+
+        if mode == "SolidColor" {
+            let c = fluxion::environment::get_sky_solid_color();
+            let nc = fluxion::ui::color3("Color##skysolid", c[0], c[1], c[2]);
+            if nc[0] != c[0] || nc[1] != c[1] || nc[2] != c[2] {
+                fluxion::environment::set_sky_solid_color(nc[0], nc[1], nc[2]);
+            }
+        }
+
+        if mode == "Gradient" || mode == "ProceduralSky" {
+            let hc = fluxion::environment::get_sky_horizon_color();
+            let nhc = fluxion::ui::color3("Horizon##sky", hc[0], hc[1], hc[2]);
+            if nhc[0] != hc[0] || nhc[1] != hc[1] || nhc[2] != hc[2] {
+                fluxion::environment::set_sky_horizon_color(nhc[0], nhc[1], nhc[2]);
+            }
+
+            let zc = fluxion::environment::get_sky_zenith_color();
+            let nzc = fluxion::ui::color3("Zenith##sky", zc[0], zc[1], zc[2]);
+            if nzc[0] != zc[0] || nzc[1] != zc[1] || nzc[2] != zc[2] {
+                fluxion::environment::set_sky_zenith_color(nzc[0], nzc[1], nzc[2]);
+            }
+        }
+
+        if mode != "SolidColor" && mode != "Panorama" {
+            let elev = fluxion::environment::get_sky_sun_elevation();
+            let ne = fluxion::ui::drag_float("Sun Elevation°##sky", elev, 0.5, -10.0, 90.0);
+            if ne != elev { fluxion::environment::set_sky_sun_elevation(ne); }
+
+            let azim = fluxion::environment::get_sky_sun_azimuth();
+            let na = fluxion::ui::drag_float("Sun Azimuth°##sky", azim, 1.0, 0.0, 360.0);
+            if na != azim { fluxion::environment::set_sky_sun_azimuth(na); }
+
+            let si = fluxion::environment::get_sky_sun_intensity();
+            let nsi = fluxion::ui::drag_float("Sun Intensity##sky", si, 0.5, 0.0, 100.0);
+            if nsi != si { fluxion::environment::set_sky_sun_intensity(nsi); }
+
+            let ss = fluxion::environment::get_sky_sun_size();
+            let nss = fluxion::ui::drag_float("Sun Size##sky", ss, 0.001, 0.001, 0.2);
+            if nss != ss { fluxion::environment::set_sky_sun_size(nss); }
+        }
+
+        if mode == "ProceduralSky" {
+            fluxion::ui::separator();
+            fluxion::ui::small("Preetham Atmosphere");
+
+            let turb = fluxion::environment::get_sky_turbidity();
+            let nt = fluxion::ui::drag_float("Turbidity##sky", turb, 0.1, 1.0, 20.0);
+            if nt != turb { fluxion::environment::set_sky_turbidity(nt); }
+
+            let ray = fluxion::environment::get_sky_rayleigh();
+            let nr = fluxion::ui::drag_float("Rayleigh##sky", ray, 0.05, 0.0, 5.0);
+            if nr != ray { fluxion::environment::set_sky_rayleigh(nr); }
+
+            let mie = fluxion::environment::get_sky_mie_coefficient();
+            let nm2 = fluxion::ui::drag_float("Mie Coeff##sky", mie, 0.001, 0.0, 0.1);
+            if nm2 != mie { fluxion::environment::set_sky_mie_coefficient(nm2); }
+
+            let mg = fluxion::environment::get_sky_mie_directional_g();
+            let nmg = fluxion::ui::drag_float("Mie Dir G##sky", mg, 0.01, 0.0, 1.0);
+            if nmg != mg { fluxion::environment::set_sky_mie_directional_g(nmg); }
+        }
+
+        if mode == "Panorama" {
+            fluxion::ui::separator();
+            let path = fluxion::environment::get_sky_panorama_path();
+            fluxion::ui::small(`Panorama: ${path}`);
+            let np = fluxion::ui::input_text("Path##skypano", path);
+            if np != path {
+                fluxion::environment::set_sky_panorama_path(np);
+            }
+        }
+    }
+
     // ── Ambient ───────────────────────────────────────────────────────────────
     if fluxion::ui::collapsing_begin("Ambient Light") {
         let col = fluxion::environment::get_ambient_color();

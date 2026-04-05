@@ -83,6 +83,9 @@ pub struct FluxionRenderer {
     /// Reserved: cubemap / equirect path from `scene_settings.skybox` once texture sky is implemented.
     pub skybox_asset_path: Option<String>,
 
+    /// Path of the panorama that is currently uploaded to the GPU (to avoid redundant re-uploads).
+    panorama_loaded_path: String,
+
     /// The BindGroupLayout used by all PBR materials (group 2 in geometry pass).
     /// Stored here so `add_material()` can create new materials after init.
     pub mat_bgl: wgpu::BindGroupLayout,
@@ -267,6 +270,7 @@ impl FluxionRenderer {
             asset_source: None,
             scene_settings: SceneSettings::default(),
             skybox_asset_path: None,
+            panorama_loaded_path: String::new(),
             config,
             max_lights,
             width: w, height: h,
@@ -327,7 +331,40 @@ impl FluxionRenderer {
     /// Called once per frame from `render_to_viewport` / `render` when an
     /// Environment component is present in the scene.
     fn apply_environment(&mut self, env: &Environment) {
-        use crate::passes::{BloomPass, TonemapPass, SsaoPass};
+        use crate::passes::{BloomPass, TonemapPass, SsaoPass, SkyboxPass};
+        use fluxion_core::components::environment::{BackgroundMode, sun_direction_from_angles};
+
+        // ── Sky / background ───────────────────────────────────────────────────
+        let sky = &env.sky;
+        let sun_dir = sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth);
+
+        let sky_mode: u32 = match sky.mode {
+            BackgroundMode::Gradient      => 0,
+            BackgroundMode::ProceduralSky => 1,
+            BackgroundMode::SolidColor    => 2,
+            BackgroundMode::Panorama      => 3,
+        };
+
+        if let Some(skybox) = self.render_graph.get_pass_mut::<SkyboxPass>("skybox") {
+            skybox.params.sky_mode          = sky_mode;
+            skybox.params.horizon_color     = sky.horizon_color;
+            skybox.params.zenith_color      = sky.zenith_color;
+            skybox.params.solid_color       = sky.solid_color;
+            skybox.params.sun_direction     = sun_dir;
+            skybox.params.sun_intensity     = sky.sun_intensity;
+            skybox.params.sun_size          = sky.sun_size;
+            skybox.params.turbidity         = sky.turbidity;
+            skybox.params.rayleigh          = sky.rayleigh;
+            skybox.params.mie_coefficient   = sky.mie_coefficient;
+            skybox.params.mie_directional_g = sky.mie_directional_g;
+        }
+
+        // Panorama texture: load if path changed
+        if sky.mode == BackgroundMode::Panorama && !sky.skybox_path.is_empty()
+            && sky.skybox_path != self.panorama_loaded_path
+        {
+            self.load_panorama_texture(&sky.skybox_path.clone());
+        }
 
         if let Some(bloom) = self.render_graph.get_pass_mut::<BloomPass>("bloom") {
             bloom.config.enabled     = env.bloom.enabled;
@@ -352,6 +389,38 @@ impl FluxionRenderer {
         }
         self.render_graph.set_enabled("ssao",  env.ssao.enabled);
         self.render_graph.set_enabled("bloom", env.bloom.enabled);
+    }
+
+    /// Load a panorama (equirectangular) image from disk and upload it to the GPU SkyboxPass.
+    ///
+    /// The path is resolved relative to the asset source root when available,
+    /// otherwise treated as an absolute filesystem path.
+    fn load_panorama_texture(&mut self, path: &str) {
+        use crate::passes::SkyboxPass;
+
+        let img_result: anyhow::Result<image::DynamicImage> = (|| {
+            if let Some(src) = self.asset_source.as_deref() {
+                let bytes = src.read(path).map_err(|e| anyhow::anyhow!("{e}"))?;
+                Ok(image::load_from_memory(&bytes)?)
+            } else {
+                Ok(image::open(path)?)
+            }
+        })();
+
+        match img_result {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                if let Some(skybox) = self.render_graph.get_pass_mut::<SkyboxPass>("skybox") {
+                    skybox.set_panorama_texture(&self.device, &self.queue, w, h, &rgba);
+                }
+                self.panorama_loaded_path = path.to_string();
+                log::info!("[Sky] Panorama loaded: {path} ({w}×{h})");
+            }
+            Err(e) => {
+                log::warn!("[Sky] Failed to load panorama '{path}': {e}");
+            }
+        }
     }
 
     /// Apply global scene file settings (ambient, fog, gravity vector, skybox path placeholder).

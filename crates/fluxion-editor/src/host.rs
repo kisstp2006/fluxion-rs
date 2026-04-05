@@ -247,12 +247,13 @@ impl EditorHost {
                 if let Some(mut env) = self.world.get_component_mut::<fluxion_core::Environment>(eid) {
                     use fluxion_core::reflect::Reflect;
                     for edit in env_edits {
-                        let rv = match edit.value {
-                            EnvEditValue::F32(f)     => ReflectValue::F32(f),
-                            EnvEditValue::Bool(b)    => ReflectValue::Bool(b),
-                            EnvEditValue::Str(s)     => ReflectValue::Enum(s),
-                            EnvEditValue::Color(c)   => ReflectValue::Color3(c),
-                            EnvEditValue::U32(u)     => ReflectValue::U32(u),
+                        let rv = match (&edit.field[..], edit.value) {
+                            ("sky_panorama_path", EnvEditValue::Str(s)) => ReflectValue::AssetPath(if s.is_empty() { None } else { Some(s) }),
+                            (_, EnvEditValue::F32(f))   => ReflectValue::F32(f),
+                            (_, EnvEditValue::Bool(b))  => ReflectValue::Bool(b),
+                            (_, EnvEditValue::Str(s))   => ReflectValue::Enum(s),
+                            (_, EnvEditValue::Color(c)) => ReflectValue::Color3(c),
+                            (_, EnvEditValue::U32(u))   => ReflectValue::U32(u),
                         };
                         let _ = (*env).set_field(&edit.field, rv);
                     }
