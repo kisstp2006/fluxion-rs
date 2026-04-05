@@ -31,7 +31,7 @@
 //   once at startup and shared read-only for the rest of the session.
 // ============================================================
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -78,6 +78,11 @@ pub struct ComponentRegistry {
     removers:          HashMap<String, ComponentRemover>,
     /// Static field descriptors cached at registration time for `.d.ts` generation.
     reflect_fields:    HashMap<String, Vec<crate::reflect::FieldDescriptor>>,
+    /// Lucide icon name for each registered component type (e.g. `"box"`, `"camera"`).
+    icons:             HashMap<String, String>,
+    /// Types that have no reflect but should still appear in the inspector.
+    /// Used for components with custom inspector renderers (e.g. `ScriptBundle`).
+    visible_extras:    HashSet<String>,
 }
 
 impl ComponentRegistry {
@@ -93,6 +98,47 @@ impl ComponentRegistry {
         F: Fn(&Value, &mut ECSWorld, EntityId) -> Result<(), String> + Send + Sync + 'static,
     {
         self.factories.insert(type_name.to_string(), Arc::new(factory));
+    }
+
+    /// Mark a component type as inspector-visible without full reflect registration.
+    ///
+    /// Use this for components that have a custom inspector renderer and do not
+    /// need the generic field editor (e.g. `ScriptBundle`).
+    pub fn register_visible(&mut self, type_name: &str) {
+        self.visible_extras.insert(type_name.to_string());
+    }
+
+    /// Returns `true` if the type is visible in the inspector (either via reflect
+    /// or via an explicit `register_visible` call).
+    pub fn is_visible(&self, type_name: &str) -> bool {
+        self.has_reflect(type_name) || self.visible_extras.contains(type_name)
+    }
+
+    /// Register only a `ComponentRemover` for a type — without full reflect.
+    ///
+    /// Allows the ✕ remove button to work in the inspector for custom-rendered
+    /// components that do not go through `register_reflect`.
+    pub fn register_remover_only<T: Component>(&mut self, type_name: &str) {
+        self.removers.insert(
+            type_name.to_string(),
+            Arc::new(move |world: &mut ECSWorld, entity: EntityId| {
+                world.remove_component::<T>(entity);
+            }),
+        );
+    }
+
+    /// Register a Lucide icon name for a component type.
+    ///
+    /// The icon name should match a file in `assets/icons/<name>.svg`
+    /// (e.g. `"box"`, `"camera"`, `"code"`).  Call after `register()` or
+    /// `register_reflect()`.
+    pub fn register_icon(&mut self, type_name: &str, icon: &str) {
+        self.icons.insert(type_name.to_string(), icon.to_string());
+    }
+
+    /// Returns the registered icon name for a component type, or `""` if none.
+    pub fn component_icon(&self, type_name: &str) -> &str {
+        self.icons.get(type_name).map(|s| s.as_str()).unwrap_or("")
     }
 
     /// Returns `true` if a factory is registered for the given type name.
@@ -471,6 +517,41 @@ impl ComponentRegistry {
             Ok(())
         });
 
+        // ── Icons for all built-in types ──────────────────────────────────────
+        self.register_icon("Transform",       "move");
+        self.register_icon("MeshRenderer",    "box");
+        self.register_icon("Camera",          "camera");
+        self.register_icon("Light",           "sun");
+        self.register_icon("ParticleEmitter", "activity");
+        self.register_icon("RigidBody",       "anchor");
+        self.register_icon("CameraController", "airplay");
+        self.register_icon("Animator",        "film");
+        self.register_icon("LodGroup",        "layers");
+        self.register_icon("Environment",     "cloud");
+        self.register_icon("CsgShape",        "aperture");
+        self.register_icon("ScriptBundle",    "code");
+        self.register_visible("ScriptBundle");
+        self.register_remover_only::<crate::components::script_behaviour::ScriptBundle>("ScriptBundle");
+
+        // ── ScriptBundle ──────────────────────────────────────────────────────
+        self.register("ScriptBundle", |data, world, entity| {
+            use crate::components::script_behaviour::{ScriptBundle, ScriptEntry};
+            let mut bundle = ScriptBundle::default();
+            if let Some(arr) = data.get("scripts").and_then(|v| v.as_array()) {
+                for item in arr {
+                    let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("Script").to_string();
+                    let path = item.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let enabled = item.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let fields = item.get("fields")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    bundle.scripts.push(ScriptEntry { name, path, enabled, fields });
+                }
+            }
+            world.add_component(entity, bundle);
+            Ok(())
+        });
+
         // ── Reflect accessors for all built-in types ──────────────────────────
         // Allows the editor to read / write component fields at runtime.
         self.register_reflect::<Transform>("Transform");
@@ -498,6 +579,7 @@ impl ComponentRegistry {
             self.register_reflect::<CsgShape>("CsgShape");
         }
     }
+    // ScriptBundle uses custom rendering in inspector.rn — no reflect registration needed.
 }
 
 // ── Private helpers ────────────────────────────────────────────────────────────

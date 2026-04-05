@@ -139,6 +139,17 @@ pub fn drain_pending_edits() -> Vec<PendingEdit> {
     PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()))
 }
 
+/// Call `f` with a shared reference to the current frame's ECSWorld.
+/// Returns `None` if the world context is not set.
+///
+/// Used by gameplay_module.rs to read entity data without importing WORLD_PTR.
+pub fn with_world<R>(f: impl FnOnce(&ECSWorld) -> R) -> Option<R> {
+    WORLD_PTR.with(|c| {
+        let ptr = c.get()?;
+        Some(f(unsafe { ptr.as_ref() }))
+    })
+}
+
 /// Append a log line from Rust host code.
 /// Caps the log at 10 000 entries; drains the oldest 1 000 when exceeded.
 pub fn push_log(line: String) {
@@ -320,7 +331,7 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             if let Some(entity) = id_to_entity(world, id) {
                 world.component_names(entity)
                     .iter()
-                    .filter(|&&name| registry.has_reflect(name))
+                    .filter(|&&name| registry.is_visible(name))
                     .map(|&s| s.to_string())
                     .collect()
             } else {
@@ -938,6 +949,65 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         ok
     }).build()?;
 
+    // asset_rename(old_path, new_path) — rename/move a file within assets/.
+    // Also renames the .fluxmeta sidecar if present.  Signals a rescan.
+    m.function("asset_rename", |old_path: String, new_path: String| -> bool {
+        let root = PROJECT_ROOT.with(|r| r.borrow().clone());
+        if root == std::path::PathBuf::new() { return false; }
+        let assets_root = root.join("assets");
+        let old_full = assets_root.join(&old_path);
+        let new_full = assets_root.join(&new_path);
+        if let Some(parent) = new_full.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let ok = std::fs::rename(&old_full, &new_full).is_ok();
+        if ok {
+            let old_meta = std::path::PathBuf::from(format!("{}.fluxmeta", old_full.display()));
+            let new_meta = std::path::PathBuf::from(format!("{}.fluxmeta", new_full.display()));
+            if old_meta.is_file() {
+                let _ = std::fs::rename(&old_meta, &new_meta);
+            }
+            ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+            log::info!("[Assets] Renamed: {} → {}", old_full.display(), new_full.display());
+        } else {
+            log::error!("[Assets] Failed to rename: {}", old_full.display());
+        }
+        ok
+    }).build()?;
+
+    // asset_duplicate(path) — copy a file to {stem}_copy.{ext} in the same directory.
+    // Avoids overwriting: appends _2, _3, … if needed.  Signals a rescan.
+    m.function("asset_duplicate", |path: String| -> bool {
+        let root = PROJECT_ROOT.with(|r| r.borrow().clone());
+        if root == std::path::PathBuf::new() { return false; }
+        let src = root.join("assets").join(&path);
+        if !src.is_file() { return false; }
+        let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("file").to_string();
+        let ext  = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+        let parent = src.parent().unwrap_or(src.as_path());
+        let make_name = |suffix: &str| -> std::path::PathBuf {
+            if ext.is_empty() {
+                parent.join(format!("{stem}{suffix}"))
+            } else {
+                parent.join(format!("{stem}{suffix}.{ext}"))
+            }
+        };
+        let mut dest = make_name("_copy");
+        let mut n = 2u32;
+        while dest.exists() {
+            dest = make_name(&format!("_copy_{n}"));
+            n += 1;
+        }
+        let ok = std::fs::copy(&src, &dest).is_ok();
+        if ok {
+            ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+            log::info!("[Assets] Duplicated: {} → {}", src.display(), dest.display());
+        } else {
+            log::error!("[Assets] Failed to duplicate: {}", src.display());
+        }
+        ok
+    }).build()?;
+
     // asset_delete(path) — delete a file at {project_root}/assets/{path}.  Signals a rescan.
     m.function("asset_delete", |path: String| -> bool {
         let root = PROJECT_ROOT.with(|r| r.borrow().clone());
@@ -971,6 +1041,28 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                 .into_iter()
                 .map(|s| s.to_string())
                 .collect()
+        }).unwrap_or_default()
+    }).build()?;
+
+    // available_scripts() → Vec<Vec<String>>: [[display_name, path], ...] for all .rn assets in the DB.
+    // display_name is PascalCase derived from the filename stem.
+    m.function("available_scripts", || -> Vec<Vec<String>> {
+        with_adb(|db| {
+            db.find("type:script")
+                .into_iter()
+                .filter(|r| r.extension == "rn")
+                .map(|r| {
+                    let name = fluxion_core::derive_script_name(&r.path);
+                    vec![name, r.path.clone()]
+                })
+                .collect::<Vec<_>>()
+        }).unwrap_or_default()
+    }).build()?;
+
+    // component_icon(name) → String: Lucide icon name for a component type ("" if none registered)
+    m.function("component_icon", |name: String| -> String {
+        with_ctx(|_, registry| {
+            registry.component_icon(&name).to_string()
         }).unwrap_or_default()
     }).build()?;
 
@@ -1392,6 +1484,120 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     m.function("set_editor_cam_speed", |v: f64| {
         EDITOR_CAM_SPEED.with(|c| c.set(v.max(0.1)));
+    }).build()?;
+
+    // ── Gameplay script helpers (used by inspector.rn / assets.rn) ────────────
+
+    // script_error(entity_id, script_name) → String
+    m.function("script_error", |id: i64, name: String| -> String {
+        if id < 0 { return String::new(); }
+        crate::rune_bindings::gameplay_module::get_script_error(id as u64, &name)
+    }).build()?;
+
+    // script_entries(entity_id) → Vec of [name, path, enabled_str]
+    m.function("script_entries", |entity_id: i64| -> Vec<Vec<String>> {
+        if entity_id < 0 { return Vec::new(); }
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                WORLD_PTR.with(|w| {
+                    let ptr = w.get()?;
+                    let world = unsafe { ptr.as_ref() };
+                    let bundle = world.get_component::<fluxion_core::ScriptBundle>(eid)?;
+                    Some(bundle.scripts.iter().map(|e| {
+                        vec![e.name.clone(), e.path.clone(), if e.enabled { "true".to_string() } else { "false".to_string() }]
+                    }).collect::<Vec<_>>())
+                }).unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        })
+    }).build()?;
+
+    // add_script(entity_id, rel_path) — adds ScriptEntry to ScriptBundle
+    m.function("add_script", |entity_id: i64, path: String| {
+        use fluxion_core::reflect::ReflectValue;
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity:    eid,
+                    component: "__add_script__".to_string(),
+                    field:     path,
+                    value:     ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    // remove_script(entity_id, script_name) — removes entry by name from ScriptBundle
+    m.function("remove_script", |entity_id: i64, name: String| {
+        use fluxion_core::reflect::ReflectValue;
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity:    eid,
+                    component: "__remove_script__".to_string(),
+                    field:     name,
+                    value:     ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    // script_compile_summary() → [total, errors] or [] if not compiled yet
+    m.function("script_compile_summary", || -> Vec<i64> {
+        let (total, errors) = crate::rune_bindings::gameplay_module::get_compile_summary();
+        if total < 0 { vec![] } else { vec![total, errors] }
+    }).build()?;
+
+    // script_fields(entity_id, script_name) → [[field_name, value_json_str], …]
+    m.function("script_fields", |entity_id: i64, script_name: String| -> Vec<Vec<String>> {
+        if entity_id < 0 { return Vec::new(); }
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                WORLD_PTR.with(|w| {
+                    let ptr = w.get()?;
+                    let world = unsafe { ptr.as_ref() };
+                    let bundle = world.get_component::<fluxion_core::ScriptBundle>(eid)?;
+                    let entry = bundle.scripts.iter().find(|e| e.name == script_name)?;
+                    Some(entry.fields.iter().map(|f| {
+                        vec![f.name.clone(), f.value.to_string()]
+                    }).collect::<Vec<_>>())
+                }).unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        })
+    }).build()?;
+
+    // parse_f64(s) → [ok, value]: ok=1.0 if s is a valid f64, 0.0 otherwise.
+    // Used by inspector.rn to decide between drag-widget and text-input for script fields.
+    m.function("parse_f64", |s: String| -> Vec<f64> {
+        match s.parse::<f64>() {
+            Ok(v) => vec![1.0, v],
+            Err(_) => vec![0.0, 0.0],
+        }
+    }).build()?;
+
+    // set_script_field(entity_id, script_name, field_name, value_str)
+    // Packs as "script_name\x00field_name\x00value_str" in the PendingEdit field.
+    m.function("set_script_field", |entity_id: i64, script_name: String, field_name: String, value_str: String| {
+        use fluxion_core::reflect::ReflectValue;
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                let packed = format!("{}\x00{}\x00{}", script_name, field_name, value_str);
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity:    eid,
+                    component: "__set_script_field__".to_string(),
+                    field:     packed,
+                    value:     ReflectValue::Bool(true),
+                }));
+            }
+        });
     }).build()?;
 
     Ok(m)

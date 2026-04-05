@@ -260,12 +260,118 @@ fn draw_asset_inspector(path) {
             fluxion::world::load_scene(path.clone());
         }
         fluxion::ui::label(" Open Scene");
+    } else if t == "script" {
+        let entity = fluxion::world::selected();
+        if entity != -1 {
+            if fluxion::ui::icon_button("code", "Attach to selected entity", 14.0) {
+                fluxion::world::add_script(entity, path.clone());
+            }
+            fluxion::ui::label(" Attach to Selected Entity");
+        } else {
+            fluxion::ui::small("(select an entity to attach)");
+        }
     }
 
     // Deselect button
     fluxion::ui::separator();
     if fluxion::ui::button("✕  Deselect##asset_desel") {
         fluxion::world::clear_selected_asset();
+    }
+}
+
+// ── ScriptBundle renderer ─────────────────────────────────────────────────────
+//
+// Renders each ScriptEntry as its own named collapsible panel, mirroring
+// the Unity MonoBehaviour look: every script is a first-class component.
+
+fn draw_script_bundle(sel) {
+    // ── Compile summary badge ─────────────────────────────────────────────────
+    let summary = fluxion::world::script_compile_summary();
+    if summary.is_empty() {
+        fluxion::ui::colored_label("⟳  Enter play mode to compile scripts", 0.7, 0.7, 0.4);
+    } else {
+        let total  = summary[0];
+        let errors = summary[1];
+        if errors == 0 {
+            fluxion::ui::colored_label(`✓  ${total} script(s) compiled OK`, 0.35, 0.85, 0.35);
+        } else {
+            fluxion::ui::colored_label(`⚠  ${errors} / ${total} script(s) failed`, 1.0, 0.45, 0.2);
+        }
+    }
+    fluxion::ui::separator();
+
+    let entries = fluxion::world::script_entries(sel);
+    if entries.is_empty() {
+        fluxion::ui::small("  No scripts attached.");
+        return;
+    }
+    let ei = 0;
+    while ei < entries.len() {
+        let entry   = entries[ei].clone();
+        let name    = entry[0].clone();
+        let path    = entry[1].clone();
+        let err     = fluxion::world::script_error(sel, name.clone());
+
+        fluxion::ui::horizontal_begin();
+        let open = fluxion::ui::collapsing_begin(`${name}##sb_${ei}`);
+        if fluxion::ui::button(`✕##rm_script_${ei}`) {
+            fluxion::world::remove_script(sel, name.clone());
+        }
+        fluxion::ui::horizontal_end();
+
+        if open {
+            fluxion::ui::small(path.clone());
+            if err != "" {
+                fluxion::ui::colored_label(`⚠ ${err}`, 1.0, 0.35, 0.35);
+            } else {
+                fluxion::ui::colored_label("✓ No errors", 0.35, 0.85, 0.35);
+            }
+
+            // ── Script-defined struct fields ──────────────────────────────────
+            let fields = fluxion::world::script_fields(sel, name.clone());
+            if !fields.is_empty() {
+                fluxion::ui::separator();
+                let fi = 0;
+                while fi < fields.len() {
+                    let fname = fields[fi][0].clone();
+                    let fval  = fields[fi][1].clone();  // JSON string from serde
+                    let fid   = `##sf_${ei}_${fi}`;
+
+                    if fval == "true" || fval == "false" {
+                        // Boolean field — checkbox
+                        let cur = fval == "true";
+                        let checked = fluxion::ui::checkbox(`${fname}${fid}`, cur);
+                        if checked != cur {
+                            let new_str = if checked { "true" } else { "false" };
+                            fluxion::world::set_script_field(sel, name.clone(), fname.clone(), new_str);
+                        }
+                    } else if fval == "null" {
+                        // Null / unknown — skip display
+                        fluxion::ui::small(`${fname}: (unset)`);
+                    } else {
+                        // Try numeric — use drag widget; fall back to text if not a number
+                        let as_f = fluxion::world::parse_f64(fval.clone());
+                        if as_f[0] == 1.0 {
+                            // Valid number
+                            let new_val = fluxion::ui::drag_float(`${fname}${fid}`, as_f[1], 0.1, 0.0, 0.0);
+                            if new_val != as_f[1] {
+                                fluxion::world::set_script_field(sel, name.clone(), fname.clone(), `${new_val}`);
+                            }
+                        } else {
+                            // String / other
+                            let new_str = fluxion::ui::input_text(`${fname}${fid}`, fval.clone());
+                            if new_str != fval {
+                                fluxion::world::set_script_field(sel, name.clone(), fname.clone(), new_str);
+                            }
+                        }
+                    }
+                    fi += 1;
+                }
+            }
+            fluxion::ui::collapsing_end();
+        }
+
+        ei += 1;
     }
 }
 
@@ -297,16 +403,25 @@ pub fn panel() {
     }
 
     for comp in comps {
-        let c = comp.clone();
+        let c    = comp.clone();
+        let icon = fluxion::world::component_icon(c.clone());
         fluxion::ui::horizontal_begin();
-        let open = fluxion::ui::collapsing_begin(c.clone());
+        let open = if icon != "" {
+            fluxion::ui::icon_collapsing_begin(icon, c.clone())
+        } else {
+            fluxion::ui::collapsing_begin(c.clone())
+        };
         if fluxion::ui::button(`✕##rm_${c}`) {
             fluxion::world::remove_component(sel, c.clone());
         }
         fluxion::ui::horizontal_end();
 
         if open {
-            draw_component_fields(sel, c.clone());
+            if c == "ScriptBundle" {
+                draw_script_bundle(sel);
+            } else {
+                draw_component_fields(sel, c.clone());
+            }
             fluxion::ui::collapsing_end();
         }
         fluxion::ui::separator();
@@ -314,10 +429,41 @@ pub fn panel() {
 
     // ── Add Component ─────────────────────────────────────────────────────────
     fluxion::ui::separator();
-    let available = fluxion::world::available_components();
-    let chosen = fluxion::ui::combo_box("+ Add Component", available);
-    if chosen.clone() != "" {
-        fluxion::world::add_component(sel, chosen);
+    let comp_names   = fluxion::world::available_components();
+    let script_pairs = fluxion::world::available_scripts();
+
+    // Build a flat display list: built-in components first, then script names.
+    let all_names = [];
+    let ci = 0;
+    while ci < comp_names.len() {
+        all_names.push(comp_names[ci].clone());
+        ci += 1;
+    }
+    let si = 0;
+    while si < script_pairs.len() {
+        all_names.push(script_pairs[si][0].clone());
+        si += 1;
+    }
+
+    let chosen = fluxion::ui::combo_box("+ Add Component", all_names);
+    if chosen != "" {
+        // Check if the chosen name matches a script entry.
+        let is_script = false;
+        let script_path = "";
+        let li = 0;
+        while li < script_pairs.len() {
+            if script_pairs[li][0] == chosen {
+                is_script = true;
+                script_path = script_pairs[li][1].clone();
+                break;
+            }
+            li += 1;
+        }
+        if is_script {
+            fluxion::world::add_script(sel, script_path);
+        } else {
+            fluxion::world::add_component(sel, chosen);
+        }
     }
 }
 

@@ -326,6 +326,8 @@ impl EditorApp {
 
         // Push project root so Rune asset browser can enumerate files.
         crate::rune_bindings::set_project_root(&inner.project_root);
+        // Also store in host so gameplay scripts can resolve asset paths.
+        inner.host.project_root = inner.project_root.clone();
 
         // Scan the asset database now that we know the project root.
         inner.host.asset_db.scan(&inner.project_root);
@@ -605,11 +607,18 @@ impl EditorInner {
 
         // Sync editor mode and transform tool from Rune state.
         let mode_str = crate::rune_bindings::get_editor_mode_str();
+        let prev_mode = editor_mode.clone();
         *editor_mode = match mode_str.as_str() {
             "Playing" => crate::toolbar::EditorMode::Playing,
             "Paused"  => crate::toolbar::EditorMode::Paused,
             _         => crate::toolbar::EditorMode::Editing,
         };
+        // Rebuild gameplay scripts when transitioning INTO play mode.
+        if *editor_mode == crate::toolbar::EditorMode::Playing
+            && prev_mode != crate::toolbar::EditorMode::Playing
+        {
+            self.host.rebuild_gameplay_scripts();
+        }
         let tool_str = crate::rune_bindings::get_transform_tool_str();
         *transform_tool = match tool_str.as_str() {
             "Rotate" => crate::toolbar::TransformTool::Rotate,

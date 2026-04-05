@@ -32,13 +32,34 @@ pub struct RuneBehaviour {
 }
 
 impl RuneBehaviour {
-    /// Load a behaviour from a single `.rn` file.
+    /// Load a behaviour from a single `.rn` file using the default engine modules.
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let mut vm = RuneVm::new(&[path])
             .with_context(|| format!("Failed to compile {:?}", path))?;
 
-        // Enable hot reload for the parent directory of this script.
-        // poll_hot_reload() will call on_hot_reload_hook() after each successful reload.
+        if let Some(dir) = path.parent() {
+            let _ = vm.enable_hot_reload(dir);
+        }
+
+        Ok(Self {
+            vm,
+            script_path: path.to_path_buf(),
+            started: false,
+        })
+    }
+
+    /// Load a behaviour from a single `.rn` file with additional caller-supplied
+    /// Rune modules (e.g. gameplay entity/script modules).
+    ///
+    /// `extra_modules_fn` follows the same contract as in `RuneVm::new_with_extra_modules`:
+    /// it is called twice so each context gets freshly constructed module instances.
+    pub fn from_file_with_extra_modules(
+        path: &Path,
+        extra_modules_fn: impl Fn() -> anyhow::Result<Vec<rune::Module>>,
+    ) -> anyhow::Result<Self> {
+        let mut vm = RuneVm::new_with_extra_modules(&[path], extra_modules_fn)
+            .with_context(|| format!("Failed to compile {:?}", path))?;
+
         if let Some(dir) = path.parent() {
             let _ = vm.enable_hot_reload(dir);
         }

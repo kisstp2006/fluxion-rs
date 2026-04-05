@@ -245,6 +245,45 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     }).build()?;
 
     m.function("collapsing_end", || {}).build()?;
+
+    // icon_collapsing_begin(icon, label) → bool
+    // Same as collapsing_begin but prepends a 14px SVG icon on the left.
+    // icon: Lucide icon name without path/extension (e.g. "box", "camera").
+    // label: supports "Display##unique_id" convention.
+    m.function("icon_collapsing_begin", |icon: Ref<str>, label: Ref<str>| -> bool {
+        with_ui(|ui| {
+            let raw = label.as_ref();
+            let (display, id_str) = if let Some(pos) = raw.find("##") {
+                (&raw[..pos], &raw[pos+2..])
+            } else {
+                (raw, raw)
+            };
+            let id = ui.make_persistent_id(id_str);
+            let is_open = ui.memory_mut(|m| {
+                m.data.get_persisted::<bool>(id).unwrap_or(true)
+            });
+            let clicked = ui.horizontal(|ui| {
+                let sz   = 14.0f32;
+                let tint = ui.visuals().text_color();
+                if let Some(bytes) = crate::icons::icon_bytes(icon.as_ref()) {
+                    let uri = crate::icons::icon_uri(icon.as_ref());
+                    ui.add(
+                        egui::Image::from_bytes(uri, bytes)
+                            .fit_to_exact_size(egui::vec2(sz, sz))
+                            .tint(tint),
+                    );
+                }
+                let sym = if is_open { "▼" } else { "▶" };
+                ui.label(display);
+                ui.small_button(sym).clicked()
+            }).inner;
+            if clicked {
+                let toggled = !is_open;
+                ui.memory_mut(|m| m.data.insert_persisted(id, toggled));
+            }
+            is_open
+        }).unwrap_or(false)
+    }).build()?;
     m.function("horizontal_begin", || {}).build()?;
     m.function("horizontal_end", || {}).build()?;
     m.function("scroll_begin", || {}).build()?;
@@ -876,6 +915,13 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         });
     });
 }).build()?;
+
+    // ── Clipboard ────────────────────────────────────────────────────────────
+
+    // clipboard_set(text) — write text to the OS clipboard.
+    m.function("clipboard_set", |text: String| {
+        with_ui(|ui| { ui.ctx().copy_text(text); });
+    }).build()?;
 
     // ── Floating input dialog API ─────────────────────────────────────────────
 

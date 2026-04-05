@@ -39,10 +39,33 @@ fn draw_asset_row(path) {
     let sel    = fluxion::world::get_selected_asset();
     let is_sel = path == sel;
 
-    let action = fluxion::ui::icon_selectable(icon, fname, is_sel, ["Delete"]);
+    let menu_items = if t == "scene" {
+        ["Open Scene", "Rename", "Duplicate", "Copy Path", "Delete"]
+    } else if t == "script" {
+        ["Attach to Selected", "Rename", "Duplicate", "Copy Path", "Delete"]
+    } else {
+        ["Rename", "Duplicate", "Copy Path", "Delete"]
+    };
+
+    let action = fluxion::ui::icon_selectable(icon, fname, is_sel, menu_items);
 
     if action == "select" {
         fluxion::world::set_selected_asset(path.clone());
+    } else if action == "Open Scene" {
+        fluxion::world::load_scene(path.clone());
+    } else if action == "Attach to Selected" {
+        let entity = fluxion::world::selected();
+        if entity != -1 {
+            fluxion::world::add_script(entity, path.clone());
+        }
+    } else if action == "Rename" {
+        fluxion::world::set_asset_create_mode("rename");
+        fluxion::world::set_asset_create_input(path.clone());
+        fluxion::ui::input_dialog_open("Rename Asset", path.clone());
+    } else if action == "Duplicate" {
+        fluxion::world::asset_duplicate(path.clone());
+    } else if action == "Copy Path" {
+        fluxion::ui::clipboard_set(path.clone());
     } else if action == "Delete" {
         fluxion::world::asset_delete(path.clone());
         if is_sel { fluxion::world::clear_selected_asset(); }
@@ -57,14 +80,24 @@ fn draw_asset_row(path) {
 fn handle_dialog() {
     let state = fluxion::ui::input_dialog_update();
     if state == "confirmed" {
-        let path = fluxion::ui::input_dialog_result();
-        let mode = fluxion::world::get_asset_create_mode();
+        let new_path = fluxion::ui::input_dialog_result();
+        let mode     = fluxion::world::get_asset_create_mode();
         if mode == "dir" {
-            fluxion::world::asset_create_dir(path.clone());
+            fluxion::world::asset_create_dir(new_path.clone());
         } else if mode == "file" {
-            fluxion::world::asset_create_file(path.clone(), "");
+            fluxion::world::asset_create_file(new_path.clone(), "");
         } else if mode == "scene" {
-            fluxion::world::asset_create_scene(path.clone());
+            fluxion::world::asset_create_scene(new_path.clone());
+        } else if mode == "script" {
+            let tpl = "pub fn start() {\n    // Called once when play mode starts.\n}\n\npub fn update(dt) {\n    // Called every frame. dt = delta time in seconds.\n    let id = fluxion::script::self_entity();\n}\n\npub fn fixed_update(dt) {\n    // Called at a fixed timestep.\n}\n\npub fn on_destroy() {\n    // Called when the entity is destroyed.\n}\n";
+            fluxion::world::asset_create_file(new_path.clone(), tpl);
+        } else if mode == "rename" {
+            let old_path = fluxion::world::get_asset_create_input();
+            fluxion::world::asset_rename(old_path.clone(), new_path.clone());
+            let sel = fluxion::world::get_selected_asset();
+            if sel == old_path {
+                fluxion::world::set_selected_asset(new_path.clone());
+            }
         }
         fluxion::world::set_asset_create_mode("");
     } else if state == "cancelled" {
@@ -127,7 +160,7 @@ pub fn panel() {
     let root_files = fluxion::world::asset_list("");
     let root_hdr   = fluxion::ui::dir_header_with_menu(
         "(root)##asset_root",
-        ["New Folder", "New File", "New Scene"]
+        ["New Folder", "New File", "New Scene", "New Script"]
     );
     let root_open   = root_hdr[0] == "open";
     let root_action = root_hdr[1].clone();
@@ -141,6 +174,9 @@ pub fn panel() {
     } else if root_action == "New Scene" {
         fluxion::world::set_asset_create_mode("scene");
         fluxion::ui::input_dialog_open("New Scene", "my_scene.scene");
+    } else if root_action == "New Script" {
+        fluxion::world::set_asset_create_mode("script");
+        fluxion::ui::input_dialog_open("New Script", "my_script.rn");
     }
 
     if root_open {
@@ -156,19 +192,22 @@ pub fn panel() {
         fluxion::ui::collapsing_end();
     }
 
-    // ── Subdirectories (right-click: New File / New Folder / Delete) ──────────
+    // ── Subdirectories (right-click: New Folder / New File / New Scene / Delete) ─
 
     let dirs = fluxion::world::asset_dirs();
     let di = 0;
     while di < dirs.len() {
-        let dir    = dirs[di].clone();
-        let header = `${dir}##asset_dir_${di}`;
+        let dir   = dirs[di].clone();
+        let files = fluxion::world::asset_list(dir.clone());
+        let count = files.len();
+
+        let label  = `${dir} (${count})##asset_dir_${dir}`;
         let hdr    = fluxion::ui::dir_header_with_menu(
-            header,
-            ["New Folder", "New File", "New Scene", "Delete Folder"]
+            label,
+            ["New Folder", "New File", "New Scene", "New Script", "Delete Folder"]
         );
-        let is_open  = hdr[0] == "open";
-        let dir_act  = hdr[1].clone();
+        let is_open = hdr[0] == "open";
+        let dir_act = hdr[1].clone();
 
         if dir_act == "New Folder" {
             fluxion::world::set_asset_create_mode("dir");
@@ -179,12 +218,14 @@ pub fn panel() {
         } else if dir_act == "New Scene" {
             fluxion::world::set_asset_create_mode("scene");
             fluxion::ui::input_dialog_open("New Scene", `${dir}/my_scene.scene`);
+        } else if dir_act == "New Script" {
+            fluxion::world::set_asset_create_mode("script");
+            fluxion::ui::input_dialog_open("New Script", `${dir}/my_script.rn`);
         } else if dir_act == "Delete Folder" {
             fluxion::world::asset_delete(dir.clone());
         }
 
         if is_open {
-            let files = fluxion::world::asset_list(dir.clone());
             if files.is_empty() {
                 fluxion::ui::small("  (empty)");
             } else {

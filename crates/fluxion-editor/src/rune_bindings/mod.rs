@@ -5,6 +5,7 @@ pub mod physics_module;
 pub mod input_module;
 pub mod camera_module;
 pub mod environment_module;
+pub mod gameplay_module;
 
 use anyhow::Result;
 use rune::Module;
@@ -30,6 +31,14 @@ pub use viewport_module::set_viewport_texture;
 pub use physics_module::{set_physics_context, clear_physics_context};
 pub use fluxion_audio::{set_audio_context, clear_audio_context};
 pub use input_module::{set_input_context, clear_input_context};
+pub use gameplay_module::{
+    set_self_entity, clear_self_entity,
+    set_script_error, clear_script_error, get_script_error,
+    drain_pending_destroys, drain_pending_spawns,
+    build_gameplay_modules,
+    set_compile_summary,
+    set_script_fields, drain_script_fields,
+};
 
 pub fn all_editor_modules() -> Result<Vec<Module>> {
     Ok(vec![

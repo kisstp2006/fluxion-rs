@@ -8,6 +8,7 @@
 // render_with closures.
 // ============================================================
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde_json;
@@ -21,7 +22,7 @@ use fluxion_core::{
     AnimationSystem, LodSystem, CsgSystem,
 };
 use glam::{Quat, Vec3};
-use fluxion_rune_scripting::RuneVm;
+use fluxion_rune_scripting::{RuneVm, RuneBehaviour};
 
 use crate::rune_bindings::{
     all_editor_modules,
@@ -33,6 +34,12 @@ use crate::rune_bindings::{
     set_camera_world, clear_camera_world, drain_camera_edits,
     set_environment_world, clear_environment_world, drain_environment_edits, EnvEditValue,
     set_asset_db_context, clear_asset_db_context,
+    set_self_entity, clear_self_entity,
+    set_script_error, clear_script_error,
+    drain_pending_destroys, drain_pending_spawns,
+    build_gameplay_modules,
+    set_compile_summary,
+    set_script_fields, drain_script_fields,
 };
 use crate::rune_bindings::world_module::push_log;
 use crate::undo::UndoStack;
@@ -53,6 +60,13 @@ pub struct EditorHost {
 
     /// Scripts directory — watched for hot reload.
     pub scripts_dir: PathBuf,
+
+    /// Per-entity gameplay Rune scripts, keyed by (entity, script_name).
+    /// Rebuilt when play mode starts or scene is loaded.
+    pub gameplay_scripts: HashMap<(fluxion_core::EntityId, String), RuneBehaviour>,
+
+    /// Project root — needed to resolve gameplay script asset paths.
+    pub project_root: PathBuf,
 }
 
 impl EditorHost {
@@ -114,6 +128,8 @@ impl EditorHost {
             undo:        UndoStack::new(),
             asset_db:    AssetDatabase::new(),
             scripts_dir,
+            gameplay_scripts: HashMap::new(),
+            project_root:     PathBuf::new(),
         })
     }
 
@@ -161,6 +177,106 @@ impl EditorHost {
         world.add_component(env_go, fluxion_core::components::environment::Environment::default());
     }
 
+    // ── Gameplay script management ──────────────────────────────────────────
+
+    /// Rebuild the per-entity RuneBehaviour map from all ScriptBundle components.
+    /// Call when entering play mode or after a scene load.
+    pub fn rebuild_gameplay_scripts(&mut self) {
+        self.gameplay_scripts.clear();
+        let mut entries: Vec<(fluxion_core::EntityId, String, String)> = Vec::new();
+        self.world.query_active::<&fluxion_core::ScriptBundle, _>(|id, bundle| {
+            for entry in &bundle.scripts {
+                if entry.enabled && !entry.path.is_empty() {
+                    entries.push((id, entry.name.clone(), entry.path.clone()));
+                }
+            }
+        });
+        let total = entries.len();
+        for (entity_id, script_name, rel_path) in entries {
+            let abs_path = self.project_root.join("assets").join(&rel_path);
+            if !abs_path.is_file() {
+                log::warn!("[ScriptBundle] File not found: {:?}", abs_path);
+                continue;
+            }
+            match RuneBehaviour::from_file_with_extra_modules(&abs_path, build_gameplay_modules) {
+                Ok(behaviour) => {
+                    clear_script_error(entity_id.to_bits(), &script_name);
+                    self.gameplay_scripts.insert((entity_id, script_name), behaviour);
+                }
+                Err(e) => {
+                    let msg = format!("{:#}", e);
+                    log::error!("[ScriptBundle] Compile error '{}' {:?}: {}", script_name, rel_path, msg);
+                    set_script_error(entity_id.to_bits(), script_name, msg);
+                }
+            }
+        }
+        let error_count = total - self.gameplay_scripts.len();
+        set_compile_summary(total, error_count);
+        log::info!("[ScriptBundle] {}/{} gameplay scripts loaded", self.gameplay_scripts.len(), total);
+    }
+
+    /// Tick all gameplay scripts (play mode only).
+    fn tick_gameplay_scripts(&mut self) {
+        if self.gameplay_scripts.is_empty() { return; }
+
+        let dt = self.time.dt;
+
+        // Make world + registry available to gameplay Rune modules.
+        let _guard = set_world_context(&self.world, &self.registry);
+
+        let keys: Vec<(fluxion_core::EntityId, String)> = self.gameplay_scripts.keys().cloned().collect();
+        for (entity_id, script_name) in keys {
+            set_self_entity(entity_id.to_bits() as i64);
+            // Inject current field values from ScriptEntry into the thread-local.
+            let current_fields: Vec<(String, serde_json::Value)> = self.world
+                .get_component::<fluxion_core::ScriptBundle>(entity_id)
+                .and_then(|b| b.scripts.iter().find(|e| e.name == script_name).map(|e| {
+                    e.fields.iter().map(|f| (f.name.clone(), f.value.clone())).collect()
+                }))
+                .unwrap_or_default();
+            set_script_fields(current_fields);
+            if let Some(behaviour) = self.gameplay_scripts.get_mut(&(entity_id, script_name.clone())) {
+                behaviour.tick(dt);
+                if let Some(err) = behaviour.error() {
+                    set_script_error(entity_id.to_bits(), &script_name, err.to_string());
+                } else {
+                    clear_script_error(entity_id.to_bits(), &script_name);
+                }
+            }
+            // Drain updated fields back into ScriptEntry.
+            let updated = drain_script_fields();
+            if !updated.is_empty() {
+                if let Some(mut bundle) = self.world.get_component_mut::<fluxion_core::ScriptBundle>(entity_id) {
+                    if let Some(entry) = bundle.scripts.iter_mut().find(|e| e.name == script_name) {
+                        for (fname, fval) in updated {
+                            if let Some(f) = entry.fields.iter_mut().find(|f| f.name == fname) {
+                                f.value = fval;
+                            }
+                        }
+                    }
+                }
+            }
+            clear_self_entity();
+        }
+
+        // Drop guard before any world mutations.
+        drop(_guard);
+
+        // Apply deferred spawns/destroys from gameplay scripts.
+        for bits in drain_pending_destroys() {
+            let found: Option<fluxion_core::EntityId> =
+                self.world.all_entities().find(|e| e.to_bits() == bits);
+            if let Some(e) = found {
+                self.gameplay_scripts.retain(|(eid, _), _| *eid != e);
+                self.world.despawn(e);
+            }
+        }
+        for name in drain_pending_spawns() {
+            let e = self.world.spawn(Some(&name));
+            self.world.add_component(e, fluxion_core::Transform::new());
+        }
+    }
+
     // ── Per-frame tick ────────────────────────────────────────────────────────
 
     pub fn tick(&mut self) {
@@ -193,6 +309,9 @@ impl EditorHost {
 
         // Dispatch collision events to Rune scripts (Unity-style callbacks).
         self.dispatch_collision_events();
+
+        // Tick per-entity gameplay Rune scripts.
+        self.tick_gameplay_scripts();
 
         // Hot reload poll
         self.vm.poll_hot_reload();
@@ -320,6 +439,40 @@ impl EditorHost {
                         }
                     }
                 }
+                "__add_script__" => {
+                    if edit.entity.is_valid() {
+                        use fluxion_core::{ScriptBundle, scan_struct_fields, derive_script_name};
+                        // Read source to populate struct fields.
+                        let abs_path = self.project_root.join("assets").join(&edit.field);
+                        let source = std::fs::read_to_string(&abs_path).unwrap_or_default();
+                        let script_name = derive_script_name(&edit.field);
+                        let fields = scan_struct_fields(&source, &script_name);
+                        let has_bundle = self.world.has_component::<ScriptBundle>(edit.entity);
+                        if has_bundle {
+                            if let Some(mut bundle) = self.world.get_component_mut::<ScriptBundle>(edit.entity) {
+                                bundle.scripts.push(fluxion_core::ScriptEntry {
+                                    name: script_name, path: edit.field.clone(),
+                                    enabled: true, fields,
+                                });
+                            }
+                        } else {
+                            let mut bundle = ScriptBundle::default();
+                            bundle.scripts.push(fluxion_core::ScriptEntry {
+                                name: script_name, path: edit.field.clone(),
+                                enabled: true, fields,
+                            });
+                            self.world.add_component(edit.entity, bundle);
+                        }
+                    }
+                }
+                "__remove_script__" => {
+                    if edit.entity.is_valid() {
+                        if let Some(mut bundle) = self.world.get_component_mut::<fluxion_core::ScriptBundle>(edit.entity) {
+                            bundle.remove_by_name(&edit.field);
+                        }
+                        self.gameplay_scripts.retain(|(eid, name), _| !(*eid == edit.entity && name == &edit.field));
+                    }
+                }
                 "__add_comp__" => {
                     if edit.entity.is_valid() {
                         if let Err(e) = self.registry.attach(
@@ -357,6 +510,33 @@ impl EditorHost {
                             }
                         }
                         Err(e) => log::warn!("Prefab load failed '{path}': {e}"),
+                    }
+                }
+                "__set_script_field__" => {
+                    if edit.entity.is_valid() {
+                        // Packed as "script_name\x00field_name\x00value_str"
+                        let parts: Vec<&str> = edit.field.splitn(3, '\x00').collect();
+                        if parts.len() == 3 {
+                            let (sname, fname, vstr) = (parts[0], parts[1], parts[2]);
+                            if let Some(mut bundle) = self.world.get_component_mut::<fluxion_core::ScriptBundle>(edit.entity) {
+                                if let Some(entry) = bundle.scripts.iter_mut().find(|e| e.name == sname) {
+                                    if let Some(field) = entry.fields.iter_mut().find(|f| f.name == fname) {
+                                        // Parse the value string heuristically.
+                                        field.value = if vstr == "true" {
+                                            serde_json::Value::Bool(true)
+                                        } else if vstr == "false" {
+                                            serde_json::Value::Bool(false)
+                                        } else if let Ok(n) = vstr.parse::<i64>() {
+                                            serde_json::json!(n)
+                                        } else if let Ok(f) = vstr.parse::<f64>() {
+                                            serde_json::json!(f)
+                                        } else {
+                                            serde_json::Value::String(vstr.to_string())
+                                        };
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 "__set_parent__" => {
