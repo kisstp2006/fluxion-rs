@@ -9,7 +9,7 @@ pub mod environment_module;
 use anyhow::Result;
 use rune::Module;
 
-pub use ui_module::{set_current_ui, UiContextGuard, get_viewport_rect};
+pub use ui_module::{set_current_ui, UiContextGuard, get_viewport_rect, drain_cursor_grab, drain_cursor_visible, accumulate_raw_mouse_delta, drain_raw_mouse_delta};
 pub use world_module::{
     set_world_context, clear_world_context, WorldContextGuard,
     drain_pending_edits, PendingEdit,

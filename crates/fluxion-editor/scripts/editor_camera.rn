@@ -54,6 +54,11 @@ pub fn update(dt) {
     let alt     = fluxion::ui::viewport_alt_held();
     let shift   = fluxion::ui::viewport_shift_held();
     let scroll  = fluxion::ui::viewport_scroll_delta();
+    // Raw delta: from DeviceEvent::MouseMotion — works when cursor is locked (RMB fly).
+    let rdelta  = fluxion::ui::viewport_raw_mouse_delta();
+    let rdx     = rdelta[0];
+    let rdy     = rdelta[1];
+    // Egui drag delta: used for MMB pan and Alt+LMB orbit (cursor not locked then).
     let mdelta  = fluxion::ui::viewport_drag_delta();
     let mdx     = mdelta[0];
     let mdy     = mdelta[1];
@@ -83,17 +88,23 @@ pub fn update(dt) {
 
     // ── RMB: fly + look ───────────────────────────────────────────────────────
     if rmb && hovered {
-        if mdx != 0.0 || mdy != 0.0 {
-            nyaw   = nyaw   + mdx * LOOK_SENS;
-            npitch = npitch + mdy * LOOK_SENS;
+        // Lock & hide cursor while flying
+        fluxion::ui::cursor_lock();
+
+        if rdx != 0.0 || rdy != 0.0 {
+            nyaw   = nyaw   - rdx * LOOK_SENS;
+            npitch = npitch + rdy * LOOK_SENS;
             if npitch >  PITCH_LIMIT { npitch =  PITCH_LIMIT; }
             if npitch < -PITCH_LIMIT { npitch = -PITCH_LIMIT; }
             dirty = true;
         }
 
         let nb  = camera_basis(nyaw, npitch);
-        let nfx = nb[0]; let nfy = nb[1]; let nfz = nb[2];
-        let nrx = nb[3]; let nry = nb[4]; let nrz = nb[5];
+        // nfx/nfy/nfz: the "into scene" vector.
+        // In this right-handed system the camera looks toward -Z, so
+        // moving forward means subtracting the basis forward (negate).
+        let nfx = -nb[0]; let nfy = -nb[1]; let nfz = -nb[2];
+        let nrx = nb[3];  let nry = nb[4];  let nrz = nb[5];
 
         let fw   = fluxion::input::key_down("KeyW") || fluxion::input::key_down("ArrowUp");
         let bw   = fluxion::input::key_down("KeyS") || fluxion::input::key_down("ArrowDown");
@@ -145,6 +156,11 @@ pub fn update(dt) {
         npx = npx + prx; npy = npy + pry + puy; npz = npz + prz;
         ntx = ntx + prx; nty = nty + pry + puy; ntz = ntz + prz;
         dirty = true;
+    }
+
+    // Release cursor when not right-click flying
+    if !rmb {
+        fluxion::ui::cursor_unlock();
     }
 
     // ── Scroll (no button): dolly ─────────────────────────────────────────────

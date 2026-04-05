@@ -19,6 +19,12 @@ thread_local! {
     pub static VP_RECT: Cell<egui::Rect> = Cell::new(egui::Rect::NOTHING);
     /// Response from the last widget call — used by `prop_context_menu`.
     static LAST_WIDGET_RESP: RefCell<Option<egui::Response>> = RefCell::new(None);
+    /// Pending cursor grab/visible requests from Rune scripts.
+    static CURSOR_GRAB:    Cell<Option<bool>> = Cell::new(None);
+    static CURSOR_VISIBLE: Cell<Option<bool>> = Cell::new(None);
+    /// Raw mouse delta accumulated from DeviceEvent::MouseMotion each frame.
+    /// This works even when the cursor is locked (unlike egui pointer delta).
+    static RAW_MOUSE_DELTA: Cell<(f64, f64)> = Cell::new((0.0, 0.0));
 }
 
 /// Returns the last viewport image rect (set by `image_interactive`).
@@ -47,6 +53,30 @@ fn with_ui<R>(f: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
     CURRENT_UI.with(|c| {
         c.get().map(|mut ptr| unsafe { f(ptr.as_mut()) })
     })
+}
+
+/// Accumulate raw mouse motion (call from DeviceEvent::MouseMotion each event).
+pub fn accumulate_raw_mouse_delta(dx: f64, dy: f64) {
+    RAW_MOUSE_DELTA.with(|c| {
+        let (ox, oy) = c.get();
+        c.set((ox + dx, oy + dy));
+    });
+}
+
+/// Drain (read and reset) the raw mouse delta for this frame.
+pub fn drain_raw_mouse_delta() -> (f64, f64) {
+    RAW_MOUSE_DELTA.with(|c| c.replace((0.0, 0.0)))
+}
+
+/// Drain the pending cursor grab request set by Rune scripts this frame.
+/// Returns `Some(true)` = grab+hide, `Some(false)` = release+show, `None` = no change.
+pub fn drain_cursor_grab() -> Option<bool> {
+    CURSOR_GRAB.with(|c| c.take())
+}
+
+/// Drain the pending cursor visibility request.
+pub fn drain_cursor_visible() -> Option<bool> {
+    CURSOR_VISIBLE.with(|c| c.take())
 }
 
 pub fn build_ui_module() -> anyhow::Result<Module> {
@@ -639,6 +669,41 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("toolbar_separator", || {
         with_ui(|ui| { ui.separator(); });
+    }).build()?;
+
+    // ── Raw mouse delta (works when cursor is locked) ───────────────────────
+
+    // Returns [dx, dy] raw mouse motion this frame — valid even when cursor is
+    // locked (DeviceEvent::MouseMotion). Use this for RMB fly-look.
+    m.function("viewport_raw_mouse_delta", || -> Vec<f64> {
+        let (dx, dy) = RAW_MOUSE_DELTA.with(|c| c.get());
+        vec![dx, dy]
+    }).build()?;
+
+    // ── Cursor control (Unity-style) ─────────────────────────────────────────
+
+    // Lock/grab the cursor to the window and hide it.
+    // Equivalent to Unity's Cursor.lockState = CursorLockMode.Locked.
+    m.function("cursor_lock", || {
+        CURSOR_GRAB.with(|c| c.set(Some(true)));
+        CURSOR_VISIBLE.with(|c| c.set(Some(false)));
+    }).build()?;
+
+    // Release the cursor and show it.
+    // Equivalent to Unity's Cursor.lockState = CursorLockMode.None.
+    m.function("cursor_unlock", || {
+        CURSOR_GRAB.with(|c| c.set(Some(false)));
+        CURSOR_VISIBLE.with(|c| c.set(Some(true)));
+    }).build()?;
+
+    // Show the cursor without releasing grab.
+    m.function("cursor_visible", |v: bool| {
+        CURSOR_VISIBLE.with(|c| c.set(Some(v)));
+    }).build()?;
+
+    // Explicitly set grab state.
+    m.function("cursor_grab", |v: bool| {
+        CURSOR_GRAB.with(|c| c.set(Some(v)));
     }).build()?;
 
     m.function("badge_right", |text: Ref<str>, r: f64, g: f64, b: f64| {

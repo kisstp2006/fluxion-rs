@@ -24,7 +24,7 @@ use std::sync::Arc;
 use wgpu::SurfaceError;
 use winit::{
     application::ApplicationHandler,
-    event::{ElementState, WindowEvent},
+    event::{DeviceEvent, DeviceId, ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{KeyCode, ModifiersState, PhysicalKey},
     window::{Window, WindowId},
@@ -218,6 +218,17 @@ impl ApplicationHandler for EditorApp {
             }
 
             EditorApp::Uninitialized => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id:  DeviceId,
+        event:       DeviceEvent,
+    ) {
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
+            crate::rune_bindings::accumulate_raw_mouse_delta(dx, dy);
         }
     }
 
@@ -494,6 +505,8 @@ impl EditorInner {
                     if let Err(e) = vm.call_fn(&["editor_camera", "update"], (dt,)) {
                         log::warn!("editor_camera::update: {e:#}");
                     }
+                    // Reset raw delta accumulator after camera script has read it.
+                    crate::rune_bindings::drain_raw_mouse_delta();
                 }
 
                 // ── Viewport gizmo overlay ───────────────────────────────────
@@ -532,6 +545,21 @@ impl EditorInner {
                 "exit"       => std::process::exit(0),
                 _            => {}
             }
+        }
+
+        // Apply cursor grab/visibility requests from Rune scripts.
+        if let Some(grab) = crate::rune_bindings::drain_cursor_grab() {
+            use winit::window::CursorGrabMode;
+            if grab {
+                // Try Locked first (hides + confines), fall back to Confined.
+                let _ = self.window.set_cursor_grab(CursorGrabMode::Locked)
+                    .or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Confined));
+            } else {
+                let _ = self.window.set_cursor_grab(CursorGrabMode::None);
+            }
+        }
+        if let Some(visible) = crate::rune_bindings::drain_cursor_visible() {
+            self.window.set_cursor_visible(visible);
         }
 
         // Apply editor camera position/orientation to the Camera entity Transform.
