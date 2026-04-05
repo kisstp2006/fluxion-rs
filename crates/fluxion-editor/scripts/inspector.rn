@@ -8,6 +8,173 @@
 
 pub mod inspector {
 
+/// Render all fields of one component on `entity_id`, respecting
+/// `visible_if` predicates and grouping them into collapsible sub-sections.
+/// Called by `panel()` for each component and also exported so other panels
+/// (e.g. `environment.rn`) can embed the auto-inspector for a single component.
+pub fn draw_component_fields(entity_id, comp_name) {
+    let sel = entity_id;
+    let c   = comp_name;
+
+    let fields     = fluxion::world::fields(sel, c.clone());
+    let cur_group  = "";
+    let group_open = false;
+
+    for field in fields {
+        let f = field.clone();
+
+        // ── visibility predicate ──────────────────────────────────────
+        if !fluxion::world::field_visible(sel, c.clone(), f.clone()) {
+            continue;
+        }
+
+        let ft    = fluxion::world::field_type(sel, c.clone(), f.clone());
+        let ro    = fluxion::world::field_readonly(sel, c.clone(), f.clone());
+        let range = fluxion::world::field_range(sel, c.clone(), f.clone());
+        let min   = range[0];
+        let max   = range[1];
+        let grp   = fluxion::world::field_group(sel, c.clone(), f.clone());
+        let lbl   = fluxion::world::field_display_name(sel, c.clone(), f.clone());
+        let fid   = `${c}_${f}`;
+
+        // ── group collapsing ──────────────────────────────────────────
+        if grp != cur_group {
+            if group_open {
+                fluxion::ui::collapsing_end();
+                fluxion::ui::indent_pop();
+            }
+            cur_group = grp.clone();
+            if grp != "" {
+                let grp_id = `${grp}##${c}_grp_${grp}`;
+                group_open = fluxion::ui::collapsing_begin(grp_id);
+                if group_open {
+                    fluxion::ui::indent_push();
+                }
+            } else {
+                group_open = false;
+            }
+        }
+
+        // Skip rendering field body if inside a closed group
+        if grp != "" && !group_open {
+            continue;
+        }
+
+        // ── widget dispatch ───────────────────────────────────────────
+        if ft == "vec3" {
+            let v  = fluxion::world::get_vec3(sel, c.clone(), f.clone());
+            let nv = fluxion::ui::vec3_inline(lbl.clone(), v[0], v[1], v[2], 0.01);
+            if nv[0] != v[0] || nv[1] != v[1] || nv[2] != v[2] {
+                fluxion::world::set_vec3(sel, c.clone(), f.clone(), [nv[0], nv[1], nv[2]]);
+            }
+            fluxion::ui::prop_context_menu(fid.clone());
+
+        } else if ft == "quat" {
+            let v  = fluxion::world::get_euler(sel, c.clone(), f.clone());
+            let nv = fluxion::ui::quat_euler_inline(lbl.clone(), v[0], v[1], v[2]);
+            if nv[0] != v[0] || nv[1] != v[1] || nv[2] != v[2] {
+                fluxion::world::set_euler(sel, c.clone(), f.clone(), [nv[0], nv[1], nv[2]]);
+            }
+            fluxion::ui::prop_context_menu(fid.clone());
+
+        } else if ft == "f32" {
+            let v = fluxion::world::get_f32(sel, c.clone(), f.clone());
+            if ro {
+                fluxion::ui::label(`${lbl}: ${v}`);
+            } else {
+                let nv = fluxion::ui::drag_float(lbl.clone(), v, 0.01, min, max);
+                if nv != v { fluxion::world::set_f32(sel, c.clone(), f.clone(), nv); }
+                fluxion::ui::prop_context_menu(fid.clone());
+            }
+
+        } else if ft == "bool" {
+            let v = fluxion::world::get_bool(sel, c.clone(), f.clone());
+            if ro {
+                fluxion::ui::label(`${lbl}: ${v}`);
+            } else {
+                let nv = fluxion::ui::checkbox(lbl.clone(), v);
+                if nv != v { fluxion::world::set_bool(sel, c.clone(), f.clone(), nv); }
+                fluxion::ui::prop_context_menu(fid.clone());
+            }
+
+        } else if ft == "color3" {
+            let v = fluxion::world::get_color3(sel, c.clone(), f.clone());
+            if ro {
+                fluxion::ui::label(`${lbl}: [${v[0]}, ${v[1]}, ${v[2]}]`);
+            } else {
+                let nc = fluxion::ui::color3(lbl.clone(), v[0], v[1], v[2]);
+                if nc[0] != v[0] || nc[1] != v[1] || nc[2] != v[2] {
+                    fluxion::world::set_color3(sel, c.clone(), f.clone(), [nc[0], nc[1], nc[2]]);
+                }
+                fluxion::ui::prop_context_menu(fid.clone());
+            }
+
+        } else if ft == "color4" {
+            let v = fluxion::world::get_color4(sel, c.clone(), f.clone());
+            if ro {
+                fluxion::ui::label(`${lbl}: [${v[0]}, ${v[1]}, ${v[2]}, ${v[3]}]`);
+            } else {
+                let nc = fluxion::ui::color4(lbl.clone(), v[0], v[1], v[2], v[3]);
+                if nc[0] != v[0] || nc[1] != v[1] || nc[2] != v[2] || nc[3] != v[3] {
+                    fluxion::world::set_color4(sel, c.clone(), f.clone(), [nc[0], nc[1], nc[2], nc[3]]);
+                }
+                fluxion::ui::prop_context_menu(fid.clone());
+            }
+
+        } else if ft == "enum" {
+            let v    = fluxion::world::get_str(sel, c.clone(), f.clone());
+            let opts = fluxion::world::get_enum_options(sel, c.clone(), f.clone());
+            if ro || opts.is_empty() {
+                fluxion::ui::label(`${lbl}: ${v}`);
+            } else {
+                let combo_id = `${lbl}##${fid}`;
+                let nv = fluxion::ui::enum_combo(combo_id, v.clone(), opts);
+                if nv != v {
+                    fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
+                }
+                fluxion::ui::prop_context_menu(fid.clone());
+            }
+
+        } else if ft == "texture" {
+            let v  = fluxion::world::get_str(sel, c.clone(), f.clone());
+            let nv = fluxion::ui::asset_path_picker(lbl.clone(), v.clone());
+            if nv != v {
+                fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
+            }
+            fluxion::ui::prop_context_menu(fid.clone());
+
+        } else if ft == "str" || ft == "option_str" {
+            let v = fluxion::world::get_str(sel, c.clone(), f.clone());
+            if ro {
+                fluxion::ui::label(`${lbl}: ${v}`);
+            } else {
+                let nv = fluxion::ui::input_text(lbl.clone(), v.clone());
+                if nv != v { fluxion::world::set_str(sel, c.clone(), f.clone(), nv); }
+                fluxion::ui::prop_context_menu(fid.clone());
+            }
+
+        } else if ft == "u32" || ft == "u8" || ft == "usize" {
+            let v = fluxion::world::get_u32(sel, c.clone(), f.clone());
+            if ro {
+                fluxion::ui::label(`${lbl}: ${v}`);
+            } else {
+                let nv = fluxion::ui::drag_int(lbl.clone(), v);
+                if nv != v { fluxion::world::set_u32(sel, c.clone(), f.clone(), nv); }
+                fluxion::ui::prop_context_menu(fid.clone());
+            }
+
+        } else {
+            fluxion::ui::small(`${lbl}: (${ft})`);
+        }
+    }
+
+    // Close any open group at the end
+    if group_open {
+        fluxion::ui::collapsing_end();
+        fluxion::ui::indent_pop();
+    }
+}
+
 pub fn panel() {
     let sel = fluxion::world::selected();
 
@@ -37,121 +204,7 @@ pub fn panel() {
         fluxion::ui::horizontal_end();
 
         if open {
-            let fields = fluxion::world::fields(sel, c.clone());
-            for field in fields {
-                let f     = field.clone();
-                let ft    = fluxion::world::field_type(sel, c.clone(), f.clone());
-                let ro    = fluxion::world::field_readonly(sel, c.clone(), f.clone());
-                let range = fluxion::world::field_range(sel, c.clone(), f.clone());
-                let min   = range[0];
-                let max   = range[1];
-                let fid   = `${c}_${f}`;
-
-                if ft == "vec3" {
-                    let v  = fluxion::world::get_vec3(sel, c.clone(), f.clone());
-                    let nv = fluxion::ui::vec3_inline(f.clone(), v[0], v[1], v[2], 0.01);
-                    if nv[0] != v[0] || nv[1] != v[1] || nv[2] != v[2] {
-                        fluxion::world::set_vec3(sel, c.clone(), f.clone(), [nv[0], nv[1], nv[2]]);
-                    }
-                    fluxion::ui::prop_context_menu(fid.clone());
-
-                } else if ft == "quat" {
-                    let v  = fluxion::world::get_euler(sel, c.clone(), f.clone());
-                    let nv = fluxion::ui::quat_euler_inline(f.clone(), v[0], v[1], v[2]);
-                    if nv[0] != v[0] || nv[1] != v[1] || nv[2] != v[2] {
-                        fluxion::world::set_euler(sel, c.clone(), f.clone(), [nv[0], nv[1], nv[2]]);
-                    }
-                    fluxion::ui::prop_context_menu(fid.clone());
-
-                } else if ft == "f32" {
-                    let v = fluxion::world::get_f32(sel, c.clone(), f.clone());
-                    if ro {
-                        fluxion::ui::label(`${f}: ${v}`);
-                    } else {
-                        let nv = fluxion::ui::drag_float(f.clone(), v, 0.01, min, max);
-                        if nv != v { fluxion::world::set_f32(sel, c.clone(), f.clone(), nv); }
-                        fluxion::ui::prop_context_menu(fid.clone());
-                    }
-
-                } else if ft == "bool" {
-                    let v = fluxion::world::get_bool(sel, c.clone(), f.clone());
-                    if ro {
-                        fluxion::ui::label(`${f}: ${v}`);
-                    } else {
-                        let nv = fluxion::ui::checkbox(f.clone(), v);
-                        if nv != v { fluxion::world::set_bool(sel, c.clone(), f.clone(), nv); }
-                        fluxion::ui::prop_context_menu(fid.clone());
-                    }
-
-                } else if ft == "color3" {
-                    let v = fluxion::world::get_color3(sel, c.clone(), f.clone());
-                    if ro {
-                        fluxion::ui::label(`${f}: [${v[0]}, ${v[1]}, ${v[2]}]`);
-                    } else {
-                        let nc = fluxion::ui::color3(f.clone(), v[0], v[1], v[2]);
-                        if nc[0] != v[0] || nc[1] != v[1] || nc[2] != v[2] {
-                            fluxion::world::set_color3(sel, c.clone(), f.clone(), [nc[0], nc[1], nc[2]]);
-                        }
-                        fluxion::ui::prop_context_menu(fid.clone());
-                    }
-
-                } else if ft == "color4" {
-                    let v = fluxion::world::get_color4(sel, c.clone(), f.clone());
-                    if ro {
-                        fluxion::ui::label(`${f}: [${v[0]}, ${v[1]}, ${v[2]}, ${v[3]}]`);
-                    } else {
-                        let nc = fluxion::ui::color4(f.clone(), v[0], v[1], v[2], v[3]);
-                        if nc[0] != v[0] || nc[1] != v[1] || nc[2] != v[2] || nc[3] != v[3] {
-                            fluxion::world::set_color4(sel, c.clone(), f.clone(), [nc[0], nc[1], nc[2], nc[3]]);
-                        }
-                        fluxion::ui::prop_context_menu(fid.clone());
-                    }
-
-                } else if ft == "enum" {
-                    let v    = fluxion::world::get_str(sel, c.clone(), f.clone());
-                    let opts = fluxion::world::get_enum_options(sel, c.clone(), f.clone());
-                    if ro || opts.is_empty() {
-                        fluxion::ui::label(`${f}: ${v}`);
-                    } else {
-                        let nv = fluxion::ui::enum_combo(f.clone(), v.clone(), opts);
-                        if nv != v {
-                            fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
-                        }
-                        fluxion::ui::prop_context_menu(fid.clone());
-                    }
-
-                } else if ft == "texture" {
-                    let v  = fluxion::world::get_str(sel, c.clone(), f.clone());
-                    let nv = fluxion::ui::asset_path_picker(f.clone(), v.clone());
-                    if nv != v {
-                        fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
-                    }
-                    fluxion::ui::prop_context_menu(fid.clone());
-
-                } else if ft == "str" || ft == "option_str" {
-                    let v = fluxion::world::get_str(sel, c.clone(), f.clone());
-                    if ro {
-                        fluxion::ui::label(`${f}: ${v}`);
-                    } else {
-                        let nv = fluxion::ui::input_text(f.clone(), v.clone());
-                        if nv != v { fluxion::world::set_str(sel, c.clone(), f.clone(), nv); }
-                        fluxion::ui::prop_context_menu(fid.clone());
-                    }
-
-                } else if ft == "u32" || ft == "u8" || ft == "usize" {
-                    let v = fluxion::world::get_u32(sel, c.clone(), f.clone());
-                    if ro {
-                        fluxion::ui::label(`${f}: ${v}`);
-                    } else {
-                        let nv = fluxion::ui::drag_int(f.clone(), v);
-                        if nv != v { fluxion::world::set_u32(sel, c.clone(), f.clone(), nv); }
-                        fluxion::ui::prop_context_menu(fid.clone());
-                    }
-
-                } else {
-                    fluxion::ui::small(`${f}: (${ft})`);
-                }
-            }
+            draw_component_fields(sel, c.clone());
             fluxion::ui::collapsing_end();
         }
         fluxion::ui::separator();

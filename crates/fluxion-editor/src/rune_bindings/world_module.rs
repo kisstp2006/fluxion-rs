@@ -40,6 +40,8 @@ thread_local! {
     static UNDO_STATE: Cell<(bool, bool)> = Cell::new((false, false));
     /// Last frame delta time in milliseconds.
     static FRAME_TIME_MS: Cell<f64> = Cell::new(0.0);
+    /// Total elapsed time in seconds — accumulated by set_time_elapsed each frame.
+    static TIME_ELAPSED: Cell<f64> = Cell::new(0.0);
     /// Editor mode string: "Editing" | "Playing" | "Paused".
     static EDITOR_MODE: RefCell<String> = RefCell::new(String::from("Editing"));
     /// Transform tool string: "Translate" | "Rotate" | "Scale".
@@ -145,6 +147,10 @@ pub fn set_undo_state(can_undo: bool, can_redo: bool) {
 /// Push the last frame delta time (milliseconds) for the debugger panel.
 pub fn set_frame_time(ms: f64) {
     FRAME_TIME_MS.with(|c| c.set(ms));
+}
+
+pub fn set_time_elapsed(secs: f64) {
+    TIME_ELAPSED.with(|c| c.set(secs));
 }
 
 /// Update editor mode/tool/names — called each frame from EditorHost.
@@ -359,6 +365,35 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                 .and_then(|d| d.enum_variants)
                 .map(|variants| variants.iter().map(|s| s.to_string()).collect())
         }).flatten().unwrap_or_default()
+    }).build()?;
+
+    m.function("field_display_name", |id: i64, component: Ref<str>, field: Ref<str>| -> String {
+        let _ = id;
+        with_ctx(|_, registry| {
+            get_descriptor(registry, &component, &field)
+                .map(|d| d.display_name.to_string())
+                .unwrap_or_else(|| field.to_string())
+        }).unwrap_or_else(|| field.to_string())
+    }).build()?;
+
+    m.function("field_group", |id: i64, component: Ref<str>, field: Ref<str>| -> String {
+        let _ = id;
+        with_ctx(|_, registry| {
+            get_descriptor(registry, &component, &field)
+                .and_then(|d| d.group)
+                .unwrap_or("")
+                .to_string()
+        }).unwrap_or_default()
+    }).build()?;
+
+    m.function("field_visible", |id: i64, component: Ref<str>, field: Ref<str>| -> bool {
+        with_ctx(|world, registry| {
+            let descriptor = get_descriptor(registry, &component, &field)?;
+            if descriptor.visible_if.is_none() { return Some(true); }
+            let entity  = id_to_entity(world, id)?;
+            let reflect = registry.get_reflect(&component, world, entity)?;
+            Some(descriptor.is_visible(reflect.as_ref()))
+        }).flatten().unwrap_or(true)
     }).build()?;
 
     // ── Typed getters ─────────────────────────────────────────────────────────
@@ -774,6 +809,119 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                 _ => None,
             }
         }).flatten().unwrap_or_else(|| vec![0.0, 0.0, 0.0])
+    }).build()?;
+
+    // ── Transform fast-path (Unity API parity) ───────────────────────────────
+    // These bypass the generic get_f32/set_f32 reflection path for common ops.
+
+    m.function("get_position", |id: i64| -> Vec<f64> {
+        with_ctx(|world, _| {
+            let entity = id_to_entity(world, id)?;
+            let t = world.get_component::<fluxion_core::transform::Transform>(entity)?;
+            Some(vec![t.position.x as f64, t.position.y as f64, t.position.z as f64])
+        }).flatten().unwrap_or_else(|| vec![0.0, 0.0, 0.0])
+    }).build()?;
+
+    m.function("set_position", |id: i64, vals: Vec<f64>| {
+        if vals.len() >= 3 {
+            if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
+                queue_edit(e, "Transform".to_string(), "position".to_string(),
+                    ReflectValue::Vec3([vals[0] as f32, vals[1] as f32, vals[2] as f32]));
+            }
+        }
+    }).build()?;
+
+    m.function("get_scale", |id: i64| -> Vec<f64> {
+        with_ctx(|world, _| {
+            let entity = id_to_entity(world, id)?;
+            let t = world.get_component::<fluxion_core::transform::Transform>(entity)?;
+            Some(vec![t.scale.x as f64, t.scale.y as f64, t.scale.z as f64])
+        }).flatten().unwrap_or_else(|| vec![1.0, 1.0, 1.0])
+    }).build()?;
+
+    m.function("set_scale", |id: i64, vals: Vec<f64>| {
+        if vals.len() >= 3 {
+            if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
+                queue_edit(e, "Transform".to_string(), "scale".to_string(),
+                    ReflectValue::Vec3([vals[0] as f32, vals[1] as f32, vals[2] as f32]));
+            }
+        }
+    }).build()?;
+
+    // get_rotation_euler / set_rotation_euler — degrees XYZ (Unity-style)
+    m.function("get_rotation_euler", |id: i64| -> Vec<f64> {
+        with_ctx(|world, _| {
+            let entity = id_to_entity(world, id)?;
+            let t = world.get_component::<fluxion_core::transform::Transform>(entity)?;
+            let (rx, ry, rz) = t.rotation.to_euler(glam::EulerRot::XYZ);
+            Some(vec![rx.to_degrees() as f64, ry.to_degrees() as f64, rz.to_degrees() as f64])
+        }).flatten().unwrap_or_else(|| vec![0.0, 0.0, 0.0])
+    }).build()?;
+
+    m.function("set_rotation_euler", |id: i64, vals: Vec<f64>| {
+        if vals.len() >= 3 {
+            if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
+                let rx = (vals[0] as f32).to_radians();
+                let ry = (vals[1] as f32).to_radians();
+                let rz = (vals[2] as f32).to_radians();
+                let q = glam::Quat::from_euler(EulerRot::XYZ, rx, ry, rz);
+                queue_edit(e, "Transform".to_string(), "rotation".to_string(),
+                    ReflectValue::Quat([q.x, q.y, q.z, q.w]));
+            }
+        }
+    }).build()?;
+
+    // ── Light fast-path ───────────────────────────────────────────────────────
+
+    m.function("get_light_color", |id: i64| -> Vec<f64> {
+        with_ctx(|world, _| {
+            let entity = id_to_entity(world, id)?;
+            let l = world.get_component::<fluxion_core::components::Light>(entity)?;
+            Some(vec![l.color[0] as f64, l.color[1] as f64, l.color[2] as f64])
+        }).flatten().unwrap_or_else(|| vec![1.0, 1.0, 1.0])
+    }).build()?;
+
+    m.function("set_light_color", |id: i64, vals: Vec<f64>| {
+        if vals.len() >= 3 {
+            if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
+                queue_edit(e, "Light".to_string(), "color".to_string(),
+                    ReflectValue::Color3([vals[0] as f32, vals[1] as f32, vals[2] as f32]));
+            }
+        }
+    }).build()?;
+
+    m.function("get_light_intensity", |id: i64| -> f64 {
+        with_ctx(|world, _| {
+            let entity = id_to_entity(world, id)?;
+            let l = world.get_component::<fluxion_core::components::Light>(entity)?;
+            Some(l.intensity as f64)
+        }).flatten().unwrap_or(1.0)
+    }).build()?;
+
+    m.function("set_light_intensity", |id: i64, val: f64| {
+        if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
+            queue_edit(e, "Light".to_string(), "intensity".to_string(),
+                ReflectValue::F32(val as f32));
+        }
+    }).build()?;
+
+    // ── GameObject.Find parity ────────────────────────────────────────────────
+
+    m.function("find_entity_by_name", |name: Ref<str>| -> i64 {
+        with_ctx(|world, _| {
+            world.find_by_name(&name).map(entity_to_id)
+        }).flatten().unwrap_or(-1)
+    }).build()?;
+
+    // ── Time helpers (Unity parity: Time.deltaTime / Time.time) ──────────────
+    // FRAME_TIME_MS is set each frame from main.rs (milliseconds).
+
+    m.function("time_delta", || -> f64 {
+        FRAME_TIME_MS.with(|c| c.get()) / 1000.0
+    }).build()?;
+
+    m.function("time_elapsed", || -> f64 {
+        TIME_ELAPSED.with(|c| c.get())
     }).build()?;
 
     // ── Stats / debugger ─────────────────────────────────────────────────────

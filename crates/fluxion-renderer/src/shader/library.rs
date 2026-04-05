@@ -55,3 +55,6 @@ pub const SHADOW_DEPTH: &str = include_str!("../../../../assets/shaders/shadow_d
 
 /// Skinned geometry vertex — blends joint matrices before writing to GBuffer.
 pub const SKINNED_GEOMETRY_VERT: &str = include_str!("../../../../assets/shaders/skinned_geometry.vert.wgsl");
+
+/// Depth of Field — CoC-based Poisson-disc blur into hdr_ping.
+pub const DOF: &str = include_str!("../../../../assets/shaders/dof.wgsl");

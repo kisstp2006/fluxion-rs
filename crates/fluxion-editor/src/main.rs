@@ -354,6 +354,7 @@ impl EditorInner {
 
         // Push frame time for the debugger panel.
         crate::rune_bindings::set_frame_time(self.host.time.dt as f64 * 1000.0);
+        crate::rune_bindings::set_time_elapsed(self.host.time.elapsed as f64);
 
         // Render 3-D scene to offscreen viewport texture.
         if let Err(e) = self.renderer.render_to_viewport(&self.host.world, &self.host.time) {

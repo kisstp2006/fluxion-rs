@@ -29,7 +29,7 @@ use fluxion_core::{
     Color,
     assets,
     components::{Camera, Light, MeshRenderer, ParticleEmitter, RigidBody, PhysicsShape},
-    components::environment::Environment,
+    components::environment::{Environment, BackgroundMode, sun_direction_from_angles},
     components::light::LightType,
     components::camera::ProjectionMode,
     scene::SceneSettings,
@@ -42,7 +42,7 @@ use crate::{
     config::RendererConfig,
     render_graph::{RenderGraph, PassSlot, RenderContext, RenderResources},
     render_graph::context::{FrameData, CameraData, MeshDrawCall, SkinnedDrawCall, SkyParams, ParticleInstance},
-    passes::{GeometryPass, SkinnedGeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, ParticleOverlayPass, DebugLinePass, ShadowPass},
+    passes::{GeometryPass, SkinnedGeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, DofPass, ParticleOverlayPass, DebugLinePass, ShadowPass},
     lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT, MAX_LIGHTS},
     material::MaterialRegistry,
     mesh::{GpuMesh, MeshRegistry, SkinnedMeshRegistry},
@@ -248,6 +248,7 @@ impl FluxionRenderer {
         render_graph.add_pass("skybox",    PassSlot::Skybox,   Box::new(SkyboxPass::new()));
         render_graph.add_pass("ssao",      PassSlot::Ssao,     Box::new(ssao));
         render_graph.add_pass("bloom",     PassSlot::Bloom,    Box::new(bloom));
+        render_graph.add_pass("dof",       PassSlot::PostFx,   Box::new(DofPass::new()));
         render_graph.add_pass("tonemap",   PassSlot::Tonemap,  Box::new(tonemap));
         render_graph.add_pass("particles",   PassSlot::Overlay,  Box::new(ParticleOverlayPass::new(surface_format)));
         render_graph.add_pass("debug_lines", PassSlot::Overlay,  Box::new(DebugLinePass::new(surface_format)));
@@ -256,6 +257,7 @@ impl FluxionRenderer {
         render_graph.set_enabled("skybox",    config.passes.skybox);
         render_graph.set_enabled("ssao",      config.passes.ssao);
         render_graph.set_enabled("bloom",     config.passes.bloom);
+        render_graph.set_enabled("dof",       false);
         render_graph.set_enabled("particles", config.passes.particles);
 
         render_graph.prepare(&device, &resources);
@@ -331,7 +333,7 @@ impl FluxionRenderer {
     /// Called when no `Environment` component is present in the scene so that
     /// removing the component cleanly reverts any previous per-frame overrides.
     fn restore_config_defaults(&mut self) {
-        use crate::passes::{BloomPass, TonemapPass, SsaoPass};
+        use crate::passes::{BloomPass, TonemapPass, SsaoPass, DofPass};
 
         if let Some(bloom) = self.render_graph.get_pass_mut::<BloomPass>("bloom") {
             bloom.config.enabled     = self.config.bloom.enabled;
@@ -356,6 +358,11 @@ impl FluxionRenderer {
         }
         self.render_graph.set_enabled("ssao",  self.config.passes.ssao);
         self.render_graph.set_enabled("bloom", self.config.passes.bloom);
+        self.render_graph.set_enabled("dof",   false);
+        if let Some(dof) = self.render_graph.get_pass_mut::<DofPass>("dof") {
+            dof.enabled = false;
+            dof.params.aperture = 0.0;
+        }
     }
 
     /// Apply post-processing overrides from an active [`Environment`] component.
@@ -363,8 +370,7 @@ impl FluxionRenderer {
     /// Called once per frame from `render_to_viewport` / `render` when an
     /// Environment component is present in the scene.
     fn apply_environment(&mut self, env: &Environment) {
-        use crate::passes::{BloomPass, TonemapPass, SsaoPass, SkyboxPass};
-        use fluxion_core::components::environment::{BackgroundMode, sun_direction_from_angles};
+        use crate::passes::{BloomPass, TonemapPass, SsaoPass, SkyboxPass, DofPass};
 
         // ── Sky / background ───────────────────────────────────────────────────
         let sky = &env.sky;
@@ -419,8 +425,15 @@ impl FluxionRenderer {
             ssao.bias      = env.ssao.bias;
             ssao.intensity = env.ssao.intensity;
         }
+        if let Some(dof) = self.render_graph.get_pass_mut::<DofPass>("dof") {
+            dof.enabled              = env.dof.enabled;
+            dof.params.focus_distance = env.dof.focus_dist;
+            dof.params.aperture      = if env.dof.enabled { env.dof.aperture } else { 0.0 };
+            dof.params.max_blur      = env.dof.max_blur;
+        }
         self.render_graph.set_enabled("ssao",  env.ssao.enabled);
         self.render_graph.set_enabled("bloom", env.bloom.enabled);
+        self.render_graph.set_enabled("dof",   env.dof.enabled);
     }
 
     /// Load a panorama (equirectangular) image from disk and upload it to the GPU SkyboxPass.
@@ -874,7 +887,7 @@ impl FluxionRenderer {
             ));
         }
 
-        let frame = self.extract_frame_data(world, time);
+        let mut frame = self.extract_frame_data(world, time);
 
         // ── Apply Environment component overrides ─────────────────────────────
         // Query the first active Environment component; if found, its settings
@@ -887,6 +900,24 @@ impl FluxionRenderer {
         });
         if let Some(ref env) = env_override {
             self.apply_environment(env);
+            // Also update frame.sky with Environment values so the shader receives them
+            let sky = &env.sky;
+            frame.sky.sky_mode = match sky.mode {
+                BackgroundMode::Gradient      => 0,
+                BackgroundMode::ProceduralSky => 1,
+                BackgroundMode::SolidColor    => 2,
+                BackgroundMode::Panorama      => 3,
+            };
+            frame.sky.horizon_color = sky.horizon_color;
+            frame.sky.zenith_color = sky.zenith_color;
+            frame.sky.solid_color = sky.solid_color;
+            frame.sky.sun_direction = sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth);
+            frame.sky.sun_intensity = sky.sun_intensity;
+            frame.sky.sun_size = sky.sun_size;
+            frame.sky.turbidity = sky.turbidity;
+            frame.sky.rayleigh = sky.rayleigh;
+            frame.sky.mie_coefficient = sky.mie_coefficient;
+            frame.sky.mie_directional_g = sky.mie_directional_g;
         } else {
             self.restore_config_defaults();
         }
@@ -903,6 +934,20 @@ impl FluxionRenderer {
             light_data.fog_mode          = env.fog.mode.as_u32();
             light_data.fog_near          = env.fog.near;
             light_data.fog_far           = env.fog.far;
+
+            // Sync directional light direction with the sky sun position.
+            // sun_direction_from_angles returns the vector *toward* the sun;
+            // LightUniform.direction is the vector the light shines *from* (source→surface),
+            // so we negate it to keep shadow/shading consistent with the visible sun disc.
+            use fluxion_core::components::environment::sun_direction_from_angles;
+            let sun = sun_direction_from_angles(env.sky.sun_elevation, env.sky.sun_azimuth);
+            let light_dir = [-sun[0], -sun[1], -sun[2]];
+            for lu in light_data.lights.iter_mut().take(light_data.count as usize) {
+                if lu.light_type == LIGHT_DIRECTIONAL {
+                    lu.direction = light_dir;
+                    break;
+                }
+            }
         } else {
             let s = &self.scene_settings;
             light_data.ambient_color     = s.ambient_color;
@@ -1004,7 +1049,7 @@ impl FluxionRenderer {
         let surface_texture = self.surface.get_current_texture()?;
         let surface_view    = surface_texture.texture.create_view(&Default::default());
 
-        let frame = self.extract_frame_data(world, time);
+        let mut frame = self.extract_frame_data(world, time);
 
         // ── Apply Environment component overrides ─────────────────────────────
         let mut env_override: Option<Environment> = None;
@@ -1015,6 +1060,24 @@ impl FluxionRenderer {
         });
         if let Some(ref env) = env_override {
             self.apply_environment(env);
+            // Also update frame.sky with Environment values so the shader receives them
+            let sky = &env.sky;
+            frame.sky.sky_mode = match sky.mode {
+                BackgroundMode::Gradient      => 0,
+                BackgroundMode::ProceduralSky => 1,
+                BackgroundMode::SolidColor    => 2,
+                BackgroundMode::Panorama      => 3,
+            };
+            frame.sky.horizon_color = sky.horizon_color;
+            frame.sky.zenith_color = sky.zenith_color;
+            frame.sky.solid_color = sky.solid_color;
+            frame.sky.sun_direction = sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth);
+            frame.sky.sun_intensity = sky.sun_intensity;
+            frame.sky.sun_size = sky.sun_size;
+            frame.sky.turbidity = sky.turbidity;
+            frame.sky.rayleigh = sky.rayleigh;
+            frame.sky.mie_coefficient = sky.mie_coefficient;
+            frame.sky.mie_directional_g = sky.mie_directional_g;
         } else {
             self.restore_config_defaults();
         }
@@ -1032,6 +1095,16 @@ impl FluxionRenderer {
             light_data.fog_mode          = env.fog.mode.as_u32();
             light_data.fog_near          = env.fog.near;
             light_data.fog_far           = env.fog.far;
+
+            use fluxion_core::components::environment::sun_direction_from_angles;
+            let sun = sun_direction_from_angles(env.sky.sun_elevation, env.sky.sun_azimuth);
+            let light_dir = [-sun[0], -sun[1], -sun[2]];
+            for lu in light_data.lights.iter_mut().take(light_data.count as usize) {
+                if lu.light_type == LIGHT_DIRECTIONAL {
+                    lu.direction = light_dir;
+                    break;
+                }
+            }
         } else {
             let s = &self.scene_settings;
             light_data.ambient_color     = s.ambient_color;

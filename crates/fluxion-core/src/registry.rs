@@ -445,6 +445,30 @@ impl ComponentRegistry {
             Ok(())
         });
 
+        // ── CsgShape ──────────────────────────────────────────────────────────
+        self.register("CsgShape", |data, world, entity| {
+            use crate::components::csg::{CsgShape, CsgOperation, CsgPrimitive};
+            let mut csg = CsgShape::default();
+            if let Some(op) = data.get("operation").and_then(|v| v.as_str()) {
+                csg.operation = CsgOperation::from_str(op);
+            }
+            if let Some(sh) = data.get("shape").and_then(|v| v.as_str()) {
+                csg.shape = CsgPrimitive::from_str(sh);
+            }
+            if let Some(arr) = data.get("size").and_then(|v| v.as_array()) {
+                if arr.len() >= 3 {
+                    csg.size = [
+                        arr[0].as_f64().unwrap_or(1.0) as f32,
+                        arr[1].as_f64().unwrap_or(1.0) as f32,
+                        arr[2].as_f64().unwrap_or(1.0) as f32,
+                    ];
+                }
+            }
+            csg.dirty = true;
+            world.add_component(entity, csg);
+            Ok(())
+        });
+
         // ── Reflect accessors for all built-in types ──────────────────────────
         // Allows the editor to read / write component fields at runtime.
         self.register_reflect::<Transform>("Transform");
@@ -466,6 +490,10 @@ impl ComponentRegistry {
         {
             use crate::components::environment::Environment;
             self.register_reflect::<Environment>("Environment");
+        }
+        {
+            use crate::components::csg::CsgShape;
+            self.register_reflect::<CsgShape>("CsgShape");
         }
     }
 }

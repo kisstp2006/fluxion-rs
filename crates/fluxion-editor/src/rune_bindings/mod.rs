@@ -13,7 +13,7 @@ pub use ui_module::{set_current_ui, UiContextGuard, get_viewport_rect, drain_cur
 pub use world_module::{
     set_world_context, clear_world_context, WorldContextGuard,
     drain_pending_edits, PendingEdit,
-    push_log, get_selected_id, set_project_root, set_undo_state, set_frame_time,
+    push_log, get_selected_id, set_project_root, set_undo_state, set_frame_time, set_time_elapsed,
     set_editor_shell_state, drain_action_signals, get_editor_mode_str, get_transform_tool_str,
     get_editor_cam_pos, get_editor_cam_yaw, get_editor_cam_pitch,
     init_editor_cam, take_editor_cam_dirty,

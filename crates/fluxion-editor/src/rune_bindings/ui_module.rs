@@ -207,12 +207,20 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("collapsing_begin", |label: Ref<str>| -> bool {
         with_ui(|ui| {
-            let id = ui.make_persistent_id(label.as_ref());
+            // Support "Display##unique_id" convention to avoid egui ID clashes.
+            let raw = label.as_ref();
+            let (display, id_str) = if let Some(pos) = raw.find("##") {
+                (&raw[..pos], &raw[pos+2..])
+            } else {
+                (raw, raw)
+            };
+            let id = ui.make_persistent_id(id_str);
             let is_open = ui.memory_mut(|m| {
                 m.data.get_persisted::<bool>(id).unwrap_or(true)
             });
             let clicked = ui.horizontal(|ui| {
                 let sym = if is_open { "▼" } else { "▶" };
+                ui.label(display);
                 ui.small_button(sym).clicked()
             }).inner;
             if clicked {
@@ -228,6 +236,11 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("horizontal_end", || {}).build()?;
     m.function("scroll_begin", || {}).build()?;
     m.function("scroll_end",   || {}).build()?;
+
+    m.function("indent_push", || {
+        with_ui(|ui| { ui.add_space(0.0); });
+    }).build()?;
+    m.function("indent_pop", || {}).build()?;
 
     // ── Viewport image ────────────────────────────────────────────────────────
 
@@ -605,10 +618,18 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("enum_combo", |label: Ref<str>, current: Ref<str>, options: Vec<String>| -> String {
         with_ui(|ui| {
+            // Support "Display##unique_id" convention to avoid egui ID clashes.
+            let raw = label.as_ref();
+            let (display, id_str) = if let Some(pos) = raw.find("##") {
+                (&raw[..pos], &raw[pos+2..])
+            } else {
+                (raw, raw)
+            };
             let mut chosen = current.as_ref().to_string();
-            let resp = egui::ComboBox::from_label(label.as_ref())
+            let resp = egui::ComboBox::from_id_salt(id_str)
                 .selected_text(current.as_ref())
                 .show_ui(ui, |ui| {
+                    ui.label(display);
                     for opt in &options {
                         ui.selectable_value(&mut chosen, opt.clone(), opt.as_str());
                     }

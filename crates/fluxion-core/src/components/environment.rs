@@ -395,85 +395,190 @@ fn env_fields() -> &'static [FieldDescriptor] {
             min: Some(min), max: Some(max), step: Some(step),
         };
         vec![
-            // Sky
-            FieldDescriptor::new("sky_mode",          "Sky / Mode",             ReflectFieldType::Enum)
+            // ── Sky / Background ──────────────────────────────────────────────
+            FieldDescriptor::new("sky_mode", "Mode", ReflectFieldType::Enum)
+                .with_group("Sky")
                 .with_variants(&["Gradient", "ProceduralSky", "SolidColor", "Panorama"]),
-            FieldDescriptor::new("sky_solid_color",    "Sky / Solid Color",       ReflectFieldType::Color3),
-            FieldDescriptor::new("sky_horizon_color",  "Sky / Horizon Color",     ReflectFieldType::Color3),
-            FieldDescriptor::new("sky_zenith_color",   "Sky / Zenith Color",      ReflectFieldType::Color3),
-            FieldDescriptor::new("sky_sun_intensity",  "Sky / Sun Intensity",     ReflectFieldType::F32)
-                .with_range(r(0.0, 100.0, 0.5)),
-            FieldDescriptor::new("sky_sun_size",       "Sky / Sun Size",          ReflectFieldType::F32)
-                .with_range(r(0.001, 0.2, 0.001)),
-            FieldDescriptor::new("sky_sun_elevation",  "Sky / Sun Elevation",     ReflectFieldType::F32)
-                .with_range(r(-10.0, 90.0, 0.5)),
-            FieldDescriptor::new("sky_sun_azimuth",    "Sky / Sun Azimuth",       ReflectFieldType::F32)
-                .with_range(r(0.0, 360.0, 1.0)),
-            FieldDescriptor::new("sky_turbidity",      "Sky / Turbidity",         ReflectFieldType::F32)
-                .with_range(r(1.0, 20.0, 0.1)),
-            FieldDescriptor::new("sky_rayleigh",       "Sky / Rayleigh",          ReflectFieldType::F32)
+            FieldDescriptor::new("sky_solid_color", "Solid Color", ReflectFieldType::Color3)
+                .with_group("Sky")
+                .with_visible_if(|c| matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "SolidColor")),
+            FieldDescriptor::new("sky_horizon_color", "Horizon Color", ReflectFieldType::Color3)
+                .with_group("Sky")
+                .with_visible_if(|c| matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "Gradient" || s == "ProceduralSky")),
+            FieldDescriptor::new("sky_zenith_color", "Zenith Color", ReflectFieldType::Color3)
+                .with_group("Sky")
+                .with_visible_if(|c| matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "Gradient" || s == "ProceduralSky")),
+            FieldDescriptor::new("sky_sun_intensity", "Sun Intensity", ReflectFieldType::F32)
+                .with_group("Sky")
+                .with_range(r(0.0, 100.0, 0.5))
+                .with_visible_if(|c| !matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "SolidColor" || s == "Panorama")),
+            FieldDescriptor::new("sky_sun_size", "Sun Size", ReflectFieldType::F32)
+                .with_group("Sky")
+                .with_range(r(0.001, 0.2, 0.001))
+                .with_visible_if(|c| !matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "SolidColor" || s == "Panorama")),
+            FieldDescriptor::new("sky_sun_elevation", "Sun Elevation", ReflectFieldType::F32)
+                .with_group("Sky")
+                .with_range(r(-10.0, 90.0, 0.5))
+                .with_visible_if(|c| !matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "SolidColor" || s == "Panorama")),
+            FieldDescriptor::new("sky_sun_azimuth", "Sun Azimuth", ReflectFieldType::F32)
+                .with_group("Sky")
+                .with_range(r(0.0, 360.0, 1.0))
+                .with_visible_if(|c| !matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "SolidColor" || s == "Panorama")),
+            FieldDescriptor::new("sky_turbidity", "Turbidity", ReflectFieldType::F32)
+                .with_group("Sky")
+                .with_range(r(1.0, 20.0, 0.1))
+                .with_visible_if(|c| matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "ProceduralSky")),
+            FieldDescriptor::new("sky_rayleigh", "Rayleigh", ReflectFieldType::F32)
+                .with_group("Sky")
+                .with_range(r(0.0, 5.0, 0.05))
+                .with_visible_if(|c| matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "ProceduralSky")),
+            FieldDescriptor::new("sky_mie_coeff", "Mie Coefficient", ReflectFieldType::F32)
+                .with_group("Sky")
+                .with_range(r(0.0, 0.1, 0.001))
+                .with_visible_if(|c| matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "ProceduralSky")),
+            FieldDescriptor::new("sky_mie_dir_g", "Mie Directional G", ReflectFieldType::F32)
+                .with_group("Sky")
+                .with_range(r(0.0, 1.0, 0.01))
+                .with_visible_if(|c| matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "ProceduralSky")),
+            FieldDescriptor::new("sky_panorama_path", "Panorama Texture", ReflectFieldType::Texture)
+                .with_group("Sky")
+                .with_visible_if(|c| matches!(c.get_field("sky_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "Panorama")),
+            // ── Ambient ───────────────────────────────────────────────────────
+            FieldDescriptor::new("ambient_color", "Color", ReflectFieldType::Color3)
+                .with_group("Ambient"),
+            FieldDescriptor::new("ambient_intensity", "Intensity", ReflectFieldType::F32)
+                .with_group("Ambient")
                 .with_range(r(0.0, 5.0, 0.05)),
-            FieldDescriptor::new("sky_mie_coeff",      "Sky / Mie Coefficient",   ReflectFieldType::F32)
-                .with_range(r(0.0, 0.1, 0.001)),
-            FieldDescriptor::new("sky_mie_dir_g",      "Sky / Mie Directional G", ReflectFieldType::F32)
-                .with_range(r(0.0, 1.0, 0.01)),
-            FieldDescriptor::new("sky_panorama_path",  "Sky / Panorama Texture",  ReflectFieldType::Texture),
-            // Ambient
-            FieldDescriptor::new("ambient_color",     "Ambient / Color",     ReflectFieldType::Color3),
-            FieldDescriptor::new("ambient_intensity", "Ambient / Intensity", ReflectFieldType::F32)
-                .with_range(r(0.0, 5.0, 0.05)),
-            // Fog
-            FieldDescriptor::new("fog_enabled", "Fog / Enabled", ReflectFieldType::Bool),
-            FieldDescriptor::new("fog_color",   "Fog / Color",   ReflectFieldType::Color3),
-            FieldDescriptor::new("fog_mode",    "Fog / Mode",    ReflectFieldType::Enum)
-                .with_variants(&["Linear", "Exponential", "ExponentialSquared"]),
-            FieldDescriptor::new("fog_density", "Fog / Density", ReflectFieldType::F32)
-                .with_range(r(0.0, 0.1, 0.001)),
-            FieldDescriptor::new("fog_near", "Fog / Near", ReflectFieldType::F32)
-                .with_range(r(0.0, 1000.0, 1.0)),
-            FieldDescriptor::new("fog_far",  "Fog / Far",  ReflectFieldType::F32)
-                .with_range(r(0.0, 5000.0, 10.0)),
-            // Tonemap
-            FieldDescriptor::new("tone_mode", "Tonemap / Mode",     ReflectFieldType::Enum)
+            // ── Fog ───────────────────────────────────────────────────────────
+            FieldDescriptor::new("fog_enabled", "Enabled", ReflectFieldType::Bool)
+                .with_group("Fog"),
+            FieldDescriptor::new("fog_color", "Color", ReflectFieldType::Color3)
+                .with_group("Fog")
+                .with_visible_if(|c| matches!(c.get_field("fog_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            FieldDescriptor::new("fog_mode", "Mode", ReflectFieldType::Enum)
+                .with_group("Fog")
+                .with_variants(&["Exponential", "Linear"])
+                .with_visible_if(|c| matches!(c.get_field("fog_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            FieldDescriptor::new("fog_density", "Density", ReflectFieldType::F32)
+                .with_group("Fog")
+                .with_range(r(0.0, 0.1, 0.001))
+                .with_visible_if(|c| matches!(c.get_field("fog_enabled"),
+                    Some(ReflectValue::Bool(true)))
+                    && !matches!(c.get_field("fog_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "Linear")),
+            FieldDescriptor::new("fog_near", "Near", ReflectFieldType::F32)
+                .with_group("Fog")
+                .with_range(r(0.0, 1000.0, 1.0))
+                .with_visible_if(|c| matches!(c.get_field("fog_enabled"),
+                    Some(ReflectValue::Bool(true)))
+                    && matches!(c.get_field("fog_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "Linear")),
+            FieldDescriptor::new("fog_far", "Far", ReflectFieldType::F32)
+                .with_group("Fog")
+                .with_range(r(0.0, 5000.0, 10.0))
+                .with_visible_if(|c| matches!(c.get_field("fog_enabled"),
+                    Some(ReflectValue::Bool(true)))
+                    && matches!(c.get_field("fog_mode"),
+                    Some(ReflectValue::Enum(ref s)) if s == "Linear")),
+            // ── Tone Mapping ──────────────────────────────────────────────────
+            FieldDescriptor::new("tone_mode", "Mode", ReflectFieldType::Enum)
+                .with_group("Tone Mapping")
                 .with_variants(&["None", "Linear", "Reinhard", "Aces", "AgX", "Uchimura"]),
-            FieldDescriptor::new("exposure",  "Tonemap / Exposure", ReflectFieldType::F32)
+            FieldDescriptor::new("exposure", "Exposure", ReflectFieldType::F32)
+                .with_group("Tone Mapping")
                 .with_range(r(0.0, 5.0, 0.05)),
-            // Bloom
-            FieldDescriptor::new("bloom_enabled",     "Bloom / Enabled",     ReflectFieldType::Bool),
-            FieldDescriptor::new("bloom_threshold",   "Bloom / Threshold",   ReflectFieldType::F32)
-                .with_range(r(0.0, 3.0, 0.05)),
-            FieldDescriptor::new("bloom_soft_knee",   "Bloom / Soft Knee",   ReflectFieldType::F32)
-                .with_range(r(0.0, 1.0, 0.05)),
-            FieldDescriptor::new("bloom_strength",    "Bloom / Strength",    ReflectFieldType::F32)
-                .with_range(r(0.0, 3.0, 0.05)),
-            FieldDescriptor::new("bloom_blur_passes", "Bloom / Blur Passes", ReflectFieldType::U32)
-                .with_range(r(1.0, 8.0, 1.0)),
-            // SSAO
-            FieldDescriptor::new("ssao_enabled",   "SSAO / Enabled",   ReflectFieldType::Bool),
-            FieldDescriptor::new("ssao_radius",    "SSAO / Radius",    ReflectFieldType::F32)
-                .with_range(r(0.05, 5.0, 0.05)),
-            FieldDescriptor::new("ssao_bias",      "SSAO / Bias",      ReflectFieldType::F32)
-                .with_range(r(0.0, 0.5, 0.001)),
-            FieldDescriptor::new("ssao_intensity", "SSAO / Intensity", ReflectFieldType::F32)
-                .with_range(r(0.0, 5.0, 0.1)),
-            // DoF (stored; pass not yet implemented)
-            FieldDescriptor::new("dof_enabled",    "DoF / Enabled",        ReflectFieldType::Bool),
-            FieldDescriptor::new("dof_focus_dist", "DoF / Focus Distance", ReflectFieldType::F32)
-                .with_range(r(0.1, 500.0, 0.5)),
-            FieldDescriptor::new("dof_aperture",   "DoF / Aperture",       ReflectFieldType::F32)
-                .with_range(r(0.0, 0.5, 0.001)),
-            FieldDescriptor::new("dof_max_blur",   "DoF / Max Blur",       ReflectFieldType::F32)
-                .with_range(r(0.0, 30.0, 0.5)),
-            // Vignette
-            FieldDescriptor::new("vignette_enabled",   "Vignette / Enabled",   ReflectFieldType::Bool),
-            FieldDescriptor::new("vignette_intensity", "Vignette / Intensity", ReflectFieldType::F32)
-                .with_range(r(0.0, 2.0, 0.05)),
-            FieldDescriptor::new("vignette_roundness", "Vignette / Roundness", ReflectFieldType::F32)
-                .with_range(r(0.0, 1.0, 0.05)),
-            // Film
-            FieldDescriptor::new("chromatic_aberration", "Film / Chromatic Aberration", ReflectFieldType::F32)
+            // ── Bloom ─────────────────────────────────────────────────────────
+            FieldDescriptor::new("bloom_enabled", "Enabled", ReflectFieldType::Bool)
+                .with_group("Bloom"),
+            FieldDescriptor::new("bloom_threshold", "Threshold", ReflectFieldType::F32)
+                .with_group("Bloom")
+                .with_range(r(0.0, 3.0, 0.05))
+                .with_visible_if(|c| matches!(c.get_field("bloom_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            FieldDescriptor::new("bloom_soft_knee", "Soft Knee", ReflectFieldType::F32)
+                .with_group("Bloom")
+                .with_range(r(0.0, 1.0, 0.05))
+                .with_visible_if(|c| matches!(c.get_field("bloom_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            FieldDescriptor::new("bloom_strength", "Strength", ReflectFieldType::F32)
+                .with_group("Bloom")
+                .with_range(r(0.0, 3.0, 0.05))
+                .with_visible_if(|c| matches!(c.get_field("bloom_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            FieldDescriptor::new("bloom_blur_passes", "Blur Passes", ReflectFieldType::U32)
+                .with_group("Bloom")
+                .with_range(r(1.0, 8.0, 1.0))
+                .with_visible_if(|c| matches!(c.get_field("bloom_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            // ── SSAO ──────────────────────────────────────────────────────────
+            FieldDescriptor::new("ssao_enabled", "Enabled", ReflectFieldType::Bool)
+                .with_group("SSAO"),
+            FieldDescriptor::new("ssao_radius", "Radius", ReflectFieldType::F32)
+                .with_group("SSAO")
+                .with_range(r(0.05, 5.0, 0.05))
+                .with_visible_if(|c| matches!(c.get_field("ssao_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            FieldDescriptor::new("ssao_bias", "Bias", ReflectFieldType::F32)
+                .with_group("SSAO")
+                .with_range(r(0.0, 0.5, 0.001))
+                .with_visible_if(|c| matches!(c.get_field("ssao_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            FieldDescriptor::new("ssao_intensity", "Intensity", ReflectFieldType::F32)
+                .with_group("SSAO")
+                .with_range(r(0.0, 5.0, 0.1))
+                .with_visible_if(|c| matches!(c.get_field("ssao_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            // ── Depth of Field ────────────────────────────────────────────────
+            FieldDescriptor::new("dof_enabled", "Enabled", ReflectFieldType::Bool)
+                .with_group("Depth of Field"),
+            FieldDescriptor::new("dof_focus_dist", "Focus Distance", ReflectFieldType::F32)
+                .with_group("Depth of Field")
+                .with_range(r(0.1, 500.0, 0.5))
+                .with_visible_if(|c| matches!(c.get_field("dof_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            FieldDescriptor::new("dof_aperture", "Aperture", ReflectFieldType::F32)
+                .with_group("Depth of Field")
+                .with_range(r(0.0, 0.5, 0.001))
+                .with_visible_if(|c| matches!(c.get_field("dof_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            FieldDescriptor::new("dof_max_blur", "Max Blur", ReflectFieldType::F32)
+                .with_group("Depth of Field")
+                .with_range(r(0.0, 30.0, 0.5))
+                .with_visible_if(|c| matches!(c.get_field("dof_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            // ── Vignette ──────────────────────────────────────────────────────
+            FieldDescriptor::new("vignette_enabled", "Enabled", ReflectFieldType::Bool)
+                .with_group("Vignette"),
+            FieldDescriptor::new("vignette_intensity", "Intensity", ReflectFieldType::F32)
+                .with_group("Vignette")
+                .with_range(r(0.0, 2.0, 0.05))
+                .with_visible_if(|c| matches!(c.get_field("vignette_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            FieldDescriptor::new("vignette_roundness", "Roundness", ReflectFieldType::F32)
+                .with_group("Vignette")
+                .with_range(r(0.0, 1.0, 0.05))
+                .with_visible_if(|c| matches!(c.get_field("vignette_enabled"),
+                    Some(ReflectValue::Bool(true)))),
+            // ── Film Effects ──────────────────────────────────────────────────
+            FieldDescriptor::new("chromatic_aberration", "Chromatic Aberration", ReflectFieldType::F32)
+                .with_group("Film Effects")
                 .with_range(r(0.0, 10.0, 0.1)),
-            FieldDescriptor::new("film_grain", "Film / Grain", ReflectFieldType::F32)
+            FieldDescriptor::new("film_grain", "Film Grain", ReflectFieldType::F32)
+                .with_group("Film Effects")
                 .with_range(r(0.0, 1.0, 0.01)),
         ]
     })

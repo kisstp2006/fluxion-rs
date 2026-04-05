@@ -23,6 +23,7 @@ pub mod animator;
 pub mod animation_system;
 pub mod lod;
 pub mod environment;
+pub mod csg;
 
 pub use mesh_renderer::MeshRenderer;
 pub use camera::{Camera, ProjectionMode, ClearFlags};
@@ -34,3 +35,4 @@ pub use animator::{Animator, AnimationClip, Skeleton, JointDef, JointChannel, Ke
 pub use animation_system::AnimationSystem;
 pub use lod::{LodGroup, LodLevel, LodSystem};
 pub use environment::{Environment, BackgroundMode, SkySettings, ToneMapMode, FogMode, AmbientSettings, FogSettings, ToneMapSettings, BloomSettings as EnvBloomSettings, SsaoSettings as EnvSsaoSettings, DofSettings, VignetteSettings, FilmSettings, sun_direction_from_angles};
+pub use csg::{CsgShape, CsgOperation, CsgPrimitive, CsgSystem};

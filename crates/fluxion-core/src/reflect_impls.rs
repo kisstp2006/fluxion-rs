@@ -182,27 +182,35 @@ static CAMERA_FIELDS: OnceLock<Vec<FieldDescriptor>> = OnceLock::new();
 
 fn camera_fields() -> &'static [FieldDescriptor] {
     CAMERA_FIELDS.get_or_init(|| vec![
-        FieldDescriptor::new("fov",              "Field of View",    ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(1.0, 179.0)),
-        FieldDescriptor::new("near",             "Near Plane",       ReflectFieldType::F32)
+        FieldDescriptor::new("fov", "Field of View", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(1.0, 179.0))
+            .with_visible_if(|c| !matches!(c.get_field("projection"),
+                Some(ReflectValue::Enum(ref s)) if s == "Orthographic")),
+        FieldDescriptor::new("near", "Near Plane", ReflectFieldType::F32)
             .with_range(RangeHint::min_max(0.001, 10.0)),
-        FieldDescriptor::new("far",              "Far Plane",        ReflectFieldType::F32)
+        FieldDescriptor::new("far", "Far Plane", ReflectFieldType::F32)
             .with_range(RangeHint::min_max(1.0, 100_000.0)),
-        FieldDescriptor::new("projection",       "Projection Mode",  ReflectFieldType::Enum)
+        FieldDescriptor::new("projection", "Projection Mode", ReflectFieldType::Enum)
             .with_variants(&["Perspective", "Orthographic"]),
-        FieldDescriptor::new("ortho_size",       "Ortho Size",       ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(0.1, 1000.0)),
-        FieldDescriptor::new("is_active",        "Is Active",        ReflectFieldType::Bool),
-        FieldDescriptor::new("depth",            "Depth",            ReflectFieldType::F32),
-        FieldDescriptor::new("culling_mask",     "Culling Mask",     ReflectFieldType::U32),
-        FieldDescriptor::new("clear_flags",      "Clear Flags",      ReflectFieldType::Enum)
+        FieldDescriptor::new("ortho_size", "Ortho Size", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.1, 1000.0))
+            .with_visible_if(|c| matches!(c.get_field("projection"),
+                Some(ReflectValue::Enum(ref s)) if s == "Orthographic")),
+        FieldDescriptor::new("is_active",    "Is Active",    ReflectFieldType::Bool),
+        FieldDescriptor::new("depth",        "Depth",        ReflectFieldType::F32),
+        FieldDescriptor::new("culling_mask", "Culling Mask", ReflectFieldType::U32),
+        FieldDescriptor::new("clear_flags", "Clear Flags", ReflectFieldType::Enum)
             .with_variants(&["Skybox", "SolidColor", "DepthOnly", "Nothing"]),
-        FieldDescriptor::new("background_color", "Background Color", ReflectFieldType::Color4),
-        FieldDescriptor::new("allow_hdr",        "Allow HDR",        ReflectFieldType::Bool),
-        FieldDescriptor::new("allow_msaa",       "Allow MSAA",       ReflectFieldType::Bool),
-        FieldDescriptor::new("use_physical",     "Physical Camera",  ReflectFieldType::Bool),
-        FieldDescriptor::new("focal_length",     "Focal Length (mm)",ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(1.0, 300.0)),
+        FieldDescriptor::new("background_color", "Background Color", ReflectFieldType::Color4)
+            .with_visible_if(|c| matches!(c.get_field("clear_flags"),
+                Some(ReflectValue::Enum(ref s)) if s == "SolidColor")),
+        FieldDescriptor::new("allow_hdr",    "Allow HDR",       ReflectFieldType::Bool),
+        FieldDescriptor::new("allow_msaa",   "Allow MSAA",      ReflectFieldType::Bool),
+        FieldDescriptor::new("use_physical", "Physical Camera", ReflectFieldType::Bool),
+        FieldDescriptor::new("focal_length", "Focal Length (mm)", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(1.0, 300.0))
+            .with_visible_if(|c| matches!(c.get_field("use_physical"),
+                Some(ReflectValue::Bool(true)))),
     ])
 }
 
@@ -280,21 +288,33 @@ static LIGHT_FIELDS: OnceLock<Vec<FieldDescriptor>> = OnceLock::new();
 
 fn light_fields() -> &'static [FieldDescriptor] {
     LIGHT_FIELDS.get_or_init(|| vec![
-        FieldDescriptor::new("light_type",     "Light Type",     ReflectFieldType::Enum)
+        FieldDescriptor::new("light_type", "Type", ReflectFieldType::Enum)
             .with_variants(&["Directional", "Point", "Spot"]),
-        FieldDescriptor::new("color",          "Color",          ReflectFieldType::Color3),
-        FieldDescriptor::new("intensity",      "Intensity",      ReflectFieldType::F32)
+        FieldDescriptor::new("color",     "Color",     ReflectFieldType::Color3),
+        FieldDescriptor::new("intensity", "Intensity", ReflectFieldType::F32)
             .with_range(RangeHint::min_max(0.0, 200_000.0)),
-        FieldDescriptor::new("range",          "Range",          ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(0.1, 10_000.0)),
-        FieldDescriptor::new("spot_angle",     "Spot Angle",     ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(1.0, 179.0)),
-        FieldDescriptor::new("spot_penumbra",  "Spot Penumbra",  ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(0.0, 1.0)),
-        FieldDescriptor::new("cast_shadow",    "Cast Shadow",    ReflectFieldType::Bool),
-        FieldDescriptor::new("shadow_map_size","Shadow Map Size",ReflectFieldType::U32),
-        FieldDescriptor::new("shadow_bias",    "Shadow Bias",    ReflectFieldType::F32)
-            .with_range(RangeHint::step(0.0001)),
+        FieldDescriptor::new("range", "Range", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.1, 10_000.0))
+            .with_visible_if(|c| !matches!(c.get_field("light_type"),
+                Some(ReflectValue::Enum(ref s)) if s == "Directional")),
+        FieldDescriptor::new("spot_angle", "Spot Angle", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(1.0, 179.0))
+            .with_visible_if(|c| matches!(c.get_field("light_type"),
+                Some(ReflectValue::Enum(ref s)) if s == "Spot")),
+        FieldDescriptor::new("spot_penumbra", "Penumbra", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.0, 1.0))
+            .with_visible_if(|c| matches!(c.get_field("light_type"),
+                Some(ReflectValue::Enum(ref s)) if s == "Spot")),
+        FieldDescriptor::new("cast_shadow", "Cast Shadows", ReflectFieldType::Bool),
+        FieldDescriptor::new("shadow_map_size", "Shadow Map Size", ReflectFieldType::U32)
+            .with_group("Shadows")
+            .with_visible_if(|c| matches!(c.get_field("cast_shadow"),
+                Some(ReflectValue::Bool(true)))),
+        FieldDescriptor::new("shadow_bias", "Shadow Bias", ReflectFieldType::F32)
+            .with_range(RangeHint::step(0.0001))
+            .with_group("Shadows")
+            .with_visible_if(|c| matches!(c.get_field("cast_shadow"),
+                Some(ReflectValue::Bool(true)))),
     ])
 }
 
@@ -443,29 +463,43 @@ static RIGID_BODY_FIELDS: OnceLock<Vec<FieldDescriptor>> = OnceLock::new();
 
 fn rigid_body_fields() -> &'static [FieldDescriptor] {
     RIGID_BODY_FIELDS.get_or_init(|| vec![
-        FieldDescriptor::new("body_type",       "Body Type",        ReflectFieldType::Enum)
+        FieldDescriptor::new("body_type", "Body Type", ReflectFieldType::Enum)
             .with_variants(&["Dynamic", "Kinematic", "Static"]),
-        FieldDescriptor::new("shape",           "Shape",            ReflectFieldType::Enum)
+        FieldDescriptor::new("shape", "Shape", ReflectFieldType::Enum)
             .with_variants(&["Box", "Sphere", "Capsule", "HalfSpace"]),
-        FieldDescriptor::new("shape_param_x",   "Shape Param X",    ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(0.001, 100.0)),
-        FieldDescriptor::new("shape_param_y",   "Shape Param Y",    ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(0.001, 100.0)),
-        FieldDescriptor::new("shape_param_z",   "Shape Param Z",    ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(0.001, 100.0)),
-        FieldDescriptor::new("mass",            "Mass (kg)",        ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(0.001, 100_000.0)),
-        FieldDescriptor::new("restitution",     "Restitution",      ReflectFieldType::F32)
+        FieldDescriptor::new("shape_param_x", "Size X", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.001, 100.0))
+            .with_visible_if(|c| !matches!(c.get_field("shape"),
+                Some(ReflectValue::Enum(ref s)) if s == "HalfSpace")),
+        FieldDescriptor::new("shape_param_y", "Size Y", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.001, 100.0))
+            .with_visible_if(|c| matches!(c.get_field("shape"),
+                Some(ReflectValue::Enum(ref s)) if s == "Box" || s == "Capsule")),
+        FieldDescriptor::new("shape_param_z", "Size Z", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.001, 100.0))
+            .with_visible_if(|c| matches!(c.get_field("shape"),
+                Some(ReflectValue::Enum(ref s)) if s == "Box")),
+        FieldDescriptor::new("mass", "Mass (kg)", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.001, 100_000.0))
+            .with_visible_if(|c| matches!(c.get_field("body_type"),
+                Some(ReflectValue::Enum(ref s)) if s == "Dynamic")),
+        FieldDescriptor::new("restitution",     "Restitution",    ReflectFieldType::F32)
             .with_range(RangeHint::min_max(0.0, 1.0)),
-        FieldDescriptor::new("friction",        "Friction",         ReflectFieldType::F32)
+        FieldDescriptor::new("friction",        "Friction",       ReflectFieldType::F32)
             .with_range(RangeHint::min_max(0.0, 10.0)),
-        FieldDescriptor::new("linear_damping",  "Linear Damping",   ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(0.0, 100.0)),
-        FieldDescriptor::new("angular_damping", "Angular Damping",  ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(0.0, 100.0)),
-        FieldDescriptor::new("gravity_scale",   "Gravity Scale",    ReflectFieldType::F32)
-            .with_range(RangeHint::min_max(-10.0, 10.0)),
-        FieldDescriptor::new("can_sleep",       "Can Sleep",        ReflectFieldType::Bool),
+        FieldDescriptor::new("linear_damping",  "Linear Damping", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.0, 100.0))
+            .with_visible_if(|c| matches!(c.get_field("body_type"),
+                Some(ReflectValue::Enum(ref s)) if s == "Dynamic")),
+        FieldDescriptor::new("angular_damping", "Angular Damping", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(0.0, 100.0))
+            .with_visible_if(|c| matches!(c.get_field("body_type"),
+                Some(ReflectValue::Enum(ref s)) if s == "Dynamic")),
+        FieldDescriptor::new("gravity_scale", "Gravity Scale", ReflectFieldType::F32)
+            .with_range(RangeHint::min_max(-10.0, 10.0))
+            .with_visible_if(|c| matches!(c.get_field("body_type"),
+                Some(ReflectValue::Enum(ref s)) if s != "Static")),
+        FieldDescriptor::new("can_sleep", "Can Sleep", ReflectFieldType::Bool),
     ])
 }
 

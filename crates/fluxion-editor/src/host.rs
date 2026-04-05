@@ -17,7 +17,7 @@ use fluxion_core::{
     transform::Transform,
     transform::system::TransformSystem,
     components::{Camera, Light, LightType, CameraControllerSystem},
-    AnimationSystem, LodSystem,
+    AnimationSystem, LodSystem, CsgSystem,
 };
 use glam::{Quat, Vec3};
 use fluxion_rune_scripting::RuneVm;
@@ -180,6 +180,9 @@ impl EditorHost {
         // LOD switching
         LodSystem::update(&self.world);
 
+        // CSG re-bake (dirty entities only)
+        CsgSystem::update(&mut self.world);
+
         // Transform propagation
         TransformSystem::update(&mut self.world);
 
@@ -201,6 +204,7 @@ impl EditorHost {
         self.time.tick();
         AnimationSystem::update(&self.world, self.time.dt);
         LodSystem::update(&self.world);
+        CsgSystem::update(&mut self.world);
         TransformSystem::update(&mut self.world);
         self.vm.poll_hot_reload();
         self.flush_pending_edits();

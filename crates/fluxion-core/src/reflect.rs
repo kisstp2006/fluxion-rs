@@ -100,7 +100,7 @@ impl RangeHint {
 /// Static descriptor for one field on a component.
 ///
 /// The `fields()` method on `Reflect` returns a `&'static [FieldDescriptor]`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FieldDescriptor {
     /// Internal identifier used in `get_field` / `set_field`.
     pub name: &'static str,
@@ -115,6 +115,27 @@ pub struct FieldDescriptor {
     /// For `Enum` fields: the list of valid variant name strings.
     /// Used by the editor to populate a combo-box.
     pub enum_variants: Option<&'static [&'static str]>,
+    /// Inspector group name — fields with the same group render inside a collapsible
+    /// sub-section. `None` means the field is shown at the top level.
+    pub group: Option<&'static str>,
+    /// Optional predicate controlling visibility in the inspector.
+    ///
+    /// Receives the owning component as `&dyn Reflect` so it can call `get_field`
+    /// to read sibling values. Returns `true` when the field should be shown.
+    /// `None` means always visible.
+    pub visible_if: Option<fn(&dyn Reflect) -> bool>,
+}
+
+impl std::fmt::Debug for FieldDescriptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FieldDescriptor")
+            .field("name", &self.name)
+            .field("display_name", &self.display_name)
+            .field("field_type", &self.field_type)
+            .field("group", &self.group)
+            .field("read_only", &self.read_only)
+            .finish()
+    }
 }
 
 impl FieldDescriptor {
@@ -127,6 +148,8 @@ impl FieldDescriptor {
             range: RangeHint::none(),
             read_only: false,
             enum_variants: None,
+            group: None,
+            visible_if: None,
         }
     }
     /// Same as `new` but marks the field as read-only.
@@ -138,6 +161,8 @@ impl FieldDescriptor {
             range: RangeHint::none(),
             read_only: true,
             enum_variants: None,
+            group: None,
+            visible_if: None,
         }
     }
     pub const fn with_range(mut self, range: RangeHint) -> Self {
@@ -148,6 +173,24 @@ impl FieldDescriptor {
     pub const fn with_variants(mut self, variants: &'static [&'static str]) -> Self {
         self.enum_variants = Some(variants);
         self
+    }
+    /// Assign this field to a named inspector group (collapsible sub-section).
+    pub const fn with_group(mut self, group: &'static str) -> Self {
+        self.group = Some(group);
+        self
+    }
+    /// Set a visibility predicate. The field is hidden when the predicate returns `false`.
+    pub const fn with_visible_if(mut self, f: fn(&dyn Reflect) -> bool) -> Self {
+        self.visible_if = Some(f);
+        self
+    }
+    /// Evaluate whether this field is currently visible given the component's state.
+    /// Returns `true` when there is no predicate (always visible).
+    pub fn is_visible(&self, component: &dyn Reflect) -> bool {
+        match self.visible_if {
+            Some(f) => f(component),
+            None    => true,
+        }
     }
 }
 
