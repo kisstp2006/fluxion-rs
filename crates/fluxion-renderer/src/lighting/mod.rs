@@ -46,11 +46,14 @@ pub struct LightBufferData {
     pub ambient_color:   [f32; 3],
     pub ambient_intensity: f32,
     pub lights: [LightUniform; MAX_LIGHTS],
-    /// Exponential fog (matches [`fluxion_core::scene::SceneSettings`] when applied each frame).
+    /// Fog settings (matches [`fluxion_core::components::environment::FogSettings`]).
     pub fog_color:       [f32; 3],
     pub fog_density:     f32,
     pub fog_enabled:     u32,
-    pub _fog_pad:        [u32; 3],
+    /// 0 = Exponential, 1 = Linear
+    pub fog_mode:        u32,
+    pub fog_near:        f32,
+    pub fog_far:         f32,
 }
 
 impl LightBufferData {
@@ -64,7 +67,9 @@ impl LightBufferData {
             fog_color:         [0.5, 0.6, 0.7],
             fog_density:       0.01,
             fog_enabled:       0,
-            _fog_pad:          [0; 3],
+            fog_mode:          0,
+            fog_near:          10.0,
+            fog_far:           100.0,
         }
     }
 

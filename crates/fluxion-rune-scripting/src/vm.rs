@@ -184,9 +184,15 @@ impl RuneVm {
     /// Create a new VM with additional caller-supplied Rune modules installed
     /// on top of the default engine modules.  Used by `fluxion-editor` to
     /// register `fluxion::ui` and `fluxion::world` without touching this crate.
+    ///
+    /// `extra_modules_fn` is called TWICE — once for the runtime context and
+    /// once for the compile context — so each context gets freshly constructed
+    /// module instances.  This is required because `rune::Module` does not
+    /// implement `Clone`, so re-using the same instance would install it twice
+    /// into the same context and cause a duplicate-function-hash panic.
     pub fn new_with_extra_modules(
-        source_paths:  &[&Path],
-        extra_modules: Vec<rune::Module>,
+        source_paths:    &[&Path],
+        extra_modules_fn: impl Fn() -> anyhow::Result<Vec<rune::Module>>,
     ) -> anyhow::Result<Self> {
         let mut ctx = rune::Context::with_default_modules()
             .context("Failed to create default Rune context")?;
@@ -194,8 +200,8 @@ impl RuneVm {
         for m in crate::auto_binding::all_modules()? {
             ctx.install(m).context("Failed to install engine module")?;
         }
-        for m in &extra_modules {
-            ctx.install(m.clone()).context("Failed to install extra module")?;
+        for m in extra_modules_fn()? {
+            ctx.install(m).context("Failed to install extra module")?;
         }
 
         let runtime = Arc::new(ctx.runtime().context("Failed to build Rune runtime")?);
@@ -207,7 +213,7 @@ impl RuneVm {
         for m in crate::auto_binding::all_modules()? {
             compile_ctx.install(m).context("Failed to install engine module (compile)")?;
         }
-        for m in extra_modules {
+        for m in extra_modules_fn()? {
             compile_ctx.install(m).context("Failed to install extra module (compile)")?;
         }
         let unit = Self::compile_paths_with_ctx(&paths, &compile_ctx)?;

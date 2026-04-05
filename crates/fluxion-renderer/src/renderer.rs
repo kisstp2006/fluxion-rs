@@ -326,6 +326,38 @@ impl FluxionRenderer {
         self.config = config;
     }
 
+    /// Restore all pass configs to the global [`RendererConfig`] defaults.
+    ///
+    /// Called when no `Environment` component is present in the scene so that
+    /// removing the component cleanly reverts any previous per-frame overrides.
+    fn restore_config_defaults(&mut self) {
+        use crate::passes::{BloomPass, TonemapPass, SsaoPass};
+
+        if let Some(bloom) = self.render_graph.get_pass_mut::<BloomPass>("bloom") {
+            bloom.config.enabled     = self.config.bloom.enabled;
+            bloom.config.threshold   = self.config.bloom.threshold;
+            bloom.config.soft_knee   = self.config.bloom.soft_knee;
+            bloom.config.strength    = self.config.bloom.strength;
+            bloom.config.blur_passes = self.config.bloom.blur_passes;
+        }
+        if let Some(tonemap) = self.render_graph.get_pass_mut::<TonemapPass>("tonemap") {
+            tonemap.config.exposure             = self.config.tonemap.exposure;
+            tonemap.config.tone_mode            = 3; // ACES default
+            tonemap.config.vignette_intensity   = self.config.tonemap.vignette_intensity;
+            tonemap.config.vignette_roundness   = self.config.tonemap.vignette_roundness;
+            tonemap.config.chromatic_aberration = self.config.tonemap.chromatic_aberration;
+            tonemap.config.film_grain           = self.config.tonemap.film_grain;
+        }
+        if let Some(ssao) = self.render_graph.get_pass_mut::<SsaoPass>("ssao") {
+            ssao.enabled   = self.config.ssao.enabled;
+            ssao.radius    = self.config.ssao.radius;
+            ssao.bias      = self.config.ssao.bias;
+            ssao.intensity = self.config.ssao.intensity;
+        }
+        self.render_graph.set_enabled("ssao",  self.config.passes.ssao);
+        self.render_graph.set_enabled("bloom", self.config.passes.bloom);
+    }
+
     /// Apply post-processing overrides from an active [`Environment`] component.
     ///
     /// Called once per frame from `render_to_viewport` / `render` when an
@@ -855,6 +887,8 @@ impl FluxionRenderer {
         });
         if let Some(ref env) = env_override {
             self.apply_environment(env);
+        } else {
+            self.restore_config_defaults();
         }
 
         let mut light_data = LightBufferData::new();
@@ -866,6 +900,9 @@ impl FluxionRenderer {
             light_data.fog_color         = env.fog.color;
             light_data.fog_density       = env.fog.density;
             light_data.fog_enabled       = u32::from(env.fog.enabled);
+            light_data.fog_mode          = env.fog.mode.as_u32();
+            light_data.fog_near          = env.fog.near;
+            light_data.fog_far           = env.fog.far;
         } else {
             let s = &self.scene_settings;
             light_data.ambient_color     = s.ambient_color;
@@ -873,8 +910,10 @@ impl FluxionRenderer {
             light_data.fog_color         = s.fog_color;
             light_data.fog_density       = s.fog_density;
             light_data.fog_enabled       = u32::from(s.fog_enabled);
+            light_data.fog_mode          = 0; // Exponential
+            light_data.fog_near          = 10.0;
+            light_data.fog_far           = 100.0;
         }
-        light_data._fog_pad = [0; 3];
         self.light_buffer.upload(&self.queue, &light_data);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -967,17 +1006,43 @@ impl FluxionRenderer {
 
         let frame = self.extract_frame_data(world, time);
 
+        // ── Apply Environment component overrides ─────────────────────────────
+        let mut env_override: Option<Environment> = None;
+        world.query_active::<&Environment, _>(|_, env| {
+            if env_override.is_none() {
+                env_override = Some(env.clone());
+            }
+        });
+        if let Some(ref env) = env_override {
+            self.apply_environment(env);
+        } else {
+            self.restore_config_defaults();
+        }
+
         let mut light_data = LightBufferData::new();
         for light in &frame.lights {
             light_data.push(*light);
         }
-        let s = &self.scene_settings;
-        light_data.ambient_color = s.ambient_color;
-        light_data.ambient_intensity = s.ambient_intensity;
-        light_data.fog_color = s.fog_color;
-        light_data.fog_density = s.fog_density;
-        light_data.fog_enabled = u32::from(s.fog_enabled);
-        light_data._fog_pad = [0; 3];
+        if let Some(ref env) = env_override {
+            light_data.ambient_color     = env.ambient.color;
+            light_data.ambient_intensity = env.ambient.intensity;
+            light_data.fog_color         = env.fog.color;
+            light_data.fog_density       = env.fog.density;
+            light_data.fog_enabled       = u32::from(env.fog.enabled);
+            light_data.fog_mode          = env.fog.mode.as_u32();
+            light_data.fog_near          = env.fog.near;
+            light_data.fog_far           = env.fog.far;
+        } else {
+            let s = &self.scene_settings;
+            light_data.ambient_color     = s.ambient_color;
+            light_data.ambient_intensity = s.ambient_intensity;
+            light_data.fog_color         = s.fog_color;
+            light_data.fog_density       = s.fog_density;
+            light_data.fog_enabled       = u32::from(s.fog_enabled);
+            light_data.fog_mode          = 0;
+            light_data.fog_near          = 10.0;
+            light_data.fog_far           = 100.0;
+        }
         self.light_buffer.upload(&self.queue, &light_data);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {

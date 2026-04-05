@@ -59,10 +59,6 @@ impl EditorHost {
 
         Self::spawn_default_scene(&mut world);
 
-        // Rune VM: install editor-specific modules (fluxion::ui, fluxion::world)
-        // on top of the default engine modules.
-        let editor_modules = all_editor_modules()?;
-
         // Collect Rune panel scripts from scripts_dir.
         let script_paths: Vec<PathBuf> = if scripts_dir.is_dir() {
             let mut paths: Vec<PathBuf> = std::fs::read_dir(&scripts_dir)
@@ -83,7 +79,12 @@ impl EditorHost {
         };
 
         let path_refs: Vec<&Path> = script_paths.iter().map(|p| p.as_path()).collect();
-        let mut vm = RuneVm::new_with_extra_modules(&path_refs, editor_modules)?;
+        // Pass a factory closure so new_with_extra_modules can call it twice
+        // (once for the runtime context, once for the compile context) and
+        // each call returns freshly constructed Module instances.
+        // rune::Module does NOT implement Clone, so sharing one Vec between
+        // two contexts would cause a duplicate-function-hash panic.
+        let mut vm = RuneVm::new_with_extra_modules(&path_refs, all_editor_modules)?;
 
         // Enable hot reload on the scripts directory.
         if scripts_dir.is_dir() {

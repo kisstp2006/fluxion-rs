@@ -9,11 +9,18 @@
 pub mod menubar {
 
 pub fn panel() {
-    if fluxion::ui::menu_begin("File") {
+    // menu_begin renders the top-bar button and returns true when the popup
+    // is open. menu_item queues items for rendering AND returns true if that
+    // item was clicked on the previous frame (one-frame lag). menu_end
+    // renders the popup contents and handles close-on-click.
+    // menu_end must ALWAYS be called after menu_begin.
+
+    let file_open = fluxion::ui::menu_begin("File");
+    if file_open {
         if fluxion::ui::menu_item("New Scene          Ctrl+N") {
             fluxion::world::do_new_scene();
         }
-        if fluxion::ui::menu_item("Open Scene…") {
+        if fluxion::ui::menu_item("Open Scene...") {
             fluxion::world::do_open_scene();
         }
         fluxion::ui::menu_separator();
@@ -24,26 +31,29 @@ pub fn panel() {
         if fluxion::ui::menu_item("Exit") {
             fluxion::world::exit_app();
         }
-        fluxion::ui::menu_end();
     }
+    fluxion::ui::menu_end();
 
-    if fluxion::ui::menu_begin("Edit") {
+    let edit_open = fluxion::ui::menu_begin("Edit");
+    if edit_open {
         let can_undo = fluxion::world::can_undo();
         let can_redo = fluxion::world::can_redo();
-        if fluxion::ui::menu_item(`Undo    Ctrl+Z  [${can_undo}]`) { }
-        if fluxion::ui::menu_item(`Redo    Ctrl+Y  [${can_redo}]`) { }
-        fluxion::ui::menu_end();
+        fluxion::ui::menu_item(`Undo    Ctrl+Z  [${can_undo}]`);
+        fluxion::ui::menu_item(`Redo    Ctrl+Y  [${can_redo}]`);
     }
+    fluxion::ui::menu_end();
 
-    if fluxion::ui::menu_begin("View") {
+    let view_open = fluxion::ui::menu_begin("View");
+    if view_open {
         fluxion::ui::menu_item("Reset Layout");
-        fluxion::ui::menu_end();
     }
+    fluxion::ui::menu_end();
 
-    if fluxion::ui::menu_begin("Help") {
+    let help_open = fluxion::ui::menu_begin("Help");
+    if help_open {
         fluxion::ui::menu_item("About FluxionRS");
-        fluxion::ui::menu_end();
     }
+    fluxion::ui::menu_end();
 }
 
 } // pub mod menubar

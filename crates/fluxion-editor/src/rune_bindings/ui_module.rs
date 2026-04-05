@@ -11,6 +11,13 @@ use std::ptr::NonNull;
 
 use rune::{Module, runtime::Ref};
 
+/// Entry in an open menu popup — either a clickable item or a separator.
+#[derive(Clone)]
+enum MenuEntry {
+    Item(String),
+    Separator,
+}
+
 thread_local! {
     static CURRENT_UI: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
     /// Stored response from the last `image_interactive` call.
@@ -25,6 +32,17 @@ thread_local! {
     /// Raw mouse delta accumulated from DeviceEvent::MouseMotion each frame.
     /// This works even when the cursor is locked (unlike egui pointer delta).
     static RAW_MOUSE_DELTA: Cell<(f64, f64)> = Cell::new((0.0, 0.0));
+    /// Map from menu-label → clicked item label.
+    /// Set by menu_end, consumed by menu_item on the next frame.
+    static MENU_CLICKED: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
+    /// Accumulated items for the current menu (filled by menu_item/menu_separator).
+    static MENU_ITEMS: RefCell<Vec<MenuEntry>> = RefCell::new(Vec::new());
+    /// Label of the currently building menu (set by menu_begin).
+    static MENU_LABEL: RefCell<String> = RefCell::new(String::new());
+    /// Rect of the button rendered by menu_begin — used to anchor the popup.
+    static MENU_BTN_RECT: Cell<egui::Rect> = Cell::new(egui::Rect::NOTHING);
+    /// True if the popup was toggled open THIS frame (suppresses immediate close).
+    static MENU_JUST_OPENED: Cell<bool> = Cell::new(false);
 }
 
 /// Returns the last viewport image rect (set by `image_interactive`).
@@ -615,39 +633,6 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or_else(|| path.as_ref().to_string())
     }).build()?;
 
-    // ── Menu bar bindings (for menubar.rn) ────────────────────────────────────
-
-    m.function("menu_bar_begin", || {
-        // The actual TopBottomPanel is opened by the Rust main loop context.
-        // This is a no-op placeholder — the panel is driven from main.rs via a
-        // Rune call whose ui pointer is a menu-bar ui.
-    }).build()?;
-
-    m.function("menu_bar_end", || {}).build()?;
-
-    m.function("menu_begin", |label: Ref<str>| -> bool {
-        // Returns true so Rune code can call menu_item inside an `if` block.
-        // The actual open/close is handled by egui's menu_button.
-        // We use a thread-local bool to track open state per-frame.
-        with_ui(|ui| {
-            let mut opened = false;
-            ui.menu_button(label.as_ref(), |_ui| {
-                opened = true;
-            });
-            opened
-        }).unwrap_or(false)
-    }).build()?;
-
-    m.function("menu_end", || {}).build()?;
-
-    m.function("menu_item", |label: Ref<str>| -> bool {
-        with_ui(|ui| ui.button(label.as_ref()).clicked()).unwrap_or(false)
-    }).build()?;
-
-    m.function("menu_separator", || {
-        with_ui(|ui| { ui.separator(); });
-    }).build()?;
-
     // ── Toolbar bindings (for toolbar.rn) ─────────────────────────────────────
 
     m.function("toolbar_begin", || {}).build()?;
@@ -704,6 +689,142 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     // Explicitly set grab state.
     m.function("cursor_grab", |v: bool| {
         CURSOR_GRAB.with(|c| c.set(Some(v)));
+    }).build()?;
+
+    // ── Menu bar helpers ─────────────────────────────────────────────────────
+    // Used by menubar.rn inside egui::menu::bar().
+    //
+    // Design: Rune calls menu_begin("File") which renders the top-bar button
+    // and, if the popup is open, collects all items into MENU_ITEMS.
+    // menu_item / menu_separator push entries into MENU_ITEMS.
+    // menu_end() actually renders the popup from the accumulated list and
+    // returns which item (if any) was clicked.
+    //
+    // Because egui popups require a closure to draw into, we use a two-phase
+    // approach:
+    //   Phase 1 (menu_begin → menu_end):  collect item labels into a Vec
+    //   Phase 2 (inside menu_end):        open popup_below_widget + draw items
+    //
+    // This avoids storing a live &mut Ui across Rune call boundaries.
+
+    m.function("menu_begin", |label: Ref<str>| -> bool {
+        MENU_ITEMS.with(|c| c.borrow_mut().clear());
+        MENU_JUST_OPENED.with(|c| c.set(false));
+        // Do NOT clear MENU_CLICKED here — it must survive to this frame's
+        // menu_item calls so Rune can act on last-frame's click.
+
+        let label_str = label.as_ref().to_string();
+        MENU_LABEL.with(|c| *c.borrow_mut() = label_str.clone());
+
+        // Render the top-bar button and toggle popup on click.
+        with_ui(|ui| {
+            let popup_id = egui::Id::new(&label_str).with("__mnupop__");
+            let btn = ui.button(&label_str);
+            MENU_BTN_RECT.with(|c| c.set(btn.rect));
+            if btn.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(popup_id));
+                // If we just opened the popup, suppress the close-outside
+                // check this frame so it doesn't immediately close again.
+                if ui.memory(|m| m.is_popup_open(popup_id)) {
+                    MENU_JUST_OPENED.with(|c| c.set(true));
+                }
+            }
+            // Return whether the popup is currently open so the Rune script
+            // can conditionally call menu_item only while open.
+            ui.memory(|m| m.is_popup_open(popup_id))
+        }).unwrap_or(false)
+    }).build()?;
+
+    m.function("menu_item", |label: Ref<str>| -> bool {
+        // Just queue the label; rendering happens in menu_end.
+        MENU_ITEMS.with(|c| c.borrow_mut().push(MenuEntry::Item(label.as_ref().to_string())));
+        // Consume the click if it matches this item's label (scoped to current menu).
+        let menu = MENU_LABEL.with(|c| c.borrow().clone());
+        MENU_CLICKED.with(|map| {
+            let mut m = map.borrow_mut();
+            if m.get(&menu).map(|s| s.as_str()) == Some(label.as_ref()) {
+                m.remove(&menu);
+                true
+            } else {
+                false
+            }
+        })
+    }).build()?;
+
+    m.function("menu_separator", || {
+        MENU_ITEMS.with(|c| c.borrow_mut().push(MenuEntry::Separator));
+    }).build()?;
+
+    m.function("menu_end", || {
+        let label_str = MENU_LABEL.with(|c| c.borrow().clone());
+        let items: Vec<MenuEntry> = MENU_ITEMS.with(|c| c.borrow().clone());
+
+        with_ui(|ui| {
+            let popup_id = egui::Id::new(&label_str).with("__mnupop__");
+            if ui.memory(|m| m.is_popup_open(popup_id)) {
+                // Find the button rect so we can anchor the popup below it.
+                // egui stores the last allocated rect; we recreate the id:
+                let btn_id = ui.id().with(&label_str);
+                let btn_rect = ui.ctx().memory(|m| m.area_rect(btn_id));
+
+                // Use a fixed pos area — place below the menu bar.
+                let bar_bottom = ui.min_rect().bottom();
+                // Anchor left-aligned under the button using the stored rect.
+                let stored_btn = MENU_BTN_RECT.with(|c| c.get());
+                let x = if stored_btn != egui::Rect::NOTHING { stored_btn.left() }
+                        else { btn_rect.map(|r| r.left()).unwrap_or(0.0) };
+                let pos = egui::pos2(x, bar_bottom);
+
+                let mut clicked_item: Option<String> = None;
+                egui::Area::new(popup_id)
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(pos)
+                    .show(ui.ctx(), |popup_ui| {
+                        egui::Frame::popup(popup_ui.style()).show(popup_ui, |inner| {
+                            inner.set_min_width(160.0);
+                            for entry in &items {
+                                match entry {
+                                    MenuEntry::Item(lbl) => {
+                                        if inner.button(lbl).clicked() {
+                                            clicked_item = Some(lbl.clone());
+                                        }
+                                    }
+                                    MenuEntry::Separator => { inner.separator(); }
+                                }
+                            }
+                        });
+                    });
+
+                if let Some(ref item) = clicked_item {
+                    MENU_CLICKED.with(|map| {
+                        map.borrow_mut().insert(label_str.clone(), item.clone());
+                    });
+                    ui.memory_mut(|m| m.close_popup());
+                }
+
+                // Close when clicking outside — but not on the same frame
+                // the popup was opened (that click IS the button click).
+                let just_opened = MENU_JUST_OPENED.with(|c| c.get());
+                if !just_opened {
+                    let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+                    let popup_rect  = ui.ctx().memory(|m| m.area_rect(popup_id));
+                    let btn_rect    = MENU_BTN_RECT.with(|c| c.get());
+                    if ui.input(|i| i.pointer.any_click()) {
+                        let outside = match (pointer_pos, popup_rect) {
+                            (Some(p), Some(r)) => {
+                                !r.contains(p) && !btn_rect.contains(p)
+                            }
+                            _ => true,
+                        };
+                        if outside {
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                    }
+                }
+            }
+        });
+
+        MENU_ITEMS.with(|c| c.borrow_mut().clear());
     }).build()?;
 
     m.function("badge_right", |text: Ref<str>, r: f64, g: f64, b: f64| {

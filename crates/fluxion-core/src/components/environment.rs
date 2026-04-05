@@ -144,6 +144,13 @@ impl FogMode {
             _        => Self::Exponential,
         }
     }
+
+    pub fn as_u32(self) -> u32 {
+        match self {
+            Self::Exponential => 0,
+            Self::Linear      => 1,
+        }
+    }
 }
 
 impl Default for FogMode {

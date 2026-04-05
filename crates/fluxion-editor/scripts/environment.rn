@@ -37,8 +37,8 @@ pub fn panel() {
     if fluxion::ui::collapsing_begin("Sky") {
         let sky_modes = ["Gradient", "ProceduralSky", "SolidColor", "Panorama"];
         let cur_mode = fluxion::environment::get_sky_mode();
-        let nm = fluxion::ui::combo_box("Mode##sky", sky_modes);
-        if nm != "" && nm != cur_mode {
+        let nm = fluxion::ui::enum_combo("Mode##sky", cur_mode, sky_modes);
+        if nm != cur_mode {
             fluxion::environment::set_sky_mode(nm);
         }
         let mode = fluxion::environment::get_sky_mode();
@@ -147,8 +147,8 @@ pub fn panel() {
 
             let mode = fluxion::environment::get_fog_mode();
             let modes = ["Exponential", "Linear"];
-            let nm = fluxion::ui::combo_box("Mode##fog", modes);
-            if nm != "" && nm != mode {
+            let nm = fluxion::ui::enum_combo("Mode##fog", mode, modes);
+            if nm != mode {
                 fluxion::environment::set_fog_mode(nm);
             }
 
@@ -178,8 +178,8 @@ pub fn panel() {
     if fluxion::ui::collapsing_begin("Tonemapping") {
         let mode = fluxion::environment::get_tone_mode();
         let tone_modes = ["None", "Linear", "Reinhard", "Aces", "AgX"];
-        let nm = fluxion::ui::combo_box("Mode##tone", tone_modes);
-        if nm != "" && nm != mode {
+        let nm = fluxion::ui::enum_combo("Mode##tone", mode, tone_modes);
+        if nm != mode {
             fluxion::environment::set_tone_mode(nm);
         }
 
