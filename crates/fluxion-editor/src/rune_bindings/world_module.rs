@@ -12,6 +12,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::ptr::NonNull;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use rune::{Module, runtime::Ref};
 
@@ -22,6 +24,55 @@ use fluxion_core::{
 };
 use glam::EulerRot;
 
+// ── Log infrastructure ───────────────────────────────────────────────────────
+
+static LOG_START: OnceLock<Instant> = OnceLock::new();
+
+#[derive(Clone, PartialEq)]
+enum LogLevel { Info, Warn, Error }
+
+impl LogLevel {
+    fn as_str(&self) -> &'static str {
+        match self {
+            LogLevel::Info  => "info",
+            LogLevel::Warn  => "warn",
+            LogLevel::Error => "error",
+        }
+    }
+    fn from_line(line: &str) -> (Self, String) {
+        if let Some(rest) = line.strip_prefix("[ERROR]") {
+            (LogLevel::Error, rest.trim_start().to_string())
+        } else if let Some(rest) = line.strip_prefix("[WARN]") {
+            (LogLevel::Warn,  rest.trim_start().to_string())
+        } else if let Some(rest) = line.strip_prefix("[INFO]") {
+            (LogLevel::Info,  rest.trim_start().to_string())
+        } else if let Some(rest) = line.strip_prefix("[LOG]") {
+            (LogLevel::Info,  rest.trim_start().to_string())
+        } else {
+            (LogLevel::Info, line.to_string())
+        }
+    }
+}
+
+#[derive(Clone)]
+struct LogEntry {
+    level:   LogLevel,
+    message: String,
+    time_ms: u64,
+}
+
+fn elapsed_ms() -> u64 {
+    LOG_START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+fn format_log_time(ms: u64) -> String {
+    let secs   = ms / 1000;
+    let millis = ms % 1000;
+    let mins   = secs / 60;
+    let secs   = secs % 60;
+    format!("{:02}:{:02}.{:03}", mins, secs, millis)
+}
+
 // ── Thread-local context ──────────────────────────────────────────────────────
 
 thread_local! {
@@ -29,7 +80,17 @@ thread_local! {
     static REG_PTR:      Cell<Option<NonNull<ComponentRegistry>>> = Cell::new(None);
     static SELECTED:     RefCell<Option<EntityId>>               = RefCell::new(None);
     static PENDING:      RefCell<Vec<PendingEdit>>               = RefCell::new(Vec::new());
-    static LOG_LINES:    RefCell<Vec<String>>                    = RefCell::new(Vec::new());
+    /// Structured log entries — replaces the old flat Vec<String>.
+    static LOG_ENTRIES:  RefCell<Vec<LogEntry>> = RefCell::new(Vec::new());
+    /// Index of the selected log entry in the console detail panel (-1 = none).
+    static LOG_SELECTED: Cell<i64>              = Cell::new(-1);
+    // ── Console filter state (persisted between frames) ───────────────────────
+    static CONSOLE_SHOW_INFO:   Cell<bool>      = Cell::new(true);
+    static CONSOLE_SHOW_WARN:   Cell<bool>      = Cell::new(true);
+    static CONSOLE_SHOW_ERROR:  Cell<bool>      = Cell::new(true);
+    static CONSOLE_COLLAPSE:    Cell<bool>      = Cell::new(false);
+    static CONSOLE_AUTO_SCROLL: Cell<bool>      = Cell::new(true);
+    static CONSOLE_SEARCH:      RefCell<String> = RefCell::new(String::new());
     /// Per-frame cache: entity bits → EntityId. Rebuilt each frame in set_world_context.
     static ENTITY_CACHE: RefCell<HashMap<u64, EntityId>>         = RefCell::new(HashMap::new());
     /// Monotonic counter incremented on every push_log / clear_log call.
@@ -176,14 +237,15 @@ pub fn with_world<R>(f: impl FnOnce(&ECSWorld) -> R) -> Option<R> {
 }
 
 /// Append a log line from Rust host code.
-/// Caps the log at 10 000 entries; drains the oldest 1 000 when exceeded.
+/// Parses the `[LEVEL]` prefix to determine level; caps at 10 000 entries.
 pub fn push_log(line: String) {
-    LOG_LINES.with(|l| {
+    let (level, message) = LogLevel::from_line(&line);
+    LOG_ENTRIES.with(|l| {
         let mut v = l.borrow_mut();
         if v.len() >= 10_000 {
             v.drain(..1_000);
         }
-        v.push(line);
+        v.push(LogEntry { level, message, time_ms: elapsed_ms() });
     });
     LOG_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
 }
@@ -1188,29 +1250,18 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     // ── Console log access ────────────────────────────────────────────────────
 
-    m.function("log_lines", || -> Vec<String> {
-        LOG_LINES.with(|l| l.borrow().clone())
-    }).build()?;
-
     m.function("log", |line: Ref<str>| {
-        push_log(line.as_ref().to_string());
+        push_log(format!("[INFO] {}", line.as_ref()));
     }).build()?;
 
     m.function("clear_log", || {
-        LOG_LINES.with(|l| l.borrow_mut().clear());
+        LOG_ENTRIES.with(|l| l.borrow_mut().clear());
+        LOG_SELECTED.with(|c| c.set(-1));
         LOG_GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
     }).build()?;
 
     m.function("log_generation", || -> i64 {
         LOG_GENERATION.with(|g| g.get() as i64)
-    }).build()?;
-
-    m.function("log_lines_tail", |n: i64| -> Vec<String> {
-        LOG_LINES.with(|l| {
-            let lines = l.borrow();
-            let n = (n.max(0) as usize).min(lines.len());
-            lines[lines.len() - n..].to_vec()
-        })
     }).build()?;
 
     m.function("log_with_level", |level: String, msg: String| {
@@ -1222,6 +1273,141 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         };
         push_log(format!("{prefix}{msg}"));
     }).build()?;
+
+    // Backward-compat: rebuild string list from entries.
+    m.function("log_lines", || -> Vec<String> {
+        LOG_ENTRIES.with(|l| {
+            l.borrow().iter().map(|e| {
+                format!("[{}] {}", e.level.as_str().to_uppercase(), e.message)
+            }).collect()
+        })
+    }).build()?;
+
+    m.function("log_lines_tail", |n: i64| -> Vec<String> {
+        LOG_ENTRIES.with(|l| {
+            let entries = l.borrow();
+            let n = (n.max(0) as usize).min(entries.len());
+            let start = entries.len() - n;
+            entries[start..].iter().map(|e| {
+                format!("[{}] {}", e.level.as_str().to_uppercase(), e.message)
+            }).collect()
+        })
+    }).build()?;
+
+    // ── Structured log bindings (Unity-style console) ─────────────────────────
+
+    m.function("log_counts", || -> Vec<i64> {
+        LOG_ENTRIES.with(|l| {
+            let (mut info, mut warn, mut error) = (0i64, 0i64, 0i64);
+            for e in l.borrow().iter() {
+                match e.level {
+                    LogLevel::Info  => info  += 1,
+                    LogLevel::Warn  => warn  += 1,
+                    LogLevel::Error => error += 1,
+                }
+            }
+            vec![info, warn, error]
+        })
+    }).build()?;
+
+    m.function("log_get_total", || -> i64 {
+        LOG_ENTRIES.with(|l| l.borrow().len() as i64)
+    }).build()?;
+
+    // Returns filtered (and optionally collapsed) entries.
+    // Each inner vec: [level_str, message, count_str, time_str, global_idx_str]
+    m.function("log_entries_filtered",
+        |show_info: bool, show_warn: bool, show_error: bool, search: String, collapse: bool|
+        -> Vec<Vec<String>>
+    {
+        LOG_ENTRIES.with(|l| {
+            let entries = l.borrow();
+            let search_lc = search.to_lowercase();
+
+            let filtered: Vec<(usize, &LogEntry)> = entries.iter().enumerate()
+                .filter(|(_, e)| {
+                    let level_ok = match e.level {
+                        LogLevel::Info  => show_info,
+                        LogLevel::Warn  => show_warn,
+                        LogLevel::Error => show_error,
+                    };
+                    let search_ok = search_lc.is_empty()
+                        || e.message.to_lowercase().contains(&search_lc);
+                    level_ok && search_ok
+                })
+                .collect();
+
+            if !collapse {
+                filtered.iter().map(|(idx, e)| vec![
+                    e.level.as_str().to_string(),
+                    e.message.clone(),
+                    "1".to_string(),
+                    format_log_time(e.time_ms),
+                    idx.to_string(),
+                ]).collect()
+            } else {
+                // Group identical (level, message) pairs; keep last timestamp + idx.
+                let mut groups: Vec<(LogLevel, String, u32, u64, usize)> = Vec::new();
+                for (idx, e) in &filtered {
+                    if let Some(g) = groups.iter_mut()
+                        .find(|g| g.0 == e.level && g.1 == e.message)
+                    {
+                        g.2 += 1;
+                        g.3 = e.time_ms;
+                        g.4 = *idx;
+                    } else {
+                        groups.push((e.level.clone(), e.message.clone(), 1, e.time_ms, *idx));
+                    }
+                }
+                groups.iter().map(|(lv, msg, cnt, ms, idx)| vec![
+                    lv.as_str().to_string(),
+                    msg.clone(),
+                    cnt.to_string(),
+                    format_log_time(*ms),
+                    idx.to_string(),
+                ]).collect()
+            }
+        })
+    }).build()?;
+
+    m.function("log_select", |idx: i64| {
+        LOG_SELECTED.with(|c| c.set(idx));
+    }).build()?;
+
+    m.function("log_selected", || -> i64 {
+        LOG_SELECTED.with(|c| c.get())
+    }).build()?;
+
+    m.function("log_get_entry", |idx: i64| -> Vec<String> {
+        LOG_ENTRIES.with(|l| {
+            let entries = l.borrow();
+            if idx < 0 || idx as usize >= entries.len() {
+                return vec![];
+            }
+            let e = &entries[idx as usize];
+            vec![
+                e.level.as_str().to_string(),
+                e.message.clone(),
+                "1".to_string(),
+                format_log_time(e.time_ms),
+            ]
+        })
+    }).build()?;
+
+    // ── Console UI state bindings ─────────────────────────────────────────────
+
+    m.function("get_console_show_info",   || -> bool { CONSOLE_SHOW_INFO.with(|c| c.get()) }).build()?;
+    m.function("set_console_show_info",   |v: bool| { CONSOLE_SHOW_INFO.with(|c| c.set(v)); }).build()?;
+    m.function("get_console_show_warn",   || -> bool { CONSOLE_SHOW_WARN.with(|c| c.get()) }).build()?;
+    m.function("set_console_show_warn",   |v: bool| { CONSOLE_SHOW_WARN.with(|c| c.set(v)); }).build()?;
+    m.function("get_console_show_error",  || -> bool { CONSOLE_SHOW_ERROR.with(|c| c.get()) }).build()?;
+    m.function("set_console_show_error",  |v: bool| { CONSOLE_SHOW_ERROR.with(|c| c.set(v)); }).build()?;
+    m.function("get_console_collapse",    || -> bool { CONSOLE_COLLAPSE.with(|c| c.get()) }).build()?;
+    m.function("set_console_collapse",    |v: bool| { CONSOLE_COLLAPSE.with(|c| c.set(v)); }).build()?;
+    m.function("get_console_auto_scroll", || -> bool { CONSOLE_AUTO_SCROLL.with(|c| c.get()) }).build()?;
+    m.function("set_console_auto_scroll", |v: bool| { CONSOLE_AUTO_SCROLL.with(|c| c.set(v)); }).build()?;
+    m.function("get_console_search", || -> String { CONSOLE_SEARCH.with(|c| c.borrow().clone()) }).build()?;
+    m.function("set_console_search", |v: String| { CONSOLE_SEARCH.with(|c| *c.borrow_mut() = v); }).build()?;
 
     // ── Entity rename / duplicate ─────────────────────────────────────────────
 
@@ -1394,8 +1580,8 @@ pub fn build_world_module() -> anyhow::Result<Module> {
     }).build()?;
 
     m.function("log_error_count", || -> i64 {
-        LOG_LINES.with(|l| {
-            l.borrow().iter().filter(|s| s.contains("[ERROR]")).count() as i64
+        LOG_ENTRIES.with(|l| {
+            l.borrow().iter().filter(|e| e.level == LogLevel::Error).count() as i64
         })
     }).build()?;
 

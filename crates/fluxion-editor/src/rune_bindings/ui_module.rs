@@ -1165,5 +1165,191 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or(false)
     }).build()?;
 
+    // ── Console panel widgets ────────────────────────────────────────────────
+
+    // Renders the console toolbar row (Clear + level toggles + Collapse button).
+    // Returns a string indicating which button was activated:
+    //   "clear" | "info" | "warn" | "error" | "collapse" | "" (nothing clicked)
+    // counts: [info_cnt, warn_cnt, error_cnt]
+    m.function("console_toolbar",
+        |show_info: bool, show_warn: bool, show_error: bool,
+         collapse: bool, counts: Vec<i64>|
+        -> String
+    {
+        let info_cnt  = counts.get(0).copied().unwrap_or(0);
+        let warn_cnt  = counts.get(1).copied().unwrap_or(0);
+        let error_cnt = counts.get(2).copied().unwrap_or(0);
+        with_ui(|ui| {
+            let mut action = String::new();
+            ui.horizontal(|ui| {
+                if ui.button("🗑 Clear").on_hover_text("Clear all log messages").clicked() {
+                    action = "clear".to_string();
+                }
+                ui.separator();
+                let info_col  = egui::Color32::from_rgb(120, 190, 255);
+                let warn_col  = egui::Color32::from_rgb(255, 215, 60);
+                let error_col = egui::Color32::from_rgb(255, 100, 100);
+                let r = ui.selectable_label(show_info,
+                    egui::RichText::new(format!("ℹ  {}", info_cnt)).color(info_col).size(11.5));
+                if r.clicked() { action = "info".to_string(); }
+                let r = ui.selectable_label(show_warn,
+                    egui::RichText::new(format!("⚠  {}", warn_cnt)).color(warn_col).size(11.5));
+                if r.clicked() { action = "warn".to_string(); }
+                let r = ui.selectable_label(show_error,
+                    egui::RichText::new(format!("✕  {}", error_cnt)).color(error_col).size(11.5));
+                if r.clicked() { action = "error".to_string(); }
+                ui.separator();
+                let r = ui.selectable_label(collapse,
+                    egui::RichText::new("Collapse").size(11.5));
+                if r.clicked() { action = "collapse".to_string(); }
+            });
+            action
+        }).unwrap_or_default()
+    }).build()?;
+
+    // A single-line search bar without a visible label.
+    // Returns the current text value every frame (modified or not).
+    m.function("search_bar", |placeholder: Ref<str>, current: Ref<str>| -> String {
+        with_ui(|ui| {
+            let mut v = current.as_ref().to_string();
+            let hint = egui::RichText::new(placeholder.as_ref())
+                .color(ui.visuals().weak_text_color());
+            ui.add(
+                egui::TextEdit::singleline(&mut v)
+                    .hint_text(hint)
+                    .desired_width(f32::INFINITY),
+            );
+            v
+        }).unwrap_or_else(|| current.as_ref().to_string())
+    }).build()?;
+
+    // Renders the scrollable log entry list inside a real egui ScrollArea.
+    // entries: Vec of [level_str, message, count_str, time_str, global_idx_str]
+    // Returns the global_idx of the clicked row, or -1 if none clicked.
+    m.function("console_log_list",
+        |entries: Vec<Vec<String>>, selected_idx: i64, auto_scroll: bool, height: f64|
+        -> i64
+    {
+        with_ui(|ui| {
+            let mut clicked: i64 = -1;
+            let row_h = 18.0f32;
+            egui::ScrollArea::vertical()
+                .id_salt("console_log_list")
+                .max_height(height as f32)
+                .auto_shrink([false, false])
+                .stick_to_bottom(auto_scroll)
+                .show_rows(ui, row_h, entries.len(), |ui, row_range| {
+                    for i in row_range {
+                        let row = &entries[i];
+                        let level   = row.get(0).map(|s| s.as_str()).unwrap_or("info");
+                        let message = row.get(1).map(|s| s.as_str()).unwrap_or("");
+                        let count   = row.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
+                        let time    = row.get(3).map(|s| s.as_str()).unwrap_or("");
+                        let g_idx   = row.get(4).and_then(|s| s.parse::<i64>().ok()).unwrap_or(i as i64);
+                        let is_sel  = g_idx == selected_idx;
+
+                        let (icon, icon_col) = match level {
+                            "error" => ("✕", egui::Color32::from_rgb(255, 100, 100)),
+                            "warn"  => ("⚠", egui::Color32::from_rgb(255, 215, 60)),
+                            _       => ("ℹ", egui::Color32::from_rgb(120, 190, 255)),
+                        };
+                        let text_col = match level {
+                            "error" => egui::Color32::from_rgb(255, 130, 130),
+                            "warn"  => egui::Color32::from_rgb(255, 230, 130),
+                            _       => ui.visuals().text_color(),
+                        };
+
+                        // Alternating row background
+                        let bg = if i % 2 == 0 {
+                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 6)
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        };
+
+                        let resp = ui.horizontal(|ui| {
+                            let avail = ui.available_width();
+                            let time_w = 68.0f32;
+                            let cnt_w  = if count > 1 { 30.0f32 } else { 0.0 };
+
+                            // Background highlight for selected or alternating
+                            if is_sel {
+                                let r = ui.max_rect();
+                                ui.painter().rect_filled(r, 0.0,
+                                    egui::Color32::from_rgba_premultiplied(100, 160, 255, 40));
+                            } else if bg != egui::Color32::TRANSPARENT {
+                                let r = ui.max_rect();
+                                ui.painter().rect_filled(r, 0.0, bg);
+                            }
+
+                            // Icon
+                            ui.colored_label(icon_col,
+                                egui::RichText::new(icon).size(11.0).monospace());
+
+                            // Message text — truncated to fit
+                            let msg_w = (avail - time_w - cnt_w - 20.0).max(50.0);
+                            let truncated = if message.len() > 160 {
+                                format!("{}…", &message[..157])
+                            } else {
+                                message.to_string()
+                            };
+                            ui.add_sized(
+                                [msg_w, row_h],
+                                egui::Label::new(
+                                    egui::RichText::new(&truncated).color(text_col).size(11.0)
+                                ).truncate(),
+                            );
+
+                            // Count badge
+                            if count > 1 {
+                                ui.add_sized(
+                                    [cnt_w, row_h],
+                                    egui::Label::new(
+                                        egui::RichText::new(format!("×{}", count))
+                                            .color(egui::Color32::from_rgb(180, 180, 180))
+                                            .size(10.0)
+                                    ),
+                                );
+                            }
+
+                            // Timestamp (right-aligned)
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add(egui::Label::new(
+                                    egui::RichText::new(time)
+                                        .color(egui::Color32::from_rgb(130, 130, 150))
+                                        .size(10.0)
+                                        .monospace()
+                                ));
+                            });
+                        });
+
+                        // Click-to-select
+                        if resp.response.interact(egui::Sense::click()).clicked() {
+                            clicked = g_idx;
+                        }
+                    }
+                });
+            clicked
+        }).unwrap_or(-1)
+    }).build()?;
+
+    // Readonly multiline text area for the console detail panel.
+    m.function("text_readonly", |text: Ref<str>, height: f64| {
+        with_ui(|ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("console_detail")
+                .max_height(height as f32)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut text.as_ref().to_string())
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(3)
+                            .interactive(false)
+                            .font(egui::TextStyle::Monospace),
+                    );
+                });
+        });
+    }).build()?;
+
     Ok(m)
 }

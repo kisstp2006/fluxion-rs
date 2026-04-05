@@ -43,14 +43,48 @@ use crate::toolbar::{EditorMode, TransformTool};
 use crate::ui_shell::UiShell;
 use notify::{Watcher, RecursiveMode};
 
-// ── Entry point ───────────────────────────────────────────────────────────────
+// ── Dual logger: stderr + editor Console panel ─────────────────────────────────────
+
+/// Forwards every log record to the env_logger backend (stderr) AND to the
+/// editor's in-memory console via `push_log`, so log::info!/warn!/error!
+/// calls appear in the Console panel.
+struct DualLogger {
+    inner: env_logger::Logger,
+}
+
+impl log::Log for DualLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        self.inner.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.inner.enabled(record.metadata()) { return; }
+        self.inner.log(record);
+        let prefix = match record.level() {
+            log::Level::Error => "[ERROR] ",
+            log::Level::Warn  => "[WARN] ",
+            _                 => "[INFO] ",
+        };
+        crate::rune_bindings::world_module::push_log(
+            format!("{}{}", prefix, record.args())
+        );
+    }
+
+    fn flush(&self) { self.inner.flush(); }
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────────────
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+    let inner = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .filter_module("wgpu_core", log::LevelFilter::Warn)
         .filter_module("wgpu_hal",  log::LevelFilter::Warn)
         .filter_module("wgpu",      log::LevelFilter::Warn)
-        .init();
+        .build();
+    let max_level = inner.filter();
+    log::set_boxed_logger(Box::new(DualLogger { inner }))
+        .expect("Logger already set");
+    log::set_max_level(max_level);
 
     log::info!("FluxionRS Editor — starting");
 

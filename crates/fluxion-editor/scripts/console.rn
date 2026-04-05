@@ -1,43 +1,95 @@
 // ============================================================
-// console.rn — Console panel
+// console.rn — Unity-style Console panel
 //
-// Displays log lines from fluxion::world::log_lines().
-// Lines prefixed with [WARN] are shown in yellow,
-// [ERROR] in red, all others in the default color.
+// Features:
+//   • Info / Warn / Error toggle buttons with counts
+//   • Search / filter bar
+//   • Collapse identical messages (with ×N badge)
+//   • Scrollable log list with auto-scroll to bottom
+//   • Click row → select; detail panel shows full message
 // ============================================================
 
 pub mod console {
 
 pub fn panel() {
-    // Toolbar row: line count + Clear button.
-    let gen = fluxion::world::log_generation();
-    fluxion::ui::label(`Log  (gen ${gen})`);
-    fluxion::ui::separator();
-    if fluxion::ui::button("🗑 Clear") {
+    // ── Read persistent state ────────────────────────────────────────────────
+    let show_info   = fluxion::world::get_console_show_info();
+    let show_warn   = fluxion::world::get_console_show_warn();
+    let show_error  = fluxion::world::get_console_show_error();
+    let collapse    = fluxion::world::get_console_collapse();
+    let auto_scroll = fluxion::world::get_console_auto_scroll();
+    let search      = fluxion::world::get_console_search();
+    let selected    = fluxion::world::log_selected();
+
+    // ── Counts for badge labels ───────────────────────────────────────────────
+    let counts = fluxion::world::log_counts();
+    let info_cnt  = counts[0];
+    let warn_cnt  = counts[1];
+    let error_cnt = counts[2];
+
+    // ── Toolbar (Clear + level toggles + Collapse) ───────────────────────────
+    let action = fluxion::ui::console_toolbar(
+        show_info, show_warn, show_error,
+        collapse, counts
+    );
+    if action == "clear" {
         fluxion::world::clear_log();
+        fluxion::world::log_select(-1);
+        fluxion::world::set_console_auto_scroll(true);
+    } else if action == "info" {
+        fluxion::world::set_console_show_info(!show_info);
+    } else if action == "warn" {
+        fluxion::world::set_console_show_warn(!show_warn);
+    } else if action == "error" {
+        fluxion::world::set_console_show_error(!show_error);
+    } else if action == "collapse" {
+        fluxion::world::set_console_collapse(!collapse);
     }
+
+    // ── Search bar ───────────────────────────────────────────────────────────
+    let new_search = fluxion::ui::search_bar("🔍  Filter messages…", search.clone());
+    if new_search != search {
+        fluxion::world::set_console_search(new_search.clone());
+        fluxion::world::log_select(-1);
+    }
+
     fluxion::ui::separator();
 
-    // Only clone the last 200 entries — avoids O(N) clone of the full log.
-    let lines = fluxion::world::log_lines_tail(200);
+    // ── Calculate panel heights ──────────────────────────────────────────────
+    let total_h   = fluxion::ui::available_height();
+    let detail_h  = 58.0;
+    let sep_h     = 6.0;
+    let list_h    = (total_h - detail_h - sep_h).max(40.0);
 
-    if lines.is_empty() {
+    // ── Filtered entry list ──────────────────────────────────────────────────
+    let entries = fluxion::world::log_entries_filtered(
+        show_info, show_warn, show_error,
+        new_search, collapse
+    );
+
+    if entries.is_empty() {
         fluxion::ui::small("(no messages)");
-        return;
+    } else {
+        let clicked = fluxion::ui::console_log_list(
+            entries, selected, auto_scroll, list_h
+        );
+        if clicked >= 0 {
+            fluxion::world::log_select(clicked);
+            fluxion::world::set_console_auto_scroll(false);
+        }
     }
 
-    let i = 0;
-    while i < lines.len() {
-        let line = lines[i].clone();
-        // Clone before each starts_with check — Rune snapshots String on method call.
-        if line.clone().starts_with("[ERROR]") {
-            fluxion::ui::colored_label(line, 1.0, 0.35, 0.35);
-        } else if line.clone().starts_with("[WARN]") {
-            fluxion::ui::colored_label(line, 1.0, 0.85, 0.2);
-        } else {
-            fluxion::ui::small(line);
+    fluxion::ui::separator();
+
+    // ── Detail panel (selected message) ─────────────────────────────────────
+    if selected >= 0 {
+        let entry = fluxion::world::log_get_entry(selected);
+        if entry.len() > 1 {
+            let msg = entry[1].clone();
+            fluxion::ui::text_readonly(msg, detail_h);
         }
-        i += 1;
+    } else {
+        fluxion::ui::small("Select a message to see details.");
     }
 }
 
