@@ -51,6 +51,12 @@ thread_local! {
     static ASSET_DB_PTR: Cell<Option<NonNull<AssetDatabase>>> = Cell::new(None);
     /// Persistent search query for the asset browser panel.
     static ASSET_SEARCH_QUERY: RefCell<String> = RefCell::new(String::new());
+    /// Currently selected asset (project-relative path).  Empty = nothing selected.
+    static SELECTED_ASSET_PATH: RefCell<String> = RefCell::new(String::new());
+    /// Inline creation mode for the asset panel: "" | "dir" | "file".
+    static ASSET_CREATE_MODE:  RefCell<String> = RefCell::new(String::new());
+    /// Text input buffer for the inline asset creation form.
+    static ASSET_CREATE_INPUT: RefCell<String> = RefCell::new(String::new());
     /// Project name for display in toolbar.
     static PROJECT_NAME: RefCell<String> = RefCell::new(String::new());
     /// Scene name for display in toolbar.
@@ -824,6 +830,137 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             Some(dot) => filename[..dot].to_string(),
             None      => filename.to_string(),
         }
+    }).build()?;
+
+    // ── Asset selection ───────────────────────────────────────────────────────
+
+    // get_selected_asset() → project-relative path, or "" when nothing selected.
+    m.function("get_selected_asset", || -> String {
+        SELECTED_ASSET_PATH.with(|s| s.borrow().clone())
+    }).build()?;
+
+    // set_selected_asset(path) — select an asset and deselect any entity.
+    m.function("set_selected_asset", |path: String| {
+        SELECTED_ASSET_PATH.with(|s| *s.borrow_mut() = path);
+        // Deselect entity so the inspector switches to asset view.
+        SELECTED.with(|s| *s.borrow_mut() = None);
+    }).build()?;
+
+    // clear_selected_asset() — deselect the current asset.
+    m.function("clear_selected_asset", || {
+        SELECTED_ASSET_PATH.with(|s| s.borrow_mut().clear());
+    }).build()?;
+
+    // load_scene(path) — request main.rs to load a scene by project-relative path.
+    // Path should include the "assets/" prefix if stored there, e.g. "assets/myscene.fluxscene".
+    m.function("load_scene", |path: String| {
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push(format!("load_scene:{path}")));
+    }).build()?;
+
+    // ── Asset panel creation / deletion ─────────────────────────────────────────
+
+    // get/set_asset_create_mode — track inline creation form state ("" | "dir" | "file").
+    m.function("get_asset_create_mode", || -> String {
+        ASSET_CREATE_MODE.with(|m| m.borrow().clone())
+    }).build()?;
+    m.function("set_asset_create_mode", |mode: String| {
+        ASSET_CREATE_MODE.with(|m| *m.borrow_mut() = mode);
+    }).build()?;
+
+    // get/set_asset_create_input — the name being typed in the creation form.
+    m.function("get_asset_create_input", || -> String {
+        ASSET_CREATE_INPUT.with(|i| i.borrow().clone())
+    }).build()?;
+    m.function("set_asset_create_input", |text: String| {
+        ASSET_CREATE_INPUT.with(|i| *i.borrow_mut() = text);
+    }).build()?;
+
+    // asset_create_dir(name) — create a directory under {project_root}/assets/{name}.
+    // Returns true on success.  Signals a rescan.
+    m.function("asset_create_dir", |name: String| -> bool {
+        let root = PROJECT_ROOT.with(|r| r.borrow().clone());
+        if root == std::path::PathBuf::new() { return false; }
+        let dir = root.join("assets").join(&name);
+        let ok = std::fs::create_dir_all(&dir).is_ok();
+        if ok {
+            ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+            log::info!("[Assets] Created directory: {}", dir.display());
+        } else {
+            log::error!("[Assets] Failed to create directory: {}", dir.display());
+        }
+        ok
+    }).build()?;
+
+    // asset_create_file(path, content) — create a file at {project_root}/assets/{path}.
+    // Parent directories are created automatically.  Signals a rescan.
+    m.function("asset_create_file", |path: String, content: String| -> bool {
+        let root = PROJECT_ROOT.with(|r| r.borrow().clone());
+        if root == std::path::PathBuf::new() { return false; }
+        let full = root.join("assets").join(&path);
+        if let Some(parent) = full.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let ok = std::fs::write(&full, content.as_bytes()).is_ok();
+        if ok {
+            ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+            log::info!("[Assets] Created file: {}", full.display());
+        } else {
+            log::error!("[Assets] Failed to create file: {}", full.display());
+        }
+        ok
+    }).build()?;
+
+    // asset_create_scene(path) — create a blank scene file at {project_root}/assets/{path}.
+    // The file receives a minimal valid scene JSON (version 2, no entities).
+    // Signals a rescan.  Returns true on success.
+    m.function("asset_create_scene", |path: String| -> bool {
+        let root = PROJECT_ROOT.with(|r| r.borrow().clone());
+        if root == std::path::PathBuf::new() { return false; }
+        let full = root.join("assets").join(&path);
+        if let Some(parent) = full.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let scene_name = full.file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("new_scene")
+            .to_string();
+        let content = format!(
+            "{{\n  \"name\": \"{}\",\n  \"version\": 2,\n  \"settings\": {{\n    \"ambientColor\": [0.2, 0.2, 0.3],\n    \"ambientIntensity\": 0.3,\n    \"fogEnabled\": false,\n    \"fogColor\": [0.5, 0.6, 0.7],\n    \"fogDensity\": 0.01,\n    \"skybox\": null,\n    \"physicsGravity\": [0.0, -9.81, 0.0]\n  }},\n  \"entities\": []\n}}",
+            scene_name
+        );
+        let ok = std::fs::write(&full, content.as_bytes()).is_ok();
+        if ok {
+            ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+            log::info!("[Assets] Created scene: {}", full.display());
+        } else {
+            log::error!("[Assets] Failed to create scene: {}", full.display());
+        }
+        ok
+    }).build()?;
+
+    // asset_delete(path) — delete a file at {project_root}/assets/{path}.  Signals a rescan.
+    m.function("asset_delete", |path: String| -> bool {
+        let root = PROJECT_ROOT.with(|r| r.borrow().clone());
+        if root == std::path::PathBuf::new() { return false; }
+        let full = root.join("assets").join(&path);
+        let ok = if full.is_dir() {
+            std::fs::remove_dir_all(&full).is_ok()
+        } else {
+            // Also remove the .fluxmeta sidecar if present.
+            let meta = full.with_extension(
+                format!("{}.fluxmeta",
+                    full.extension().and_then(|e| e.to_str()).unwrap_or(""))
+            );
+            let _ = std::fs::remove_file(&meta);
+            std::fs::remove_file(&full).is_ok()
+        };
+        if ok {
+            ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+            log::info!("[Assets] Deleted: {}", full.display());
+        } else {
+            log::error!("[Assets] Failed to delete: {}", full.display());
+        }
+        ok
     }).build()?;
 
     // ── Component add / remove ────────────────────────────────────────────────

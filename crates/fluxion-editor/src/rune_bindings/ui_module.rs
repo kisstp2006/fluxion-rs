@@ -43,6 +43,15 @@ thread_local! {
     static MENU_BTN_RECT: Cell<egui::Rect> = Cell::new(egui::Rect::NOTHING);
     /// True if the popup was toggled open THIS frame (suppresses immediate close).
     static MENU_JUST_OPENED: Cell<bool> = Cell::new(false);
+    // ── Floating input dialog ────────────────────────────────────────────────────────────
+    /// True when the dialog window is currently shown.
+    static DIALOG_OPEN:   Cell<bool>      = Cell::new(false);
+    /// Title shown in the dialog window title bar.
+    static DIALOG_TITLE:  RefCell<String> = RefCell::new(String::new());
+    /// Live text-edit buffer (updated while user types).
+    static DIALOG_INPUT:  RefCell<String> = RefCell::new(String::new());
+    /// The text the user confirmed; populated on OK / Enter.
+    static DIALOG_RESULT: RefCell<String> = RefCell::new(String::new());
 }
 
 /// Returns the last viewport image rect (set by `image_interactive`).
@@ -863,9 +872,166 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             (g * 255.0) as u8,
                             (b * 255.0) as u8,
                         )),
-                );
-            });
+            );
         });
+    });
+}).build()?;
+
+    // ── Floating input dialog API ─────────────────────────────────────────────
+
+    // input_dialog_open(title, initial_text) — open a centered input dialog.
+    // Follow with input_dialog_update() every frame to render it.
+    m.function("input_dialog_open", |title: String, initial: String| {
+        DIALOG_TITLE.with(|t| *t.borrow_mut() = title);
+        DIALOG_INPUT.with(|i| *i.borrow_mut() = initial);
+        DIALOG_RESULT.with(|r| r.borrow_mut().clear());
+        DIALOG_OPEN.with(|o| o.set(true));
+    }).build()?;
+
+    // input_dialog_update() — render the dialog if open (call every frame).
+    // Returns: ""          when not open (idle)
+    //          "pending"   while the user is typing
+    //          "confirmed" after OK or Enter  → text available via input_dialog_result()
+    //          "cancelled" after Cancel or Escape
+    m.function("input_dialog_update", || -> String {
+        if !DIALOG_OPEN.with(|o| o.get()) {
+            return String::new();
+        }
+        with_ui(|ui| {
+            use std::cell::RefCell as LC;
+            let title  = DIALOG_TITLE.with(|t| t.borrow().clone());
+            let text:   LC<String> = LC::new(DIALOG_INPUT.with(|i| i.borrow().clone()));
+            let action: LC<String> = LC::new("pending".to_string());
+
+            egui::Window::new(title.as_str())
+                .collapsible(false)
+                .resizable(false)
+                .min_width(260.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ui.ctx(), |ui| {
+                    let mut v  = text.borrow().clone();
+                    let resp   = ui.text_edit_singleline(&mut v);
+                    *text.borrow_mut() = v.clone();
+
+                    let enter  = resp.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    let ok_on  = !v.is_empty();
+
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(ok_on, egui::Button::new("OK")).clicked()
+                            || (enter && ok_on)
+                        {
+                            DIALOG_RESULT.with(|r| *r.borrow_mut() = v.clone());
+                            *action.borrow_mut() = "confirmed".to_string();
+                            DIALOG_OPEN.with(|o| o.set(false));
+                        }
+                        if ui.button("Cancel").clicked() || escape {
+                            *action.borrow_mut() = "cancelled".to_string();
+                            DIALOG_OPEN.with(|o| o.set(false));
+                        }
+                    });
+                });
+
+            DIALOG_INPUT.with(|i| *i.borrow_mut() = text.into_inner());
+            action.into_inner()
+        }).unwrap_or_else(|| "pending".to_string())
+    }).build()?;
+
+    // input_dialog_result() — confirmed text; valid after update() → "confirmed".
+    m.function("input_dialog_result", || -> String {
+        DIALOG_RESULT.with(|r| r.borrow().clone())
+    }).build()?;
+
+    // ── Directory header with context menu ────────────────────────────────────
+
+    // dir_header_with_menu(label, menu_items)
+    // Renders a folder icon + toggle + label row with right-click context menu.
+    // Supports "Display##unique_id" convention to avoid egui ID clashes.
+    // Returns Vec<String>: ["open" | "closed",  menu_action_or_empty_string].
+    m.function("dir_header_with_menu", |label: Ref<str>, items: Vec<String>| -> Vec<String> {
+        with_ui(|ui| {
+            use std::cell::RefCell as LC;
+            let raw = label.as_ref();
+            let (display, id_str) = if let Some(pos) = raw.find("##") {
+                (&raw[..pos], &raw[pos+2..])
+            } else {
+                (raw, raw)
+            };
+            let id      = ui.make_persistent_id(id_str);
+            let is_open = ui.memory_mut(|m| m.data.get_persisted::<bool>(id).unwrap_or(true));
+            let tint    = ui.visuals().text_color();
+            let action:  LC<String> = LC::new(String::new());
+            let toggled: LC<bool>   = LC::new(false);
+
+            let row = ui.horizontal(|ui| {
+                let sym = if is_open { "\u{25BC}" } else { "\u{25B6}" };
+                if ui.small_button(sym).clicked() {
+                    *toggled.borrow_mut() = true;
+                }
+                if let Some(bytes) = crate::icons::icon_bytes("folder") {
+                    let uri = crate::icons::icon_uri("folder");
+                    ui.add(
+                        egui::Image::from_bytes(uri, bytes)
+                            .fit_to_exact_size(egui::vec2(14.0, 14.0))
+                            .tint(tint),
+                    );
+                }
+                ui.label(display);
+            });
+
+            if *toggled.borrow() {
+                ui.memory_mut(|m| m.data.insert_persisted(id, !is_open));
+            }
+
+            row.response.context_menu(|ui| {
+                for item in &items {
+                    if ui.button(item.as_str()).clicked() {
+                        *action.borrow_mut() = item.clone();
+                        ui.close_menu();
+                    }
+                }
+            });
+
+            let open_str = if is_open { "open" } else { "closed" };
+            vec![open_str.to_string(), action.into_inner()]
+        }).unwrap_or_else(|| vec!["closed".to_string(), String::new()])
+    }).build()?;
+
+    // ── Icon + selectable row with right-click menu ───────────────────────────
+
+    // icon_selectable
+    m.function("icon_selectable", |icon: Ref<str>, label: Ref<str>, is_sel: bool, items: Vec<String>| -> String {
+        with_ui(|ui| {
+            use std::cell::RefCell as LC;
+            let action: LC<String> = LC::new(String::new());
+            ui.horizontal(|ui| {
+                let sz   = 16.0f32;
+                let tint = ui.visuals().text_color();
+                if let Some(bytes) = crate::icons::icon_bytes(icon.as_ref()) {
+                    let uri = crate::icons::icon_uri(icon.as_ref());
+                    ui.add(
+                        egui::Image::from_bytes(uri, bytes)
+                            .fit_to_exact_size(egui::vec2(sz, sz))
+                            .tint(tint),
+                    );
+                }
+                let resp = ui.selectable_label(is_sel, label.as_ref());
+                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp.clone()));
+                if resp.clicked() && action.borrow().is_empty() {
+                    *action.borrow_mut() = "select".to_string();
+                }
+                resp.context_menu(|ui| {
+                    for item in &items {
+                        if ui.button(item.as_str()).clicked() {
+                            *action.borrow_mut() = item.clone();
+                            ui.close_menu();
+                        }
+                    }
+                });
+            });
+            action.into_inner()
+        }).unwrap_or_default()
     }).build()?;
 
     // ── SVG icon widgets ──────────────────────────────────────────────────────

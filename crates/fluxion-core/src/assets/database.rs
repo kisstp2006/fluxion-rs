@@ -126,6 +126,8 @@ pub struct AssetDatabase {
     guid_index: HashMap<String, String>,  // guid → normalised path
     /// Root directory used for the last scan (i.e. the project root).
     pub root: PathBuf,
+    /// Top-level subdirectories of assets/ — includes empty ones.
+    dirs: BTreeSet<String>,
 }
 
 impl Default for AssetDatabase {
@@ -135,6 +137,7 @@ impl Default for AssetDatabase {
             path_index: HashMap::new(),
             guid_index: HashMap::new(),
             root:       PathBuf::new(),
+            dirs:       BTreeSet::new(),
         }
     }
 }
@@ -169,6 +172,33 @@ impl AssetDatabase {
         for (i, rec) in self.records.iter().enumerate() {
             self.path_index.insert(rec.path.clone(), i);
             self.guid_index.insert(rec.guid.clone(), rec.path.clone());
+        }
+
+        // Build the directory set: union of filesystem dirs + file-path-derived dirs.
+        self.dirs.clear();
+        // 1. Dirs inferred from file paths (always present even without a filesystem hit).
+        for rec in &self.records {
+            if let Some(slash) = rec.path.find('/') {
+                self.dirs.insert(rec.path[..slash].to_string());
+            }
+        }
+        // 2. Actual top-level subdirectories of scan_root (catches empty folders).
+        if let Ok(entries) = std::fs::read_dir(&scan_root) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if !p.is_dir() { continue; }
+                let name = p.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                if name.starts_with('.') {
+                    continue;
+                }
+                if matches!(name.as_str(), "target" | "node_modules" | ".git") {
+                    continue;
+                }
+                self.dirs.insert(name);
+            }
         }
 
         log::debug!(
@@ -291,15 +321,10 @@ impl AssetDatabase {
         }).collect()
     }
 
-    /// Unique immediate subdirectories (sorted).
+    /// Unique immediate subdirectories of assets/ (sorted).
+    /// Includes empty directories created on disk even if they contain no files.
     pub fn list_dirs(&self) -> Vec<String> {
-        let mut seen = BTreeSet::new();
-        for rec in &self.records {
-            if let Some(slash) = rec.path.find('/') {
-                seen.insert(rec.path[..slash].to_string());
-            }
-        }
-        seen.into_iter().collect()
+        self.dirs.iter().cloned().collect()
     }
 
     /// Search by name or type.

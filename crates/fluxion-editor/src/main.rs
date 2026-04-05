@@ -460,9 +460,10 @@ impl EditorInner {
         }
 
         // Deferred scene-save request from menu / toolbar.
-        let mut do_save_scene = false;
-        let mut do_open_scene = false;
-        let mut do_new_scene  = false;
+        let mut do_save_scene  = false;
+        let mut do_open_scene  = false;
+        let mut do_new_scene   = false;
+        let mut do_load_scene: Option<std::path::PathBuf> = None;
 
         let result = self.renderer.render_ui_only(|device, queue, encoder, view| {
             ui_shell.paint(&window, device, queue, encoder, view, w, h, |ctx| {
@@ -552,6 +553,15 @@ impl EditorInner {
                 "rescan_assets"  => {
                     self.host.asset_db.scan(&self.project_root);
                     log::info!("AssetDatabase rescan: {} assets", self.host.asset_db.count());
+                }
+                s if s.starts_with("load_scene:") => {
+                    let rel = &s["load_scene:".len()..];
+                    let path = if std::path::Path::new(rel).is_absolute() {
+                        std::path::PathBuf::from(rel)
+                    } else {
+                        self.project_root.join(rel)
+                    };
+                    do_load_scene = Some(path);
                 }
                 _                => {}
             }
@@ -644,6 +654,9 @@ impl EditorInner {
         }
         if do_new_scene {
             self.new_scene();
+        }
+        if let Some(path) = do_load_scene {
+            self.load_scene_from_path(path);
         }
 
         // _world_ctx drops here, clearing world thread-locals.

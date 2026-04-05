@@ -197,13 +197,93 @@ pub fn draw_component_fields(entity_id, comp_name) {
     }
 }
 
+// ── Asset inspector ───────────────────────────────────────────────────────────
+
+fn asset_type_icon(t) {
+    if t == "texture"  { return "image"; }
+    if t == "model"    { return "box"; }
+    if t == "audio"    { return "music"; }
+    if t == "script"   { return "code"; }
+    if t == "shader"   { return "layers"; }
+    if t == "scene"    { return "film"; }
+    if t == "material" { return "droplet"; }
+    if t == "prefab"   { return "package"; }
+    if t == "json"     { return "file-text"; }
+    "file"
+}
+
+fn draw_asset_inspector(path) {
+    let t     = fluxion::world::asset_type(path.clone());
+    let fname = fluxion::world::asset_filename(path.clone());
+    let guid  = fluxion::world::asset_guid(path.clone());
+    let sz    = fluxion::world::asset_size_display(path.clone());
+    let icon  = asset_type_icon(t.clone());
+    let tags  = fluxion::world::asset_tags(path.clone());
+
+    // ── Heading ───────────────────────────────────────────────────────────
+    fluxion::ui::icon(icon.clone(), 24.0);
+    fluxion::ui::heading(fname);
+    fluxion::ui::separator();
+
+    // ── Metadata rows ─────────────────────────────────────────────────────
+    fluxion::ui::colored_label("Type", 0.55, 0.75, 0.95);
+    fluxion::ui::small(t.clone());
+
+    fluxion::ui::colored_label("Path", 0.55, 0.75, 0.95);
+    fluxion::ui::small(path.clone());
+
+    fluxion::ui::colored_label("Size", 0.55, 0.75, 0.95);
+    fluxion::ui::small(sz);
+
+    if guid != "" {
+        fluxion::ui::colored_label("GUID", 0.55, 0.75, 0.95);
+        fluxion::ui::small(guid);
+    }
+
+    if tags.len() > 0 {
+        let tag_str = "";
+        let ti = 0;
+        while ti < tags.len() {
+            if ti > 0 { tag_str = `${tag_str}, `; }
+            tag_str = `${tag_str}${tags[ti]}`;
+            ti += 1;
+        }
+        fluxion::ui::colored_label("Tags", 0.55, 0.75, 0.95);
+        fluxion::ui::small(tag_str);
+    }
+
+    fluxion::ui::separator();
+
+    // ── Actions ───────────────────────────────────────────────────────────
+    if t == "scene" {
+        if fluxion::ui::icon_button("film", "Open this scene", 14.0) {
+            fluxion::world::load_scene(path.clone());
+        }
+        fluxion::ui::label(" Open Scene");
+    }
+
+    // Deselect button
+    fluxion::ui::separator();
+    if fluxion::ui::button("✕  Deselect##asset_desel") {
+        fluxion::world::clear_selected_asset();
+    }
+}
+
 pub fn panel() {
+    // ── Asset selection takes priority over entity ────────────────────────
+    let asset_sel = fluxion::world::get_selected_asset();
+    if asset_sel != "" {
+        draw_asset_inspector(asset_sel);
+        return;
+    }
+
     let sel = fluxion::world::selected();
 
     if sel == -1 {
         fluxion::ui::label("Nothing selected");
         fluxion::ui::separator();
         fluxion::ui::small("Click an entity in the Hierarchy panel.");
+        fluxion::ui::small("Click an asset in the Assets panel.");
         return;
     }
 

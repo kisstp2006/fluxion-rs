@@ -35,12 +35,14 @@ fn draw_entity_row(id, depth, sel) {
     // Clone before each comparison — Rune snapshots Strings on == use.
     if action.clone() == "select" {
         fluxion::world::set_selected(id);
+        fluxion::world::clear_selected_asset();
     } else if action.clone() == "Delete" {
         fluxion::world::despawn(id);
     } else if action.clone() == "Duplicate" {
         fluxion::world::duplicate_entity(id);
     } else if action.clone() == "Rename" {
         fluxion::world::set_selected(id);
+        fluxion::world::clear_selected_asset();
     } else if action.clone() == "Unparent" {
         fluxion::world::set_parent(id, -1);
     }
