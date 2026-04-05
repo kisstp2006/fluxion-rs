@@ -89,8 +89,13 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
     // Read world-space normal → convert to view space
     let normal_sample  = textureSample(gbuf_normal, tex_samp, in.uv).rgb;
     let world_normal   = normalize(normal_sample * 2.0 - 1.0);
-    // Approximate view-space normal (good enough without full normal matrix)
-    let view_normal    = normalize((camera.view_proj * vec4<f32>(world_normal, 0.0)).xyz);
+    // Use only the rotation part of the view transform (upper-left 3x3 of view matrix).
+    // view_proj = proj * view, so we need just view's rotation. We extract it from
+    // inv_view_proj: the transpose of its upper-left 3x3 gives the view rotation.
+    // Simpler: transform the normal with view_proj as a direction (w=0) and then
+    // un-apply projection distortion by using inv_proj on the result.
+    let view_pos_h     = camera.inv_proj * (camera.view_proj * vec4<f32>(world_normal, 0.0));
+    let view_normal    = normalize(view_pos_h.xyz);
 
     // Random rotation from noise texture (tile 4x4 over screen)
     let noise_uv    = in.uv * (tex_size / 4.0);

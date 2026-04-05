@@ -57,8 +57,8 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
     // Normal matrix is the inverse-transpose of the upper 3×3 of world_matrix.
     // This ensures normals remain perpendicular to surfaces under non-uniform scale.
-    let world_normal   = normalize((model.normal_matrix * vec4<f32>(in.normal,  0.0)).xyz);
-    let world_tangent  = normalize((model.world_matrix  * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
+    let world_normal   = normalize((model.normal_matrix * vec4<f32>(in.normal,      0.0)).xyz);
+    let world_tangent  = normalize((model.normal_matrix * vec4<f32>(in.tangent.xyz, 0.0)).xyz);
 
     // Bitangent: reconstruct from normal × tangent, corrected by the handedness sign
     let world_bitangent = normalize(cross(world_normal, world_tangent) * in.tangent.w);

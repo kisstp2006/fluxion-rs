@@ -165,6 +165,14 @@ fn fresnel_schlick(cos_theta: f32, f0: vec3<f32>) -> vec3<f32> {
     return f0 + (1.0 - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
 }
 
+// Fresnel-Schlick with roughness correction for ambient/IBL.
+// Roughness attenuates the specular peak so rough surfaces don't get
+// overly bright ambient specular highlights.
+fn fresnel_schlick_roughness(cos_theta: f32, f0: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let f_max = vec3<f32>(max(1.0 - roughness, f0.x), max(1.0 - roughness, f0.y), max(1.0 - roughness, f0.z));
+    return f0 + (f_max - f0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+}
+
 // Cook-Torrance BRDF specular contribution for a single light.
 // Returns: (diffuse_brdf, specular_brdf) contributions
 fn cook_torrance(
@@ -293,8 +301,13 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
 
     // ── Ambient (configurable flat ambient from LightBuffer) ─────────────────
     // Tinted by the sky color set from Rust. SSAO multiplies this by occlusion.
-    // For IBL: replace with irradiance cubemap sample here.
-    let ambient = light_buf.ambient_color * light_buf.ambient_intensity * albedo * ao;
+    // Energy-conserving split: diffuse and specular ambient terms.
+    let n_dot_v_amb = max(dot(n, v), 0.0);
+    let f0_amb      = mix(vec3<f32>(0.04), albedo, metalness);
+    let f_amb       = fresnel_schlick_roughness(n_dot_v_amb, f0_amb, roughness);
+    let k_d_amb     = (vec3<f32>(1.0) - f_amb) * (1.0 - metalness);
+    let amb_base    = light_buf.ambient_color * light_buf.ambient_intensity * ao;
+    let ambient     = amb_base * (k_d_amb * albedo + f_amb * (1.0 - roughness) * albedo);
 
     // ── Final composition ─────────────────────────────────────────────────────
     var color = ambient + total_radiance + emission;

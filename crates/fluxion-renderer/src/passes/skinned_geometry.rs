@@ -128,7 +128,7 @@ impl RenderPass for SkinnedGeometryPass {
             ],
         });
 
-        // ── Joint BGL (group 4) ───────────────────────────────────────────────
+        // ── Joint BGL (group 3) ───────────────────────────────────────────────
         let joint_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   Some("sk_geom_joint_bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
