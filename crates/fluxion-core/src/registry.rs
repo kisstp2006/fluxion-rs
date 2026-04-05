@@ -437,6 +437,13 @@ impl ComponentRegistry {
             Ok(())
         });
 
+        // ── Environment ───────────────────────────────────────────────────────
+        self.register("Environment", |_data, world, entity| {
+            use crate::components::environment::Environment;
+            world.add_component(entity, Environment::default());
+            Ok(())
+        });
+
         // ── Reflect accessors for all built-in types ──────────────────────────
         // Allows the editor to read / write component fields at runtime.
         self.register_reflect::<Transform>("Transform");
@@ -454,6 +461,10 @@ impl ComponentRegistry {
         {
             use crate::components::camera_controller::CameraController;
             self.register_reflect::<CameraController>("CameraController");
+        }
+        {
+            use crate::components::environment::Environment;
+            self.register_reflect::<Environment>("Environment");
         }
     }
 }

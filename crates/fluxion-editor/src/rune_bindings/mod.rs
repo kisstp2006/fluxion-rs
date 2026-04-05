@@ -4,6 +4,7 @@ pub mod viewport_module;
 pub mod physics_module;
 pub mod input_module;
 pub mod camera_module;
+pub mod environment_module;
 
 use anyhow::Result;
 use rune::Module;
@@ -17,6 +18,9 @@ pub use world_module::{
 pub use camera_module::{
     set_camera_snapshot, set_camera_world, clear_camera_world,
     drain_camera_edits, CameraSnapshot,
+};
+pub use environment_module::{
+    set_environment_world, clear_environment_world, drain_environment_edits, EnvEdit, EnvEditValue,
 };
 pub use viewport_module::set_viewport_texture;
 pub use physics_module::{set_physics_context, clear_physics_context};
@@ -32,5 +36,6 @@ pub fn all_editor_modules() -> Result<Vec<Module>> {
         fluxion_physics::build_physics_rune_module()?,
         fluxion_audio::build_audio_rune_module()?,
         input_module::build_input_module()?,
+        environment_module::build_environment_module()?,
     ])
 }

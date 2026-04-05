@@ -30,6 +30,7 @@ use crate::rune_bindings::{
     set_audio_context, clear_audio_context,
     set_input_context, clear_input_context,
     set_camera_world, clear_camera_world, drain_camera_edits,
+    set_environment_world, clear_environment_world, drain_environment_edits, EnvEditValue,
 };
 use crate::rune_bindings::world_module::push_log;
 use crate::undo::UndoStack;
@@ -147,6 +148,11 @@ impl EditorHost {
         ct.position = Vec3::ZERO;
         ct.dirty = true;
         world.add_component(cube, ct);
+
+        // Environment — post-processing & ambient/fog settings for the scene
+        let env_go = world.spawn(Some("Environment"));
+        world.add_component(env_go, Transform::new());
+        world.add_component(env_go, fluxion_core::components::environment::Environment::default());
     }
 
     // ── Per-frame tick ────────────────────────────────────────────────────────
@@ -213,6 +219,7 @@ impl EditorHost {
         }
         set_input_context(&mut self.input);
         set_camera_world(&self.world);
+        set_environment_world(&self.world);
         set_world_context(&self.world, &self.registry)
     }
 
@@ -222,10 +229,37 @@ impl EditorHost {
         clear_audio_context();
         clear_input_context();
         clear_camera_world();
+        clear_environment_world();
     }
 
     /// Apply queued field mutations produced by Rune inspector panels.
     fn flush_pending_edits(&mut self) {
+        // Drain environment edits — apply directly to first Environment component.
+        let env_edits = drain_environment_edits();
+        if !env_edits.is_empty() {
+            use fluxion_core::reflect::ReflectValue;
+            use fluxion_core::reflect::Reflect;
+            let mut env_entity = None;
+            self.world.query_active::<&fluxion_core::Environment, _>(|id, _| {
+                if env_entity.is_none() { env_entity = Some(id); }
+            });
+            if let Some(eid) = env_entity {
+                if let Some(mut env) = self.world.get_component_mut::<fluxion_core::Environment>(eid) {
+                    use fluxion_core::reflect::Reflect;
+                    for edit in env_edits {
+                        let rv = match edit.value {
+                            EnvEditValue::F32(f)     => ReflectValue::F32(f),
+                            EnvEditValue::Bool(b)    => ReflectValue::Bool(b),
+                            EnvEditValue::Str(s)     => ReflectValue::Enum(s),
+                            EnvEditValue::Color(c)   => ReflectValue::Color3(c),
+                            EnvEditValue::U32(u)     => ReflectValue::U32(u),
+                        };
+                        let _ = (*env).set_field(&edit.field, rv);
+                    }
+                }
+            }
+        }
+
         // Drain camera-specific edits (direct Camera component field mutations).
         for cam_edit in drain_camera_edits() {
             if let Some(mut cam) = self.world.get_component_mut::<fluxion_core::Camera>(cam_edit.entity) {

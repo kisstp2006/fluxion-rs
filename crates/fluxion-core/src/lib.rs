@@ -34,7 +34,6 @@ pub mod debug_draw;
 pub mod project;
 pub mod registry;
 pub mod reflect;
-// reflect_impls removed — Reflect is now derived via #[derive(Reflect)] on each component.
 
 // Re-export the most commonly used types at the crate root so users
 // can write `use fluxion_core::ECSWorld` instead of the full path.
@@ -63,6 +62,8 @@ pub use components::{Animator, AnimationClip, Skeleton, JointDef, JointChannel, 
 pub use components::AnimationSystem;
 pub use components::{LodGroup, LodLevel, LodSystem};
 pub use components::{CameraController, ControllerType, CameraControllerSystem};
+pub use components::{Environment, ToneMapMode, FogMode, AmbientSettings, FogSettings, ToneMapSettings, DofSettings, VignetteSettings, FilmSettings};
+pub use components::{EnvBloomSettings, EnvSsaoSettings};
 pub use particles::step_particle_emitters;
 pub use color::Color;
 pub use project::{ProjectConfig, ProjectSettings, ProjectPhysicsSettings,

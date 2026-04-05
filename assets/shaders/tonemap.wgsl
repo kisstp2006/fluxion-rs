@@ -18,6 +18,13 @@
 
 // ── Uniforms ──────────────────────────────────────────────────────────────────
 
+// tone_mode constants (match ToneMapMode::as_u32 in Rust)
+const TONE_NONE:     u32 = 0u;
+const TONE_LINEAR:   u32 = 1u;
+const TONE_REINHARD: u32 = 2u;
+const TONE_ACES:     u32 = 3u;
+const TONE_AGX:      u32 = 4u;
+
 struct TonemapParams {
     exposure:             f32,  // EV stops, 1.0 = no change. Multiply before tonemapping.
     vignette_intensity:   f32,  // 0.0 = no vignette, 1.0 = full dark edges
@@ -25,8 +32,8 @@ struct TonemapParams {
     chromatic_aberration: f32,  // Pixel offset of R/B channels at edges. 0.0 = off.
     film_grain:           f32,  // Grain intensity. 0.0 = off, 0.05 = subtle.
     time:                 f32,  // Engine time in seconds (animates film grain)
+    tone_mode:            u32,  // ToneMapMode (0=None 1=Linear 2=Reinhard 3=ACES 4=AgX)
     _pad0:                f32,
-    _pad1:                f32,
 }
 
 @group(0) @binding(0) var<uniform> params:   TonemapParams;
@@ -54,6 +61,43 @@ fn aces_narkowicz(x: vec3<f32>) -> vec3<f32> {
     let d: f32 = 0.59;
     let e: f32 = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Reinhard global tonemapping.
+fn reinhard(x: vec3<f32>) -> vec3<f32> {
+    return x / (x + vec3<f32>(1.0));
+}
+
+// AgX tonemapping — perceptual, neutral highlights (Blender-style).
+// Based on Troy Sobotka's AgX transform, simplified approximation.
+fn agx(x: vec3<f32>) -> vec3<f32> {
+    // Inset matrix (sRGB → AgX log space)
+    let m = mat3x3<f32>(
+        vec3<f32>(0.842479062253094,  0.0423282422610123, 0.0423756549057051),
+        vec3<f32>(0.0784335999999992, 0.878468636469772,  0.0784336),
+        vec3<f32>(0.0792237451477643, 0.0791661274605434, 0.879142973793104),
+    );
+    let min_ev = -12.47393;
+    let max_ev =  4.026069;
+    var v = m * max(x, vec3<f32>(0.0));
+    v = clamp(log2(v + vec3<f32>(0.0000001)), vec3<f32>(min_ev), vec3<f32>(max_ev));
+    v = (v - min_ev) / (max_ev - min_ev);
+    // Sigmoid contrast curve
+    let c1 = -0.202116101926749;
+    let c2 =  0.501825783573368;
+    let c3 =  1.01007777459823;
+    let c4 = -0.0275826090694;
+    let c5 =  0.228086381506378;
+    let t  = v;
+    v = t * (t * (t * (t * c4 + c3) + c2) + c1) + c5;
+    // Outset matrix (AgX log → sRGB)
+    let mi = mat3x3<f32>(
+        vec3<f32>( 1.19687900512661,  -0.0528968517574562, -0.0529716355144492),
+        vec3<f32>(-0.0980208811401368, 1.15190312990417,   -0.0980434501171241),
+        vec3<f32>(-0.0990297440797205, -0.0989611768448433, 1.15107367264116),
+    );
+    v = mi * v;
+    return clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 // ── Film grain (pseudo-random noise) ─────────────────────────────────────────
@@ -127,8 +171,19 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
     // Apply exposure (exposure > 1.0 = brighter, < 1.0 = darker)
     hdr_color *= params.exposure;
 
-    // ACES filmic tonemapping: HDR → LDR
-    var ldr_color = aces_narkowicz(hdr_color);
+    // Tonemapping: HDR → LDR (mode selected from uniform)
+    var ldr_color: vec3<f32>;
+    if params.tone_mode == TONE_NONE {
+        ldr_color = clamp(hdr_color, vec3<f32>(0.0), vec3<f32>(1.0));
+    } else if params.tone_mode == TONE_LINEAR {
+        ldr_color = clamp(hdr_color, vec3<f32>(0.0), vec3<f32>(1.0));
+    } else if params.tone_mode == TONE_REINHARD {
+        ldr_color = reinhard(hdr_color);
+    } else if params.tone_mode == TONE_AGX {
+        ldr_color = agx(hdr_color);
+    } else {
+        ldr_color = aces_narkowicz(hdr_color);
+    }
 
     // Gamma correction: linear → sRGB
     // sRGB exact transfer function would use pow(x, 1/2.4) for x > 0.0031308,

@@ -22,6 +22,7 @@ pub mod camera_controller;
 pub mod animator;
 pub mod animation_system;
 pub mod lod;
+pub mod environment;
 
 pub use mesh_renderer::MeshRenderer;
 pub use camera::{Camera, ProjectionMode, ClearFlags};
@@ -32,3 +33,4 @@ pub use camera_controller::{CameraController, ControllerType, CameraControllerSy
 pub use animator::{Animator, AnimationClip, Skeleton, JointDef, JointChannel, KeyframeVec3, KeyframeQuat, MAX_JOINTS};
 pub use animation_system::AnimationSystem;
 pub use lod::{LodGroup, LodLevel, LodSystem};
+pub use environment::{Environment, ToneMapMode, FogMode, AmbientSettings, FogSettings, ToneMapSettings, BloomSettings as EnvBloomSettings, SsaoSettings as EnvSsaoSettings, DofSettings, VignetteSettings, FilmSettings};

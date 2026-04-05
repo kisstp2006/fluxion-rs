@@ -1,0 +1,244 @@
+// ============================================================
+// environment.rn — Environment / Post-Processing inspector panel
+//
+// Shows when the selected entity has an Environment component.
+// Also accessible as a standalone panel tab for scene-wide settings.
+//
+// Unity analogy: combines RenderSettings + PostProcessVolume UI.
+// ============================================================
+
+pub mod environment {
+
+pub fn panel() {
+    let sel = fluxion::world::selected();
+
+    // Check if the selected entity has an Environment component
+    let has_env = false;
+    if sel != -1 {
+        let comps = fluxion::world::component_types(sel);
+        for c in comps {
+            if c == "Environment" {
+                has_env = true;
+            }
+        }
+    }
+
+    if !has_env {
+        fluxion::ui::label("No Environment component in scene.");
+        fluxion::ui::separator();
+        fluxion::ui::small("Add an Environment component to an entity to control post-processing.");
+        return;
+    }
+
+    fluxion::ui::heading("Environment");
+    fluxion::ui::separator();
+
+    // ── Ambient ───────────────────────────────────────────────────────────────
+    if fluxion::ui::collapsing_begin("Ambient Light") {
+        let col = fluxion::environment::get_ambient_color();
+        let nc = fluxion::ui::color3("Color##ambient", col[0], col[1], col[2]);
+        if nc[0] != col[0] || nc[1] != col[1] || nc[2] != col[2] {
+            fluxion::environment::set_ambient_color(nc[0], nc[1], nc[2]);
+        }
+
+        let intensity = fluxion::environment::get_ambient_intensity();
+        let ni = fluxion::ui::drag_float("Intensity##ambient", intensity, 0.01, 0.0, 5.0);
+        if ni != intensity {
+            fluxion::environment::set_ambient_intensity(ni);
+        }
+    }
+
+    // ── Fog ───────────────────────────────────────────────────────────────────
+    if fluxion::ui::collapsing_begin("Fog") {
+        let fog_on = fluxion::environment::get_fog_enabled();
+        let new_fog_on = fluxion::ui::checkbox("Enabled##fog", fog_on);
+        if new_fog_on != fog_on {
+            fluxion::environment::set_fog_enabled(new_fog_on);
+        }
+
+        if fog_on {
+            let fc = fluxion::environment::get_fog_color();
+            let nfc = fluxion::ui::color3("Color##fog", fc[0], fc[1], fc[2]);
+            if nfc[0] != fc[0] || nfc[1] != fc[1] || nfc[2] != fc[2] {
+                fluxion::environment::set_fog_color(nfc[0], nfc[1], nfc[2]);
+            }
+
+            let mode = fluxion::environment::get_fog_mode();
+            let modes = ["Exponential", "Linear"];
+            let nm = fluxion::ui::combo_box("Mode##fog", modes);
+            if nm != "" && nm != mode {
+                fluxion::environment::set_fog_mode(nm);
+            }
+
+            let cur_mode = fluxion::environment::get_fog_mode();
+            if cur_mode == "Exponential" {
+                let density = fluxion::environment::get_fog_density();
+                let nd = fluxion::ui::drag_float("Density##fog", density, 0.0001, 0.0, 0.1);
+                if nd != density {
+                    fluxion::environment::set_fog_density(nd);
+                }
+            } else {
+                let near = fluxion::environment::get_fog_near();
+                let nn = fluxion::ui::drag_float("Near##fog", near, 0.5, 0.0, 1000.0);
+                if nn != near {
+                    fluxion::environment::set_fog_near(nn);
+                }
+                let far = fluxion::environment::get_fog_far();
+                let nf = fluxion::ui::drag_float("Far##fog", far, 1.0, 0.0, 5000.0);
+                if nf != far {
+                    fluxion::environment::set_fog_far(nf);
+                }
+            }
+        }
+    }
+
+    // ── Tonemapping ───────────────────────────────────────────────────────────
+    if fluxion::ui::collapsing_begin("Tonemapping") {
+        let mode = fluxion::environment::get_tone_mode();
+        let tone_modes = ["None", "Linear", "Reinhard", "Aces", "AgX"];
+        let nm = fluxion::ui::combo_box("Mode##tone", tone_modes);
+        if nm != "" && nm != mode {
+            fluxion::environment::set_tone_mode(nm);
+        }
+
+        let exp = fluxion::environment::get_exposure();
+        let ne = fluxion::ui::drag_float("Exposure##tone", exp, 0.01, 0.0, 5.0);
+        if ne != exp {
+            fluxion::environment::set_exposure(ne);
+        }
+    }
+
+    // ── Bloom ─────────────────────────────────────────────────────────────────
+    if fluxion::ui::collapsing_begin("Bloom") {
+        let bloom_on = fluxion::environment::get_bloom_enabled();
+        let nb = fluxion::ui::checkbox("Enabled##bloom", bloom_on);
+        if nb != bloom_on {
+            fluxion::environment::set_bloom_enabled(nb);
+        }
+
+        if bloom_on {
+            let thr = fluxion::environment::get_bloom_threshold();
+            let nt = fluxion::ui::drag_float("Threshold##bloom", thr, 0.01, 0.0, 3.0);
+            if nt != thr {
+                fluxion::environment::set_bloom_threshold(nt);
+            }
+
+            let str = fluxion::environment::get_bloom_strength();
+            let ns = fluxion::ui::drag_float("Strength##bloom", str, 0.01, 0.0, 3.0);
+            if ns != str {
+                fluxion::environment::set_bloom_strength(ns);
+            }
+
+            let sk = fluxion::environment::get_bloom_soft_knee();
+            let nsk = fluxion::ui::drag_float("Soft Knee##bloom", sk, 0.01, 0.0, 1.0);
+            if nsk != sk {
+                fluxion::environment::set_bloom_soft_knee(nsk);
+            }
+
+            let passes = fluxion::environment::get_bloom_blur_passes();
+            let np = fluxion::ui::drag_int("Blur Passes##bloom", passes);
+            if np != passes {
+                fluxion::environment::set_bloom_blur_passes(np);
+            }
+        }
+    }
+
+    // ── SSAO ──────────────────────────────────────────────────────────────────
+    if fluxion::ui::collapsing_begin("SSAO") {
+        let ssao_on = fluxion::environment::get_ssao_enabled();
+        let ns = fluxion::ui::checkbox("Enabled##ssao", ssao_on);
+        if ns != ssao_on {
+            fluxion::environment::set_ssao_enabled(ns);
+        }
+
+        if ssao_on {
+            let r = fluxion::environment::get_ssao_radius();
+            let nr = fluxion::ui::drag_float("Radius##ssao", r, 0.01, 0.05, 5.0);
+            if nr != r {
+                fluxion::environment::set_ssao_radius(nr);
+            }
+
+            let b = fluxion::environment::get_ssao_bias();
+            let nb = fluxion::ui::drag_float("Bias##ssao", b, 0.001, 0.0, 0.5);
+            if nb != b {
+                fluxion::environment::set_ssao_bias(nb);
+            }
+
+            let i = fluxion::environment::get_ssao_intensity();
+            let ni = fluxion::ui::drag_float("Intensity##ssao", i, 0.05, 0.0, 5.0);
+            if ni != i {
+                fluxion::environment::set_ssao_intensity(ni);
+            }
+        }
+    }
+
+    // ── Depth of Field (stored; pass NYI) ────────────────────────────────────
+    if fluxion::ui::collapsing_begin("Depth of Field") {
+        fluxion::ui::small("(Pass not yet implemented — values stored for future use)");
+        let dof_on = fluxion::environment::get_dof_enabled();
+        let nd = fluxion::ui::checkbox("Enabled##dof", dof_on);
+        if nd != dof_on {
+            fluxion::environment::set_dof_enabled(nd);
+        }
+
+        if dof_on {
+            let fd = fluxion::environment::get_dof_focus_dist();
+            let nfd = fluxion::ui::drag_float("Focus Distance##dof", fd, 0.5, 0.1, 500.0);
+            if nfd != fd {
+                fluxion::environment::set_dof_focus_dist(nfd);
+            }
+
+            let ap = fluxion::environment::get_dof_aperture();
+            let nap = fluxion::ui::drag_float("Aperture##dof", ap, 0.001, 0.0, 0.5);
+            if nap != ap {
+                fluxion::environment::set_dof_aperture(nap);
+            }
+
+            let mb = fluxion::environment::get_dof_max_blur();
+            let nmb = fluxion::ui::drag_float("Max Blur##dof", mb, 0.5, 0.0, 30.0);
+            if nmb != mb {
+                fluxion::environment::set_dof_max_blur(nmb);
+            }
+        }
+    }
+
+    // ── Vignette ──────────────────────────────────────────────────────────────
+    if fluxion::ui::collapsing_begin("Vignette") {
+        let vig_on = fluxion::environment::get_vignette_enabled();
+        let nv = fluxion::ui::checkbox("Enabled##vignette", vig_on);
+        if nv != vig_on {
+            fluxion::environment::set_vignette_enabled(nv);
+        }
+
+        if vig_on {
+            let intensity = fluxion::environment::get_vignette_intensity();
+            let ni = fluxion::ui::drag_float("Intensity##vignette", intensity, 0.01, 0.0, 2.0);
+            if ni != intensity {
+                fluxion::environment::set_vignette_intensity(ni);
+            }
+
+            let rnd = fluxion::environment::get_vignette_roundness();
+            let nr = fluxion::ui::drag_float("Roundness##vignette", rnd, 0.01, 0.0, 1.0);
+            if nr != rnd {
+                fluxion::environment::set_vignette_roundness(nr);
+            }
+        }
+    }
+
+    // ── Film Effects ──────────────────────────────────────────────────────────
+    if fluxion::ui::collapsing_begin("Film Effects") {
+        let ca = fluxion::environment::get_chromatic_aberration();
+        let nca = fluxion::ui::drag_float("Chromatic Aberration##film", ca, 0.1, 0.0, 10.0);
+        if nca != ca {
+            fluxion::environment::set_chromatic_aberration(nca);
+        }
+
+        let grain = fluxion::environment::get_film_grain();
+        let ng = fluxion::ui::drag_float("Film Grain##film", grain, 0.005, 0.0, 1.0);
+        if ng != grain {
+            fluxion::environment::set_film_grain(ng);
+        }
+    }
+}
+
+}

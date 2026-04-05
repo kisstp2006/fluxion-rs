@@ -19,8 +19,9 @@ pub struct TonemapConfig {
     pub chromatic_aberration: f32,
     pub film_grain:           f32,
     pub time:                 f32,
+    /// ToneMapMode as u32: 0=None 1=Linear 2=Reinhard 3=ACES 4=AgX
+    pub tone_mode:            u32,
     pub _pad0:                f32,
-    pub _pad1:                f32,
 }
 
 impl Default for TonemapConfig {
@@ -32,7 +33,8 @@ impl Default for TonemapConfig {
             chromatic_aberration: 0.5,
             film_grain:           0.02,
             time:                 0.0,
-            _pad0: 0.0, _pad1: 0.0,
+            tone_mode:            3, // ACES by default
+            _pad0:                0.0,
         }
     }
 }

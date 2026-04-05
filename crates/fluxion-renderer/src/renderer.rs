@@ -29,6 +29,7 @@ use fluxion_core::{
     Color,
     assets,
     components::{Camera, Light, MeshRenderer, ParticleEmitter, RigidBody, PhysicsShape},
+    components::environment::Environment,
     components::light::LightType,
     components::camera::ProjectionMode,
     scene::SceneSettings,
@@ -319,6 +320,38 @@ impl FluxionRenderer {
         self.render_graph.set_enabled("particles", config.passes.particles);
 
         self.config = config;
+    }
+
+    /// Apply post-processing overrides from an active [`Environment`] component.
+    ///
+    /// Called once per frame from `render_to_viewport` / `render` when an
+    /// Environment component is present in the scene.
+    fn apply_environment(&mut self, env: &Environment) {
+        use crate::passes::{BloomPass, TonemapPass, SsaoPass};
+
+        if let Some(bloom) = self.render_graph.get_pass_mut::<BloomPass>("bloom") {
+            bloom.config.enabled     = env.bloom.enabled;
+            bloom.config.threshold   = env.bloom.threshold;
+            bloom.config.soft_knee   = env.bloom.soft_knee;
+            bloom.config.strength    = env.bloom.strength;
+            bloom.config.blur_passes = env.bloom.blur_passes;
+        }
+        if let Some(tonemap) = self.render_graph.get_pass_mut::<TonemapPass>("tonemap") {
+            tonemap.config.exposure             = env.tonemap.exposure;
+            tonemap.config.tone_mode            = env.tonemap.mode.as_u32();
+            tonemap.config.vignette_intensity   = if env.vignette.enabled { env.vignette.intensity } else { 0.0 };
+            tonemap.config.vignette_roundness   = env.vignette.roundness;
+            tonemap.config.chromatic_aberration = env.film.chromatic_aberration;
+            tonemap.config.film_grain           = env.film.film_grain;
+        }
+        if let Some(ssao) = self.render_graph.get_pass_mut::<SsaoPass>("ssao") {
+            ssao.enabled   = env.ssao.enabled;
+            ssao.radius    = env.ssao.radius;
+            ssao.bias      = env.ssao.bias;
+            ssao.intensity = env.ssao.intensity;
+        }
+        self.render_graph.set_enabled("ssao",  env.ssao.enabled);
+        self.render_graph.set_enabled("bloom", env.bloom.enabled);
     }
 
     /// Apply global scene file settings (ambient, fog, gravity vector, skybox path placeholder).
@@ -742,15 +775,37 @@ impl FluxionRenderer {
 
         let frame = self.extract_frame_data(world, time);
 
+        // ── Apply Environment component overrides ─────────────────────────────
+        // Query the first active Environment component; if found, its settings
+        // override the global RendererConfig + scene_settings for this frame.
+        let mut env_override: Option<Environment> = None;
+        world.query_active::<&Environment, _>(|_, env| {
+            if env_override.is_none() {
+                env_override = Some(env.clone());
+            }
+        });
+        if let Some(ref env) = env_override {
+            self.apply_environment(env);
+        }
+
         let mut light_data = LightBufferData::new();
         for light in &frame.lights { light_data.push(*light); }
-        let s = &self.scene_settings;
-        light_data.ambient_color     = s.ambient_color;
-        light_data.ambient_intensity = s.ambient_intensity;
-        light_data.fog_color         = s.fog_color;
-        light_data.fog_density       = s.fog_density;
-        light_data.fog_enabled       = u32::from(s.fog_enabled);
-        light_data._fog_pad          = [0; 3];
+        // Prefer Environment ambient/fog if present, else fall back to scene_settings.
+        if let Some(ref env) = env_override {
+            light_data.ambient_color     = env.ambient.color;
+            light_data.ambient_intensity = env.ambient.intensity;
+            light_data.fog_color         = env.fog.color;
+            light_data.fog_density       = env.fog.density;
+            light_data.fog_enabled       = u32::from(env.fog.enabled);
+        } else {
+            let s = &self.scene_settings;
+            light_data.ambient_color     = s.ambient_color;
+            light_data.ambient_intensity = s.ambient_intensity;
+            light_data.fog_color         = s.fog_color;
+            light_data.fog_density       = s.fog_density;
+            light_data.fog_enabled       = u32::from(s.fog_enabled);
+        }
+        light_data._fog_pad = [0; 3];
         self.light_buffer.upload(&self.queue, &light_data);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
