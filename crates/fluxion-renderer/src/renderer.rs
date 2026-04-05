@@ -104,6 +104,10 @@ pub struct FluxionRenderer {
     /// Offscreen render target for the editor viewport panel.
     /// Recreated automatically when the window is resized.
     pub viewport_texture: Option<GpuTexture>,
+
+    /// Last frame's camera matrices — cached for use by editor gizmos.
+    pub last_view_matrix: glam::Mat4,
+    pub last_proj_matrix: glam::Mat4,
 }
 
 impl FluxionRenderer {
@@ -265,6 +269,8 @@ impl FluxionRenderer {
             width: w, height: h,
             gizmos_enabled: false,
             viewport_texture: None,
+            last_view_matrix: glam::Mat4::IDENTITY,
+            last_proj_matrix: glam::Mat4::IDENTITY,
         })
     }
 
@@ -878,6 +884,9 @@ impl FluxionRenderer {
     fn extract_frame_data(&mut self, world: &ECSWorld, time: &Time) -> FrameData {
         // ── Camera ────────────────────────────────────────────────────────────
         let camera = self.extract_camera(world);
+        // Cache for editor gizmo overlay.
+        self.last_view_matrix = camera.view;
+        self.last_proj_matrix = camera.projection;
 
         // ── Mesh draw calls ───────────────────────────────────────────────────
         let mut draw_calls: Vec<MeshDrawCall> = Vec::new();

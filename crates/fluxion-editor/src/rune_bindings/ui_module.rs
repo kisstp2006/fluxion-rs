@@ -2,28 +2,28 @@
 // ui_module.rs — fluxion::ui Rune module
 //
 // Wraps a subset of egui widgets as native Rune functions.
-// Access to the current `egui::Ui` is provided through a
-// thread-local raw pointer that is set/cleared by dock.rs
-// around each Rune panel call (always synchronous — no Send needed).
+// All String parameters use Ref<str> so Rune does NOT snapshot
+// the caller's variable — prevents M-000000 AccessError.
 // ============================================================
 
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 
-use rune::Module;
+use rune::{Module, runtime::Ref};
 
 thread_local! {
     static CURRENT_UI: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
     /// Stored response from the last `image_interactive` call.
-    /// Used by gizmo queries (drag delta, hover, painter).
     static VP_RESPONSE: RefCell<Option<egui::Response>> = RefCell::new(None);
     /// Stored rect of the viewport image for coordinate conversion.
-    static VP_RECT: Cell<egui::Rect> = Cell::new(egui::Rect::NOTHING);
+    pub static VP_RECT: Cell<egui::Rect> = Cell::new(egui::Rect::NOTHING);
 }
 
-/// RAII guard returned by `set_current_ui`.
-/// Clears the `CURRENT_UI` thread-local on drop, even if a panic unwinds
-/// through the panel call.
+/// Returns the last viewport image rect (set by `image_interactive`).
+pub fn get_viewport_rect() -> egui::Rect {
+    VP_RECT.with(|c| c.get())
+}
+
 pub struct UiContextGuard;
 
 impl Drop for UiContextGuard {
@@ -32,25 +32,17 @@ impl Drop for UiContextGuard {
     }
 }
 
-/// Set the active UI context before calling a Rune panel function.
-/// Returns a `UiContextGuard` that clears the pointer on drop.
-///
-/// # Safety
-/// The caller guarantees that `ui` outlives the returned guard.
 pub fn set_current_ui(ui: &mut egui::Ui) -> UiContextGuard {
     CURRENT_UI.with(|c| c.set(Some(NonNull::from(ui))));
     UiContextGuard
 }
 
-/// Clear the active UI context immediately.
-/// Prefer holding the `UiContextGuard` from `set_current_ui` instead.
 pub fn clear_current_ui() {
     CURRENT_UI.with(|c| c.set(None));
 }
 
 fn with_ui<R>(f: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
     CURRENT_UI.with(|c| {
-        // SAFETY: pointer is valid for the duration of the panel call.
         c.get().map(|mut ptr| unsafe { f(ptr.as_mut()) })
     })
 }
@@ -60,16 +52,16 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     // ── Basic text ────────────────────────────────────────────────────────────
 
-    m.function("label", |text: String| {
-        with_ui(|ui| { ui.label(text); });
+    m.function("label", |text: Ref<str>| {
+        with_ui(|ui| { ui.label(text.as_ref()); });
     }).build()?;
 
-    m.function("heading", |text: String| {
-        with_ui(|ui| { ui.heading(text); });
+    m.function("heading", |text: Ref<str>| {
+        with_ui(|ui| { ui.heading(text.as_ref()); });
     }).build()?;
 
-    m.function("small", |text: String| {
-        with_ui(|ui| { ui.small(text); });
+    m.function("small", |text: Ref<str>| {
+        with_ui(|ui| { ui.small(text.as_ref()); });
     }).build()?;
 
     m.function("separator", || {
@@ -82,79 +74,79 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     // ── Interactive widgets ───────────────────────────────────────────────────
 
-    m.function("button", |label: String| -> bool {
-        with_ui(|ui| ui.button(&label).clicked()).unwrap_or(false)
+    m.function("button", |label: Ref<str>| -> bool {
+        with_ui(|ui| ui.button(label.as_ref()).clicked()).unwrap_or(false)
     }).build()?;
 
-    m.function("checkbox", |label: String, value: bool| -> bool {
+    m.function("checkbox", |label: Ref<str>, value: bool| -> bool {
         with_ui(|ui| {
             let mut v = value;
-            ui.checkbox(&mut v, &label);
+            ui.checkbox(&mut v, label.as_ref());
             v
         }).unwrap_or(value)
     }).build()?;
 
-    m.function("drag_float", |label: String, value: f64, speed: f64, min: f64, max: f64| -> f64 {
+    m.function("drag_float", |label: Ref<str>, value: f64, speed: f64, min: f64, max: f64| -> f64 {
         with_ui(|ui| {
             let mut v = value as f32;
             ui.add(
                 egui::DragValue::new(&mut v)
                     .speed(speed as f32)
                     .range(min as f32..=max as f32)
-                    .prefix(format!("{label}: ")),
+                    .prefix(format!("{}: ", label.as_ref())),
             );
             v as f64
         }).unwrap_or(value)
     }).build()?;
 
-    m.function("drag_int", |label: String, value: i64| -> i64 {
+    m.function("drag_int", |label: Ref<str>, value: i64| -> i64 {
         with_ui(|ui| {
             let mut v = value as i32;
-            ui.add(egui::DragValue::new(&mut v).prefix(format!("{label}: ")));
+            ui.add(egui::DragValue::new(&mut v).prefix(format!("{}: ", label.as_ref())));
             v as i64
         }).unwrap_or(value)
     }).build()?;
 
-    m.function("slider_float", |label: String, value: f64, min: f64, max: f64| -> f64 {
+    m.function("slider_float", |label: Ref<str>, value: f64, min: f64, max: f64| -> f64 {
         with_ui(|ui| {
             let mut v = value as f32;
             ui.horizontal(|ui| {
-                ui.label(&label);
+                ui.label(label.as_ref());
                 ui.add(egui::Slider::new(&mut v, min as f32..=max as f32));
             });
             v as f64
         }).unwrap_or(value)
     }).build()?;
 
-    m.function("input_text", |label: String, value: String| -> String {
+    m.function("input_text", |label: Ref<str>, value: Ref<str>| -> String {
         with_ui(|ui| {
-            let mut v = value.clone();
+            let mut v = value.as_ref().to_string();
             ui.horizontal(|ui| {
-                ui.label(&label);
+                ui.label(label.as_ref());
                 ui.text_edit_singleline(&mut v);
             });
             v
-        }).unwrap_or(value)
+        }).unwrap_or_else(|| value.as_ref().to_string())
     }).build()?;
 
     // ── Color pickers ─────────────────────────────────────────────────────────
 
-    m.function("color3", |label: String, r: f64, g: f64, b: f64| -> Vec<f64> {
+    m.function("color3", |label: Ref<str>, r: f64, g: f64, b: f64| -> Vec<f64> {
         with_ui(|ui| {
             let mut c = [r as f32, g as f32, b as f32];
             ui.horizontal(|ui| {
-                ui.label(&label);
+                ui.label(label.as_ref());
                 ui.color_edit_button_rgb(&mut c);
             });
             vec![c[0] as f64, c[1] as f64, c[2] as f64]
         }).unwrap_or_else(|| vec![r, g, b])
     }).build()?;
 
-    m.function("color4", |label: String, r: f64, g: f64, b: f64, a: f64| -> Vec<f64> {
+    m.function("color4", |label: Ref<str>, r: f64, g: f64, b: f64, a: f64| -> Vec<f64> {
         with_ui(|ui| {
             let mut c = [r as f32, g as f32, b as f32, a as f32];
             ui.horizontal(|ui| {
-                ui.label(&label);
+                ui.label(label.as_ref());
                 ui.color_edit_button_rgba_unmultiplied(&mut c);
             });
             vec![c[0] as f64, c[1] as f64, c[2] as f64, c[3] as f64]
@@ -163,11 +155,9 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     // ── Layout helpers ────────────────────────────────────────────────────────
 
-    /// Begin a collapsing section. Returns true if the section is open.
-    /// Pair with collapsing_end() for visual symmetry in Rune code.
-    m.function("collapsing_begin", |label: String| -> bool {
+    m.function("collapsing_begin", |label: Ref<str>| -> bool {
         with_ui(|ui| {
-            let id = ui.make_persistent_id(&label);
+            let id = ui.make_persistent_id(label.as_ref());
             let is_open = ui.memory_mut(|m| {
                 m.data.get_persisted::<bool>(id).unwrap_or(true)
             });
@@ -183,23 +173,14 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or(false)
     }).build()?;
 
-    m.function("collapsing_end", || {
-        // Semantic end-marker — no-op in Rust.
-    }).build()?;
-
-    m.function("horizontal_begin", || {
-        // Horizontal layout is handled per-widget; this is a no-op placeholder.
-    }).build()?;
-
+    m.function("collapsing_end", || {}).build()?;
+    m.function("horizontal_begin", || {}).build()?;
     m.function("horizontal_end", || {}).build()?;
-
-    // ── Scroll area helpers (no-op stubs — scroll is automatic in egui) ────────
     m.function("scroll_begin", || {}).build()?;
     m.function("scroll_end",   || {}).build()?;
 
     // ── Viewport image ────────────────────────────────────────────────────────
-    // texture_id is the raw u64 from egui::TextureId::Managed (cast to i64 for Rune).
-    // Pass width=0, height=0 to auto-fill available space.
+
     m.function("image", |texture_id: i64, w: f64, h: f64| {
         with_ui(|ui| {
             if texture_id < 0 { return; }
@@ -218,12 +199,9 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
-    // ── Entity row (selectable + right-click context menu) ────────────────────
-    // Returns: "" (no action), "select" (left-clicked),
-    //          "Rename", "Duplicate", or "Delete" (menu item chosen).
-    m.function("entity_row", |label: String, _selected: bool| -> String {
+    m.function("entity_row", |label: Ref<str>, _selected: bool| -> String {
         with_ui(|ui| {
-            if ui.button(label.as_str()).clicked() {
+            if ui.button(label.as_ref()).clicked() {
                 "select".to_string()
             } else {
                 String::new()
@@ -231,8 +209,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or_default()
     }).build()?;
 
-    // ── Colored label ─────────────────────────────────────────────────────────
-    m.function("colored_label", |text: String, r: f64, g: f64, b: f64| {
+    m.function("colored_label", |text: Ref<str>, r: f64, g: f64, b: f64| {
         with_ui(|ui| {
             ui.colored_label(
                 egui::Color32::from_rgb(
@@ -240,17 +217,15 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     (g * 255.0) as u8,
                     (b * 255.0) as u8,
                 ),
-                &text,
+                text.as_ref(),
             );
         });
     }).build()?;
 
-    // ── Selectable with right-click context menu ───────────────────────────────
-    // Returns "" (no action), "select" (left-clicked), or the menu item string.
-    m.function("selectable_with_menu", |label: String, selected: bool, items: Vec<String>| -> String {
+    m.function("selectable_with_menu", |label: Ref<str>, selected: bool, items: Vec<String>| -> String {
         with_ui(|ui| {
             let mut action = String::new();
-            let response = ui.selectable_label(selected, &label);
+            let response = ui.selectable_label(selected, label.as_ref());
             response.context_menu(|ui| {
                 for item in &items {
                     if ui.button(item).clicked() {
@@ -267,13 +242,11 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or_default()
     }).build()?;
 
-    // ── Combo box ─────────────────────────────────────────────────────────────
-    // Returns the selected item string, or "" if nothing was chosen this frame.
-    m.function("combo_box", |label: String, items: Vec<String>| -> String {
+    m.function("combo_box", |label: Ref<str>, items: Vec<String>| -> String {
         with_ui(|ui| {
             let mut chosen = String::new();
-            egui::ComboBox::from_label(&label)
-                .selected_text(&label)
+            egui::ComboBox::from_label(label.as_ref())
+                .selected_text(label.as_ref())
                 .show_ui(ui, |ui| {
                     for item in &items {
                         if ui.selectable_label(false, item).clicked() {
@@ -286,6 +259,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     }).build()?;
 
     // ── Size query ────────────────────────────────────────────────────────────
+
     m.function("available_width", || -> f64 {
         with_ui(|ui| ui.available_width() as f64).unwrap_or(0.0)
     }).build()?;
@@ -294,13 +268,11 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         with_ui(|ui| ui.available_height() as f64).unwrap_or(0.0)
     }).build()?;
 
-    // ── Interactive viewport image (stores response for gizmo queries) ─────────
-    // Returns [rect_x, rect_y, rect_w, rect_h] of the rendered image.
+    // ── Interactive viewport image ────────────────────────────────────────────
+
     m.function("image_interactive", |texture_id: i64, w: f64, h: f64| -> Vec<f64> {
         with_ui(|ui| {
-            if texture_id < 0 {
-                return vec![0.0f64; 4];
-            }
+            if texture_id < 0 { return vec![0.0f64; 4]; }
             let raw = texture_id as u64;
             let tid = if (raw >> 62) & 1 == 1 {
                 egui::TextureId::User(raw & !(1u64 << 62))
@@ -323,7 +295,6 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or_else(|| vec![0.0f64; 4])
     }).build()?;
 
-    // Returns [drag_dx, drag_dy] for the last image_interactive widget.
     m.function("viewport_drag_delta", || -> Vec<f64> {
         let delta = VP_RESPONSE.with(|r| {
             r.borrow().as_ref().map(|resp| resp.drag_delta())
@@ -331,21 +302,18 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         vec![delta.x as f64, delta.y as f64]
     }).build()?;
 
-    // Returns true if the mouse is hovering the viewport image.
     m.function("viewport_hovered", || -> bool {
         VP_RESPONSE.with(|r| {
             r.borrow().as_ref().map(|resp| resp.hovered()).unwrap_or(false)
         })
     }).build()?;
 
-    // Returns true if the mouse is pressed/dragging on the viewport image.
     m.function("viewport_dragging", || -> bool {
         VP_RESPONSE.with(|r| {
             r.borrow().as_ref().map(|resp| resp.dragged()).unwrap_or(false)
         })
     }).build()?;
 
-    // Returns [mouse_x, mouse_y] relative to viewport image top-left (pixels).
     m.function("viewport_mouse_pos", || -> Vec<f64> {
         VP_RESPONSE.with(|r| {
             r.borrow().as_ref().and_then(|resp| resp.hover_pos()).map(|p| {
@@ -355,9 +323,6 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or_else(|| vec![-1.0, -1.0])
     }).build()?;
 
-    // Draw a line overlay on top of the viewport.
-    // pts = [x1, y1, x2, y2] (viewport-relative pixels)
-    // style = [r, g, b, a, thickness]
     m.function("painter_line", |pts: Vec<f64>, style: Vec<f64>| {
         if pts.len() < 4 || style.len() < 5 { return; }
         VP_RESPONSE.with(|resp_ref| {
@@ -380,8 +345,6 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
-    // Draw an arrow from (sx,sy) to (ex,ey) with arrowhead.
-    // pts = [sx, sy, ex, ey]; style = [r, g, b, thickness]
     m.function("painter_arrow", |pts: Vec<f64>, style: Vec<f64>| {
         if pts.len() < 4 || style.len() < 4 { return; }
         VP_RESPONSE.with(|resp_ref| {

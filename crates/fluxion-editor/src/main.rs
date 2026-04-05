@@ -14,6 +14,7 @@ mod theme;
 mod toolbar;
 mod ui_shell;
 mod undo;
+mod viewport_gizmo;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -91,6 +92,9 @@ struct EditorInner {
     editor_mode:    EditorMode,
     transform_tool: TransformTool,
     modifiers:      ModifiersState,
+
+    // Per-frame gizmo drag state (persisted between frames)
+    gizmo_drag: viewport_gizmo::GizmoDragState,
 
     // Applied once on the first frame; egui theme is static for the session.
     theme_applied:  bool,
@@ -286,6 +290,7 @@ impl EditorApp {
             editor_mode:    EditorMode::Editing,
             transform_tool: TransformTool::Translate,
             modifiers:      ModifiersState::empty(),
+            gizmo_drag:     viewport_gizmo::GizmoDragState::default(),
             theme_applied:  false,
         };
 
@@ -321,19 +326,6 @@ impl EditorInner {
         // Push frame time for the debugger panel.
         crate::rune_bindings::set_frame_time(self.host.time.dt as f64 * 1000.0);
 
-        // Clear per-frame gizmo state and sync transform tool to gizmo module.
-        crate::rune_bindings::clear_gizmo_frame();
-        {
-            use crate::toolbar::TransformTool;
-            use crate::rune_bindings::gizmo_module::TOOL_MODE;
-            let tool_str = match self.transform_tool {
-                TransformTool::Translate => "translate",
-                TransformTool::Rotate    => "rotate",
-                TransformTool::Scale     => "scale",
-            };
-            TOOL_MODE.with(|t| *t.borrow_mut() = tool_str.to_string());
-        }
-
         // Render 3-D scene to offscreen viewport texture.
         if let Err(e) = self.renderer.render_to_viewport(&self.host.world, &self.host.time) {
             log::error!("render_to_viewport: {e}");
@@ -358,12 +350,23 @@ impl EditorInner {
         let h      = self.renderer.height;
         let window = self.window.clone();
 
+        // Pre-extract gizmo data (selected entity world pos + camera matrices)
+        let gizmo_view = self.renderer.last_view_matrix;
+        let gizmo_proj = self.renderer.last_proj_matrix;
+        let gizmo_sel_pos: Option<glam::Vec3> = {
+            use fluxion_core::transform::Transform;
+            crate::rune_bindings::get_selected_id()
+                .and_then(|id| self.host.world.get_component::<Transform>(id)
+                    .map(|t| t.world_position))
+        };
+
         let ui_shell        = &mut self.ui_shell;
         let dock_state      = &mut self.dock_state;
         let vm              = &mut self.host.vm;
         let editor_mode     = &mut self.editor_mode;
         let transform_tool  = &mut self.transform_tool;
         let theme_applied   = &mut self.theme_applied;
+        let gizmo_drag      = &mut self.gizmo_drag;
         let project         = &self.project;
         let scene_path      = &self.scene_path;
         let scene_dirty     = self.scene_dirty;
@@ -441,11 +444,55 @@ impl EditorInner {
 
                 // ── Dock area ───────────────────────────────────────────────
                 show_dock(ctx, dock_state, vm);
+
+                // ── Viewport gizmo overlay ───────────────────────────────────
+                // VP_RECT is set by viewport.rn after image_interactive.
+                // We read it here and overlay the gizmo using an egui Area.
+                let vp_rect = crate::rune_bindings::get_viewport_rect();
+                if vp_rect.is_positive() {
+                    if let Some(world_pos) = gizmo_sel_pos {
+                        let mode = match *transform_tool {
+                            TransformTool::Translate => viewport_gizmo::GizmoMode::Translate,
+                            TransformTool::Rotate    => viewport_gizmo::GizmoMode::Rotate,
+                            TransformTool::Scale     => viewport_gizmo::GizmoMode::Scale,
+                        };
+                        egui::Area::new(egui::Id::new("gizmo_overlay"))
+                            .fixed_pos(vp_rect.min)
+                            .order(egui::Order::Foreground)
+                            .show(ctx, |ui| {
+                                ui.set_clip_rect(vp_rect);
+                                viewport_gizmo::draw_and_interact(
+                                    ui, vp_rect, world_pos,
+                                    gizmo_view, gizmo_proj, mode,
+                                    gizmo_drag,
+                                );
+                            });
+                    }
+                }
             })
         });
 
         // Apply deferred mode change.
         *editor_mode = new_editor_mode;
+
+        // Apply gizmo drag delta to selected entity transform.
+        if let Some((axis, delta, mode)) = self.gizmo_drag.pending_delta.take() {
+            if let Some(sel_id) = crate::rune_bindings::get_selected_id() {
+                use fluxion_core::transform::Transform;
+                if let Some(mut t) = self.host.world.get_component_mut::<Transform>(sel_id) {
+                    match (mode, axis) {
+                        (viewport_gizmo::GizmoMode::Translate, 0) => t.position.x += delta,
+                        (viewport_gizmo::GizmoMode::Translate, 1) => t.position.y += delta,
+                        (viewport_gizmo::GizmoMode::Translate, 2) => t.position.z += delta,
+                        (viewport_gizmo::GizmoMode::Scale, 0) => t.scale.x = (t.scale.x + delta).max(0.001),
+                        (viewport_gizmo::GizmoMode::Scale, 1) => t.scale.y = (t.scale.y + delta).max(0.001),
+                        (viewport_gizmo::GizmoMode::Scale, 2) => t.scale.z = (t.scale.z + delta).max(0.001),
+                        _ => {}
+                    }
+                    t.dirty = true;
+                }
+            }
+        }
 
         // Handle file menu actions (after the render closure, to avoid borrow issues).
         if do_save_scene {
