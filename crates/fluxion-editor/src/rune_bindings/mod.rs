@@ -14,11 +14,15 @@ pub use ui_module::{set_current_ui, UiContextGuard, get_viewport_rect, drain_cur
 pub use world_module::{
     set_world_context, WorldContextGuard,
     drain_pending_edits, PendingEdit,
-    get_selected_id, set_project_root, set_undo_state, set_frame_time, set_time_elapsed,
+    get_selected_id, set_selected_id, set_project_root, set_undo_state, set_frame_time, set_time_elapsed,
     set_editor_shell_state, drain_action_signals, get_editor_mode_str, get_transform_tool_str,
     get_editor_cam_pos, get_editor_cam_yaw, get_editor_cam_pitch,
     init_editor_cam, take_editor_cam_dirty,
     set_asset_db_context, clear_asset_db_context,
+    set_frame_stats,
+    get_snap_enabled, get_snap_translate, get_snap_rotate, get_snap_scale,
+    get_multi_selected,
+    get_box_gizmo_mode_raw,
 };
 pub use camera_module::{
     set_camera_snapshot, set_camera_world, clear_camera_world,

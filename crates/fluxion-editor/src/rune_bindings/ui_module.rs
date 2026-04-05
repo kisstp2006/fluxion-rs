@@ -917,6 +917,18 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     });
 }).build()?;
 
+    // viewport_overlay_text(text) — draw small stats text at the top of the current panel.
+    m.function("viewport_overlay_text", |text: String| {
+        with_ui(|ui| {
+            let color = egui::Color32::from_rgba_unmultiplied(220, 220, 220, 200);
+            ui.label(
+                egui::RichText::new(&text)
+                    .font(egui::FontId::monospace(11.0))
+                    .color(color),
+            );
+        });
+    }).build()?;
+
     // ── Clipboard ────────────────────────────────────────────────────────────
 
     // clipboard_set(text) — write text to the OS clipboard.

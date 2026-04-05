@@ -105,7 +105,7 @@ pub fn sphere(stacks: u32, slices: u32) -> (Vec<Vertex>, Vec<u32>) {
         for l in 0..slices {
             let a = s * (slices + 1) + l;
             let b = a + slices + 1;
-            indices.extend_from_slice(&[a, b, a+1, b, b+1, a+1]);
+            indices.extend_from_slice(&[a, a+1, b, b, a+1, b+1]);
         }
     }
 
@@ -170,7 +170,7 @@ pub fn cylinder(slices: u32) -> (Vec<Vertex>, Vec<u32>) {
         let v0 = top_center;
         let v1 = top_center + 1 + s;
         let v2 = top_center + 1 + (s + 1) % slices;
-        indices.extend_from_slice(&[v0, v1, v2]);
+        indices.extend_from_slice(&[v0, v2, v1]);
     }
 
     // Bottom cap
@@ -185,7 +185,7 @@ pub fn cylinder(slices: u32) -> (Vec<Vertex>, Vec<u32>) {
         let v0 = bot_center;
         let v1 = bot_center + 1 + (s + 1) % slices;
         let v2 = bot_center + 1 + s;
-        indices.extend_from_slice(&[v0, v1, v2]);
+        indices.extend_from_slice(&[v0, v2, v1]);
     }
 
     (vertices, indices)
@@ -228,7 +228,7 @@ pub fn capsule(slices: u32, stacks_per_cap: u32) -> (Vec<Vertex>, Vec<u32>) {
             for l in 0..slices {
                 let a = base + s * (slices + 1) + l;
                 let b = a + slices + 1;
-                indices.extend_from_slice(&[a, b, a+1, b, b+1, a+1]);
+                indices.extend_from_slice(&[a, a+1, b, b, a+1, b+1]);
             }
         }
     };

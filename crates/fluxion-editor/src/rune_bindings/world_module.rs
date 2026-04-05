@@ -72,6 +72,27 @@ thread_local! {
     static EDITOR_CAM_SPEED:  Cell<f64>         = Cell::new(5.0);
     /// True when the editor camera has been mutated this frame (main.rs reads this to push to Transform).
     static EDITOR_CAM_DIRTY:  Cell<bool>        = Cell::new(false);
+
+    // ── Viewport stats ────────────────────────────────────────────────────────
+    /// (draw_calls, entity_count) — updated each frame from main.rs.
+    static FRAME_STATS: Cell<(u32, u32)> = Cell::new((0, 0));
+
+    // ── Snap settings ─────────────────────────────────────────────────────────
+    static SNAP_ENABLED:   Cell<bool> = Cell::new(false);
+    static SNAP_TRANSLATE: Cell<f64>  = Cell::new(0.5);
+    static SNAP_ROTATE:    Cell<f64>  = Cell::new(15.0);
+    static SNAP_SCALE:     Cell<f64>  = Cell::new(0.1);
+
+    // ── Multi-selection ───────────────────────────────────────────────────────
+    static SELECTED_MULTI: RefCell<Vec<EntityId>> = RefCell::new(Vec::new());
+
+    // ── Prefab creation dialog ────────────────────────────────────────────────
+    /// Entity ID bits pending prefab save (set when dialog opens, read on confirm).
+    static PREFAB_PENDING: Cell<i64> = Cell::new(-1);
+
+    // ── CSG box gizmo ─────────────────────────────────────────────────────────
+    /// 0 = none, 1 = BoxFaceHandles, 2 = BoxAxisArrows
+    static BOX_GIZMO_MODE: Cell<u8> = Cell::new(0);
 }
 
 /// A deferred field mutation queued by Rune, applied after the panel call.
@@ -114,6 +135,9 @@ pub fn clear_asset_db_context() {
 /// Returns a `WorldContextGuard` that clears the pointers on drop.
 /// # Safety: pointers must remain valid for the lifetime of the guard.
 pub fn set_world_context(world: &ECSWorld, registry: &ComponentRegistry) -> WorldContextGuard {
+    SELECTED_MULTI.with(|s| {
+        s.borrow_mut().retain(|e| world.all_entities().any(|w| w == *e));
+    });
     WORLD_PTR.with(|c| c.set(Some(NonNull::from(world))));
     REG_PTR  .with(|c| c.set(Some(NonNull::from(registry))));
     ENTITY_CACHE.with(|cache| {
@@ -169,6 +193,11 @@ pub fn get_selected_id() -> Option<EntityId> {
     SELECTED.with(|s| *s.borrow())
 }
 
+/// Set the selected entity from Rust host code.
+pub fn set_selected_id(entity: Option<EntityId>) {
+    SELECTED.with(|s| *s.borrow_mut() = entity);
+}
+
 /// Set the project root path so Rune scripts can enumerate assets.
 pub fn set_project_root(root: &std::path::Path) {
     PROJECT_ROOT.with(|p| *p.borrow_mut() = root.to_path_buf());
@@ -186,6 +215,25 @@ pub fn set_frame_time(ms: f64) {
 
 pub fn set_time_elapsed(secs: f64) {
     TIME_ELAPSED.with(|c| c.set(secs));
+}
+
+/// Push per-frame stats (draw calls, entity count) for the viewport overlay.
+pub fn set_frame_stats(draw_calls: u32, entity_count: u32) {
+    FRAME_STATS.with(|c| c.set((draw_calls, entity_count)));
+}
+
+/// Read snap settings (for applying during gizmo drag in main.rs).
+pub fn get_snap_enabled()   -> bool { SNAP_ENABLED  .with(|c| c.get()) }
+pub fn get_snap_translate() -> f64  { SNAP_TRANSLATE.with(|c| c.get()) }
+pub fn get_snap_rotate()    -> f64  { SNAP_ROTATE   .with(|c| c.get()) }
+pub fn get_snap_scale()     -> f64  { SNAP_SCALE    .with(|c| c.get()) }
+
+/// Read the current CSG box gizmo mode (0=none, 1=FaceHandles, 2=AxisArrows).
+pub fn get_box_gizmo_mode_raw() -> u8 { BOX_GIZMO_MODE.with(|c| c.get()) }
+
+/// Get the list of multi-selected entity IDs (for Ctrl+D, gizmo average pivot).
+pub fn get_multi_selected() -> Vec<EntityId> {
+    SELECTED_MULTI.with(|s| s.borrow().clone())
 }
 
 /// Update editor mode/tool/names — called each frame from EditorHost.
@@ -1581,6 +1629,117 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             Ok(v) => vec![1.0, v],
             Err(_) => vec![0.0, 0.0],
         }
+    }).build()?;
+
+    // ── Viewport stats ────────────────────────────────────────────────────────
+    // frame_stats() → [draw_calls, entity_count, frame_ms]
+    m.function("frame_stats", || -> Vec<f64> {
+        let (dc, ec) = FRAME_STATS.with(|c| c.get());
+        let ms = FRAME_TIME_MS.with(|c| c.get());
+        vec![dc as f64, ec as f64, ms]
+    }).build()?;
+
+    // ── Snap settings ─────────────────────────────────────────────────────────
+    m.function("get_snap_enabled",   || -> bool { SNAP_ENABLED  .with(|c| c.get()) }).build()?;
+    m.function("set_snap_enabled",   |v: bool|   { SNAP_ENABLED  .with(|c| c.set(v)); }).build()?;
+    m.function("get_snap_translate", || -> f64   { SNAP_TRANSLATE.with(|c| c.get()) }).build()?;
+    m.function("set_snap_translate", |v: f64|    { SNAP_TRANSLATE.with(|c| c.set(v.max(0.001))); }).build()?;
+    m.function("get_snap_rotate",    || -> f64   { SNAP_ROTATE   .with(|c| c.get()) }).build()?;
+    m.function("set_snap_rotate",    |v: f64|    { SNAP_ROTATE   .with(|c| c.set(v.max(0.1))); }).build()?;
+    m.function("get_snap_scale",     || -> f64   { SNAP_SCALE    .with(|c| c.get()) }).build()?;
+    m.function("set_snap_scale",     |v: f64|    { SNAP_SCALE    .with(|c| c.set(v.max(0.001))); }).build()?;
+
+    // ── Multi-selection ───────────────────────────────────────────────────────
+    m.function("get_multi_selected", || -> Vec<i64> {
+        SELECTED_MULTI.with(|s| s.borrow().iter().map(|e| entity_to_id(*e)).collect())
+    }).build()?;
+
+    m.function("add_to_selection", |id: i64| {
+        with_ctx(|world, _| {
+            if let Some(entity) = id_to_entity(world, id) {
+                SELECTED_MULTI.with(|s| {
+                    let mut v = s.borrow_mut();
+                    if !v.contains(&entity) { v.push(entity); }
+                });
+                SELECTED.with(|s| *s.borrow_mut() = Some(entity));
+            }
+        });
+    }).build()?;
+
+    m.function("remove_from_selection", |id: i64| {
+        with_ctx(|world, _| {
+            if let Some(entity) = id_to_entity(world, id) {
+                SELECTED_MULTI.with(|s| s.borrow_mut().retain(|e| *e != entity));
+            }
+        });
+    }).build()?;
+
+    m.function("clear_multi_selection", || {
+        SELECTED_MULTI.with(|s| s.borrow_mut().clear());
+    }).build()?;
+
+    m.function("is_multi_selected", |id: i64| -> bool {
+        with_ctx(|world, _| {
+            id_to_entity(world, id).map(|entity| {
+                SELECTED_MULTI.with(|s| s.borrow().contains(&entity))
+            }).unwrap_or(false)
+        }).unwrap_or(false)
+    }).build()?;
+
+    // ── Prefab creation ───────────────────────────────────────────────────────
+    // create_prefab(entity_id, rel_path) — saves entity as prefab .scene file
+    m.function("create_prefab", |entity_id: i64, path: String| {
+        use fluxion_core::reflect::ReflectValue;
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity:    eid,
+                    component: "__create_prefab__".to_string(),
+                    field:     path,
+                    value:     ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    // set_prefab_pending(entity_id) — remember which entity is waiting for a prefab path.
+    m.function("set_prefab_pending", |id: i64| {
+        PREFAB_PENDING.with(|c| c.set(id));
+    }).build()?;
+
+    // get_prefab_pending() → entity id (-1 if none), also clears it.
+    m.function("get_prefab_pending", || -> i64 {
+        PREFAB_PENDING.with(|c| { let v = c.get(); c.set(-1); v })
+    }).build()?;
+
+    // ── CSG box gizmo ─────────────────────────────────────────────────────────
+
+    // selected_has_csg() → bool  — true when the selected entity has a CsgShape component.
+    m.function("selected_has_csg", || -> bool {
+        use fluxion_core::components::CsgShape;
+        let sel = SELECTED.with(|s| *s.borrow());
+        let eid = match sel { Some(e) => e, None => return false };
+        with_world(|w| w.has_component::<CsgShape>(eid)).unwrap_or(false)
+    }).build()?;
+
+    // get_box_gizmo_mode() → "" | "face" | "axis"
+    m.function("get_box_gizmo_mode", || -> String {
+        match BOX_GIZMO_MODE.with(|c| c.get()) {
+            1 => "face".to_string(),
+            2 => "axis".to_string(),
+            _ => String::new(),
+        }
+    }).build()?;
+
+    // set_box_gizmo_mode(mode: String)  — "" | "face" | "axis"
+    m.function("set_box_gizmo_mode", |mode: String| {
+        let v = match mode.as_str() {
+            "face" => 1,
+            "axis" => 2,
+            _      => 0,
+        };
+        BOX_GIZMO_MODE.with(|c| c.set(v));
     }).build()?;
 
     // set_script_field(entity_id, script_name, field_name, value_str)

@@ -22,24 +22,42 @@ fn entity_icon(id) {
 }
 
 fn draw_entity_row(id, depth, sel) {
-    let name   = fluxion::world::entity_name(id);
-    let icon   = entity_icon(id);
-    let indent = depth * 14;
-    let prefix = if sel == id { "▶ " } else { "  " };
-    let label  = `${prefix}${icon} ${name}`;
+    let name        = fluxion::world::entity_name(id);
+    let icon        = entity_icon(id);
+    let indent      = depth * 14;
+    let is_primary  = sel == id;
+    let is_multi    = fluxion::world::is_multi_selected(id);
+    let is_selected = is_primary || is_multi;
+    let prefix      = if is_primary { "▶ " } else if is_multi { "◈ " } else { "  " };
+    let label       = `${prefix}${icon} ${name}`;
 
     fluxion::ui::space(indent);
 
-    let action = fluxion::ui::selectable_with_menu(label, sel == id, ["Rename", "Duplicate", "Delete", "Unparent"]);
+    let action = fluxion::ui::selectable_with_menu(label, is_selected, ["Rename", "Duplicate", "Create Prefab", "Delete", "Unparent"]);
 
     // Clone before each comparison — Rune snapshots Strings on == use.
     if action.clone() == "select" {
-        fluxion::world::set_selected(id);
-        fluxion::world::clear_selected_asset();
+        let ctrl = fluxion::input::key_down("ControlLeft") || fluxion::input::key_down("ControlRight");
+        if ctrl {
+            if is_multi {
+                fluxion::world::remove_from_selection(id);
+            } else {
+                fluxion::world::add_to_selection(id);
+            }
+        } else {
+            fluxion::world::clear_multi_selection();
+            fluxion::world::set_selected(id);
+            fluxion::world::clear_selected_asset();
+        }
     } else if action.clone() == "Delete" {
         fluxion::world::despawn(id);
     } else if action.clone() == "Duplicate" {
         fluxion::world::duplicate_entity(id);
+    } else if action.clone() == "Create Prefab" {
+        fluxion::world::set_selected(id);
+        let name_val = fluxion::world::entity_name(id);
+        fluxion::ui::input_dialog_open("Save Prefab As", `assets/prefabs/${name_val}.scene`);
+        fluxion::world::set_prefab_pending(id);
     } else if action.clone() == "Rename" {
         fluxion::world::set_selected(id);
         fluxion::world::clear_selected_asset();
@@ -71,11 +89,20 @@ pub fn panel() {
 
     if roots.is_empty() {
         fluxion::ui::small("(empty scene)");
-        return;
+    } else {
+        for id in roots {
+            draw_entity_row(id, 0, sel);
+        }
     }
 
-    for id in roots {
-        draw_entity_row(id, 0, sel);
+    // ── Prefab save dialog ───────────────────────────────────────────────────
+    let dlg = fluxion::ui::input_dialog_update();
+    if dlg == "confirmed" {
+        let path = fluxion::ui::input_dialog_result();
+        let pending = fluxion::world::get_prefab_pending();
+        if pending >= 0 && path != "" {
+            fluxion::world::create_prefab(pending, path);
+        }
     }
 }
 

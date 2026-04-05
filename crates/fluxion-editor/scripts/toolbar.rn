@@ -45,7 +45,46 @@ pub fn panel() {
     }
 
     fluxion::ui::toolbar_separator();
-    
+
+    // ── Snap controls ────────────────────────────────────────────────────────
+    let snap = fluxion::world::get_snap_enabled();
+    if fluxion::ui::tool_button("⊟ Snap", snap) {
+        fluxion::world::set_snap_enabled(!snap);
+    }
+    if snap {
+        let sv = fluxion::world::get_snap_translate();
+        let new_sv = fluxion::ui::drag_float("T", sv, 0.1, 0.01, 100.0);
+        if new_sv != sv {
+            fluxion::world::set_snap_translate(new_sv);
+        }
+        let sr = fluxion::world::get_snap_rotate();
+        let new_sr = fluxion::ui::drag_float("R°", sr, 1.0, 1.0, 180.0);
+        if new_sr != sr {
+            fluxion::world::set_snap_rotate(new_sr);
+        }
+    }
+
+    // ── CSG box gizmo (only when selection has CsgShape) ────────────────────
+    if fluxion::world::selected_has_csg() {
+        fluxion::ui::toolbar_separator();
+        let bm = fluxion::world::get_box_gizmo_mode();
+        if fluxion::ui::tool_button("⊡ Face", bm == "face") {
+            if bm == "face" {
+                fluxion::world::set_box_gizmo_mode("");
+            } else {
+                fluxion::world::set_box_gizmo_mode("face");
+            }
+        }
+        if fluxion::ui::tool_button("↔ Axis", bm == "axis") {
+            if bm == "axis" {
+                fluxion::world::set_box_gizmo_mode("");
+            } else {
+                fluxion::world::set_box_gizmo_mode("axis");
+            }
+        }
+    }
+
+    fluxion::ui::toolbar_separator();
 
     // ── Project / scene name ─────────────────────────────────────────────────
     let proj  = fluxion::world::get_project_name();

@@ -41,6 +41,7 @@ use crate::project_chooser::ProjectChooser;
 use crate::rune_bindings::set_viewport_texture;
 use crate::toolbar::{EditorMode, TransformTool};
 use crate::ui_shell::UiShell;
+use notify::{Watcher, RecursiveMode};
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -97,8 +98,20 @@ struct EditorInner {
     // Per-frame gizmo drag state (persisted between frames)
     gizmo_drag: viewport_gizmo::GizmoDragState,
 
+    // Snap accumulators — track true unsnapped position/scale during a drag
+    // so that sub-grid motion is not discarded each frame.
+    snap_raw_pos:      glam::Vec3,
+    snap_raw_scale:    glam::Vec3,
+    snap_was_dragging: bool,
+
     // Applied once on the first frame; egui theme is static for the session.
     theme_applied:  bool,
+
+    // Asset file watcher — triggers rescan when files change under assets/
+    _file_watcher: Option<notify::RecommendedWatcher>,
+    file_watcher_rx: Option<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>,
+    /// Debounce: seconds remaining before the next rescan is allowed.
+    file_watcher_cooldown: f32,
 }
 
 // ── ApplicationHandler impl ───────────────────────────────────────────────────
@@ -204,6 +217,11 @@ impl ApplicationHandler for EditorApp {
                                     let registry = &g.host.registry as *const _;
                                     unsafe { g.host.undo.redo(&*world, &*registry); }
                                 }
+                                PhysicalKey::Code(KeyCode::KeyD) if ctrl => {
+                                    if g.host.duplicate_selected() {
+                                        g.scene_dirty = true;
+                                    }
+                                }
                                 PhysicalKey::Code(KeyCode::Delete) => g.delete_selected(),
                                 _ => {}
                             }
@@ -307,6 +325,31 @@ impl EditorApp {
             .unwrap_or_else(|| "Untitled".to_string());
         let _ = scene_name;
 
+        // Set up asset file watcher
+        let (watcher_opt, rx_opt) = {
+            let assets_dir = choice.root.join("assets");
+            let (tx, rx) = std::sync::mpsc::channel();
+            let watcher_result = notify::recommended_watcher(move |res| {
+                let _ = tx.send(res);
+            });
+            match watcher_result {
+                Ok(mut w) => {
+                    if assets_dir.exists() {
+                        if let Err(e) = w.watch(&assets_dir, RecursiveMode::Recursive) {
+                            log::warn!("Asset watcher: {e}");
+                        } else {
+                            log::info!("Asset watcher active on {:?}", assets_dir);
+                        }
+                    }
+                    (Some(w), Some(rx))
+                }
+                Err(e) => {
+                    log::warn!("Asset watcher init failed: {e}");
+                    (None, None)
+                }
+            }
+        };
+
         let mut inner = EditorInner {
             window,
             host,
@@ -319,9 +362,15 @@ impl EditorApp {
             scene_dirty:    false,
             editor_mode:    EditorMode::Editing,
             transform_tool: TransformTool::Translate,
-            modifiers:      ModifiersState::empty(),
+            modifiers:      ModifiersState::default(),
             gizmo_drag:     viewport_gizmo::GizmoDragState::default(),
+            snap_raw_pos:      glam::Vec3::ZERO,
+            snap_raw_scale:    glam::Vec3::ONE,
+            snap_was_dragging: false,
             theme_applied:  false,
+            _file_watcher:  watcher_opt,
+            file_watcher_rx: rx_opt,
+            file_watcher_cooldown: 0.0,
         };
 
         // Push project root so Rune asset browser can enumerate files.
@@ -362,6 +411,9 @@ impl EditorInner {
         // Push frame time for the debugger panel.
         crate::rune_bindings::set_frame_time(self.host.time.dt as f64 * 1000.0);
         crate::rune_bindings::set_time_elapsed(self.host.time.elapsed as f64);
+
+        // Bake any dirty CsgShape components → upload scaled GPU mesh.
+        self.renderer.upload_csg_meshes(&mut self.host.world);
 
         // Render 3-D scene to offscreen viewport texture.
         if let Err(e) = self.renderer.render_to_viewport(&self.host.world, &self.host.time) {
@@ -417,6 +469,12 @@ impl EditorInner {
             crate::rune_bindings::get_selected_id()
                 .and_then(|id| self.host.world.get_component::<Transform>(id)
                     .map(|t| t.world_position))
+        };
+        let gizmo_csg_size: Option<[f32; 3]> = {
+            use fluxion_core::components::CsgShape;
+            crate::rune_bindings::get_selected_id()
+                .and_then(|id| self.host.world.get_component::<CsgShape>(id)
+                    .map(|c| c.size))
         };
 
         let ui_shell        = &mut self.ui_shell;
@@ -523,22 +581,45 @@ impl EditorInner {
                 let vp_rect = crate::rune_bindings::get_viewport_rect();
                 if vp_rect.is_positive() {
                     if let Some(world_pos) = gizmo_sel_pos {
-                        let mode = match *transform_tool {
-                            TransformTool::Translate => viewport_gizmo::GizmoMode::Translate,
-                            TransformTool::Rotate    => viewport_gizmo::GizmoMode::Rotate,
-                            TransformTool::Scale     => viewport_gizmo::GizmoMode::Scale,
-                        };
-                        egui::Area::new(egui::Id::new("gizmo_overlay"))
-                            .fixed_pos(vp_rect.min)
-                            .order(egui::Order::Foreground)
-                            .show(ctx, |ui| {
-                                ui.set_clip_rect(vp_rect);
-                                viewport_gizmo::draw_and_interact(
-                                    ui, vp_rect, world_pos,
-                                    gizmo_view, gizmo_proj, mode,
-                                    gizmo_drag,
-                                );
-                            });
+                        let box_mode_raw = crate::rune_bindings::get_box_gizmo_mode_raw();
+
+                        if box_mode_raw != 0 {
+                            if let Some(csg_size) = gizmo_csg_size {
+                                let box_mode = if box_mode_raw == 1 {
+                                    viewport_gizmo::GizmoMode::BoxFaceHandles
+                                } else {
+                                    viewport_gizmo::GizmoMode::BoxAxisArrows
+                                };
+                                egui::Area::new(egui::Id::new("gizmo_overlay"))
+                                    .fixed_pos(vp_rect.min)
+                                    .order(egui::Order::Foreground)
+                                    .show(ctx, |ui| {
+                                        ui.set_clip_rect(vp_rect);
+                                        viewport_gizmo::draw_box_and_interact(
+                                            ui, vp_rect, world_pos, csg_size,
+                                            gizmo_view, gizmo_proj, box_mode,
+                                            gizmo_drag,
+                                        );
+                                    });
+                            }
+                        } else {
+                            let mode = match *transform_tool {
+                                TransformTool::Translate => viewport_gizmo::GizmoMode::Translate,
+                                TransformTool::Rotate    => viewport_gizmo::GizmoMode::Rotate,
+                                TransformTool::Scale     => viewport_gizmo::GizmoMode::Scale,
+                            };
+                            egui::Area::new(egui::Id::new("gizmo_overlay"))
+                                .fixed_pos(vp_rect.min)
+                                .order(egui::Order::Foreground)
+                                .show(ctx, |ui| {
+                                    ui.set_clip_rect(vp_rect);
+                                    viewport_gizmo::draw_and_interact(
+                                        ui, vp_rect, world_pos,
+                                        gizmo_view, gizmo_proj, mode,
+                                        gizmo_drag,
+                                    );
+                                });
+                        }
                     }
                 }
             })
@@ -625,30 +706,147 @@ impl EditorInner {
             _        => crate::toolbar::TransformTool::Translate,
         };
 
-        // Apply gizmo drag delta to selected entity transform.
-        if let Some((axis, delta, mode)) = self.gizmo_drag.pending_delta.take() {
+        // Apply gizmo drag delta to selected entity transform / CsgShape.
+        let drag_active_now = self.gizmo_drag.active_axis.is_some()
+            || self.gizmo_drag.box_drag_face.is_some();
+        if let Some((idx, delta, mode)) = self.gizmo_drag.pending_delta.take() {
             if let Some(sel_id) = crate::rune_bindings::get_selected_id() {
                 use fluxion_core::transform::Transform;
-                if let Some(mut t) = self.host.world.get_component_mut::<Transform>(sel_id) {
-                    match (mode, axis) {
-                        (viewport_gizmo::GizmoMode::Translate, 0) => t.position.x += delta,
-                        (viewport_gizmo::GizmoMode::Translate, 1) => t.position.y += delta,
-                        (viewport_gizmo::GizmoMode::Translate, 2) => t.position.z += delta,
-                        (viewport_gizmo::GizmoMode::Rotate, axis_idx) => {
-                            let rot_axis = match axis_idx {
-                                0 => glam::Vec3::X,
-                                1 => glam::Vec3::Y,
-                                _ => glam::Vec3::Z,
-                            };
-                            let rot = glam::Quat::from_axis_angle(rot_axis, delta);
-                            t.rotation = (rot * t.rotation).normalize();
+                use crate::viewport_gizmo::GizmoMode;
+
+                // ── Box resize modes (CsgShape) ──────────────────────────────────────
+                match mode {
+                    GizmoMode::BoxFaceHandles => {
+                        use fluxion_core::components::CsgShape;
+                        let axis_idx = idx / 2;
+                        let sign = if idx % 2 == 0 { 1.0_f32 } else { -1.0_f32 };
+                        if let Some(mut csg) = self.host.world.get_component_mut::<CsgShape>(sel_id) {
+                            csg.size[axis_idx] = (csg.size[axis_idx] + delta).max(0.01);
+                            csg.dirty = true;
                         }
-                        (viewport_gizmo::GizmoMode::Scale, 0) => t.scale.x = (t.scale.x + delta).max(0.001),
-                        (viewport_gizmo::GizmoMode::Scale, 1) => t.scale.y = (t.scale.y + delta).max(0.001),
-                        (viewport_gizmo::GizmoMode::Scale, 2) => t.scale.z = (t.scale.z + delta).max(0.001),
-                        _ => {}
+                        if let Some(mut t) = self.host.world.get_component_mut::<Transform>(sel_id) {
+                            match axis_idx {
+                                0 => t.position.x += sign * delta * 0.5,
+                                1 => t.position.y += sign * delta * 0.5,
+                                _ => t.position.z += sign * delta * 0.5,
+                            }
+                            t.dirty = true;
+                        }
+                        self.scene_dirty = true;
+                    }
+                    GizmoMode::BoxAxisArrows => {
+                        use fluxion_core::components::CsgShape;
+                        if let Some(mut csg) = self.host.world.get_component_mut::<CsgShape>(sel_id) {
+                            csg.size[idx] = (csg.size[idx] + delta * 2.0).max(0.01);
+                            csg.dirty = true;
+                        }
+                        self.scene_dirty = true;
+                    }
+                    _ => {
+                // ── Regular transform gizmo ───────────────────────────────────────
+                let snap = crate::rune_bindings::get_snap_enabled();
+                let axis = idx;
+                if let Some(mut t) = self.host.world.get_component_mut::<Transform>(sel_id) {
+                    if snap {
+                        // On first frame of drag, capture the raw position/scale.
+                        if !self.snap_was_dragging {
+                            self.snap_raw_pos   = t.position;
+                            self.snap_raw_scale = t.scale;
+                        }
+                        match (mode, axis) {
+                            (viewport_gizmo::GizmoMode::Translate, 0) => {
+                                self.snap_raw_pos.x += delta;
+                                let s = crate::rune_bindings::get_snap_translate() as f32;
+                                t.position.x = (self.snap_raw_pos.x / s).round() * s;
+                            }
+                            (viewport_gizmo::GizmoMode::Translate, 1) => {
+                                self.snap_raw_pos.y += delta;
+                                let s = crate::rune_bindings::get_snap_translate() as f32;
+                                t.position.y = (self.snap_raw_pos.y / s).round() * s;
+                            }
+                            (viewport_gizmo::GizmoMode::Translate, 2) => {
+                                self.snap_raw_pos.z += delta;
+                                let s = crate::rune_bindings::get_snap_translate() as f32;
+                                t.position.z = (self.snap_raw_pos.z / s).round() * s;
+                            }
+                            (viewport_gizmo::GizmoMode::Rotate, axis_idx) => {
+                                // Accumulate rotation delta; only apply when it crosses a step.
+                                let step = crate::rune_bindings::get_snap_rotate().to_radians() as f32;
+                                let snapped = (delta / step).round() * step;
+                                if snapped.abs() > 1e-6 {
+                                    let rot_axis = match axis_idx {
+                                        0 => glam::Vec3::X,
+                                        1 => glam::Vec3::Y,
+                                        _ => glam::Vec3::Z,
+                                    };
+                                    t.rotation = (glam::Quat::from_axis_angle(rot_axis, snapped) * t.rotation).normalize();
+                                }
+                            }
+                            (viewport_gizmo::GizmoMode::Scale, 0) => {
+                                self.snap_raw_scale.x += delta;
+                                let s = crate::rune_bindings::get_snap_scale() as f32;
+                                t.scale.x = ((self.snap_raw_scale.x / s).round() * s).max(0.001);
+                            }
+                            (viewport_gizmo::GizmoMode::Scale, 1) => {
+                                self.snap_raw_scale.y += delta;
+                                let s = crate::rune_bindings::get_snap_scale() as f32;
+                                t.scale.y = ((self.snap_raw_scale.y / s).round() * s).max(0.001);
+                            }
+                            (viewport_gizmo::GizmoMode::Scale, 2) => {
+                                self.snap_raw_scale.z += delta;
+                                let s = crate::rune_bindings::get_snap_scale() as f32;
+                                t.scale.z = ((self.snap_raw_scale.z / s).round() * s).max(0.001);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        match (mode, axis) {
+                            (viewport_gizmo::GizmoMode::Translate, 0) => t.position.x += delta,
+                            (viewport_gizmo::GizmoMode::Translate, 1) => t.position.y += delta,
+                            (viewport_gizmo::GizmoMode::Translate, 2) => t.position.z += delta,
+                            (viewport_gizmo::GizmoMode::Rotate, axis_idx) => {
+                                let rot_axis = match axis_idx {
+                                    0 => glam::Vec3::X,
+                                    1 => glam::Vec3::Y,
+                                    _ => glam::Vec3::Z,
+                                };
+                                t.rotation = (glam::Quat::from_axis_angle(rot_axis, delta) * t.rotation).normalize();
+                            }
+                            (viewport_gizmo::GizmoMode::Scale, 0) => t.scale.x = (t.scale.x + delta).max(0.001),
+                            (viewport_gizmo::GizmoMode::Scale, 1) => t.scale.y = (t.scale.y + delta).max(0.001),
+                            (viewport_gizmo::GizmoMode::Scale, 2) => t.scale.z = (t.scale.z + delta).max(0.001),
+                            _ => {}
+                        }
                     }
                     t.dirty = true;
+                }
+                    } // end _ => (transform gizmo arm)
+                } // end match mode
+            }
+        }
+        self.snap_was_dragging = drag_active_now;
+
+        // Push per-frame stats for the viewport overlay.
+        {
+            let draw_calls = self.renderer.last_draw_call_count;
+            let entity_count = self.host.world.all_entities().count() as u32;
+            crate::rune_bindings::set_frame_stats(draw_calls, entity_count);
+        }
+
+        // Poll file watcher — auto-rescan assets on changes (debounced).
+        {
+            let dt = self.host.time.dt;
+            if self.file_watcher_cooldown > 0.0 {
+                self.file_watcher_cooldown -= dt;
+            } else if let Some(ref rx) = self.file_watcher_rx {
+                let mut got_event = false;
+                while let Ok(_) = rx.try_recv() {
+                    got_event = true;
+                }
+                if got_event {
+                    self.host.asset_db.scan(&self.project_root);
+                    log::info!("Asset watcher: rescan triggered ({} assets)", self.host.asset_db.count());
+                    self.file_watcher_cooldown = 0.5; // 500 ms debounce
                 }
             }
         }

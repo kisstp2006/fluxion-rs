@@ -28,7 +28,7 @@ use fluxion_core::{
     ECSWorld, EntityId,
     Color,
     assets,
-    components::{Camera, Light, MeshRenderer, ParticleEmitter, RigidBody, PhysicsShape},
+    components::{Camera, Light, MeshRenderer, ParticleEmitter, RigidBody, PhysicsShape, CsgShape, CsgPrimitive},
     components::environment::{Environment, BackgroundMode, sun_direction_from_angles},
     components::light::LightType,
     components::camera::ProjectionMode,
@@ -113,6 +113,9 @@ pub struct FluxionRenderer {
     /// Last frame's camera matrices — cached for use by editor gizmos.
     pub last_view_matrix: glam::Mat4,
     pub last_proj_matrix: glam::Mat4,
+
+    /// Count of opaque mesh draw calls in the last rendered frame.
+    pub last_draw_call_count: u32,
 }
 
 impl FluxionRenderer {
@@ -280,6 +283,7 @@ impl FluxionRenderer {
             viewport_texture: None,
             last_view_matrix: glam::Mat4::IDENTITY,
             last_proj_matrix: glam::Mat4::IDENTITY,
+            last_draw_call_count: 0,
         })
     }
 
@@ -729,6 +733,174 @@ impl FluxionRenderer {
         Ok(())
     }
 
+    /// Upload GPU meshes for CsgShape entities, applying boolean CSG when
+    /// an entity has CsgShape children (union / subtract / intersect).
+    ///
+    /// **Group model:**
+    /// - A *CSG root* is any CsgShape entity whose parent does NOT also have CsgShape.
+    /// - Direct children of a root that carry CsgShape are the *operands*.
+    /// - The root's operation is ignored (it is always the base shape).
+    /// - Each operand's `CsgShape::operation` determines how it combines with the
+    ///   accumulated solid (Union, Subtract, or Intersect).
+    /// - Only the ROOT entity receives a `MeshRenderer`; children are invisible.
+    ///
+    /// Call this before [`Self::render_to_viewport`] each frame.
+    pub fn upload_csg_meshes(&mut self, world: &mut ECSWorld) {
+        use crate::csg::Solid;
+        use fluxion_core::components::CsgOperation;
+        use fluxion_core::transform::Transform;
+
+        // ── Helper: build a CPU (verts, indices) for one CsgShape primitive ──────
+        fn prim_mesh(shape: CsgPrimitive, size: [f32; 3])
+            -> (Vec<crate::mesh::Vertex>, Vec<u32>)
+        {
+            // Use lower-res for CSG boolean math (faster BSP build/clip).
+            let (mut verts, idx) = match shape {
+                CsgPrimitive::Cube     => crate::mesh::primitives::cube(),
+                CsgPrimitive::Sphere   => crate::mesh::primitives::sphere(8, 8),
+                CsgPrimitive::Cylinder => crate::mesh::primitives::cylinder(12),
+                CsgPrimitive::Capsule  => crate::mesh::primitives::capsule(8, 4),
+            };
+            for v in &mut verts {
+                v.position[0] *= size[0];
+                v.position[1] *= size[1];
+                v.position[2] *= size[2];
+            }
+            (verts, idx)
+        }
+
+        // ── Collect all CsgShape entities ─────────────────────────────────────────
+        let csg_ids: Vec<EntityId> = world
+            .all_entities()
+            .filter(|&id| world.has_component::<CsgShape>(id))
+            .collect();
+
+        // ── Find CSG roots (parent has no CsgShape) ───────────────────────────────
+        let roots: Vec<EntityId> = csg_ids.iter().copied().filter(|&id| {
+            world.get_parent(id)
+                .map(|p| !world.has_component::<CsgShape>(p))
+                .unwrap_or(true)  // no parent → root
+        }).collect();
+
+        for root_id in roots {
+            // Collect direct CsgShape children.
+            let children: Vec<EntityId> = world
+                .get_children(root_id)
+                .filter(|&c| world.has_component::<CsgShape>(c))
+                .collect();
+
+            // Check if the root or any child is dirty.
+            let root_dirty = world.get_component::<CsgShape>(root_id)
+                .map(|c| c.dirty).unwrap_or(false);
+            let any_child_dirty = children.iter().any(|&c| {
+                world.get_component::<CsgShape>(c).map(|cs| cs.dirty).unwrap_or(false)
+            });
+
+            if !root_dirty && !any_child_dirty {
+                continue; // nothing changed in this group
+            }
+
+            // ── Build base solid from root primitive ──────────────────────────────
+            let (root_shape, root_size, old_handle) = {
+                let csg = match world.get_component::<CsgShape>(root_id) {
+                    Some(c) => c,
+                    None    => continue,
+                };
+                (csg.shape, csg.size, csg.merged_mesh_handle)
+            };
+
+            if let Some(h) = old_handle { self.meshes.remove(h); }
+
+            let (base_verts, base_idx) = prim_mesh(root_shape, root_size);
+            let mut accumulated = Solid::from_triangles(&base_verts, &base_idx);
+
+            // ── Apply each CsgShape child ─────────────────────────────────────────
+            for child_id in &children {
+                let (op, shape, size) = {
+                    let csg = match world.get_component::<CsgShape>(*child_id) {
+                        Some(c) => c,
+                        None    => continue,
+                    };
+                    (csg.operation, csg.shape, csg.size)
+                };
+
+                // Child local position (offset relative to parent/root).
+                let offset = world.get_component::<Transform>(*child_id)
+                    .map(|t| t.position)
+                    .unwrap_or(glam::Vec3::ZERO);
+
+                let (cv, ci) = prim_mesh(shape, size);
+                let child_solid = Solid::from_triangles(&cv, &ci).translate(offset);
+
+                accumulated = match op {
+                    CsgOperation::Union     => accumulated.union(&child_solid),
+                    CsgOperation::Subtract  => accumulated.subtract(&child_solid),
+                    CsgOperation::Intersect => accumulated.intersect(&child_solid),
+                };
+
+                // Clear child dirty flag; children never get their own MeshRenderer.
+                if let Some(mut csg) = world.get_component_mut::<CsgShape>(*child_id) {
+                    csg.dirty = false;
+                    csg.merged_mesh_handle = None;
+                }
+                // Remove any accidental MeshRenderer on children (they are invisible).
+                if world.has_component::<MeshRenderer>(*child_id) {
+                    world.remove_component::<MeshRenderer>(*child_id);
+                }
+            }
+
+            // ── Upload combined (or solo) mesh ────────────────────────────────────
+            let (final_verts, final_idx) = if children.is_empty() {
+                // No boolean children → use the high-res primitive directly.
+                let (mut hv, hi) = match root_shape {
+                    CsgPrimitive::Cube     => crate::mesh::primitives::cube(),
+                    CsgPrimitive::Sphere   => crate::mesh::primitives::sphere(32, 32),
+                    CsgPrimitive::Cylinder => crate::mesh::primitives::cylinder(32),
+                    CsgPrimitive::Capsule  => crate::mesh::primitives::capsule(16, 8),
+                };
+                for v in &mut hv {
+                    v.position[0] *= root_size[0];
+                    v.position[1] *= root_size[1];
+                    v.position[2] *= root_size[2];
+                }
+                (hv, hi)
+            } else {
+                accumulated.to_triangles()
+            };
+
+            if final_verts.is_empty() || final_idx.is_empty() {
+                // Boolean result is empty — hide the root mesh.
+                if let Some(mut mr) = world.get_component_mut::<MeshRenderer>(root_id) {
+                    mr.mesh_handle = None;
+                }
+                if let Some(mut csg) = world.get_component_mut::<CsgShape>(root_id) {
+                    csg.merged_mesh_handle = None;
+                    csg.dirty = false;
+                }
+                continue;
+            }
+
+            let gpu    = GpuMesh::upload(&self.device, &format!("csg_{}", root_id.to_bits()), &final_verts, &final_idx);
+            let handle = self.meshes.add(gpu);
+
+            if let Some(mut csg) = world.get_component_mut::<CsgShape>(root_id) {
+                csg.merged_mesh_handle = Some(handle);
+                csg.dirty = false;
+            }
+
+            if !world.has_component::<MeshRenderer>(root_id) {
+                world.add_component(root_id, MeshRenderer {
+                    mesh_handle: Some(handle),
+                    primitive:   None,
+                    ..MeshRenderer::default()
+                });
+            } else if let Some(mut mr) = world.get_component_mut::<MeshRenderer>(root_id) {
+                mr.mesh_handle = Some(handle);
+                mr.primitive   = None;
+            }
+        }
+    }
+
     /// Native: load glTF paths relative to `base` (or current working directory).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn hydrate_mesh_paths(
@@ -888,6 +1060,7 @@ impl FluxionRenderer {
         }
 
         let mut frame = self.extract_frame_data(world, time);
+        self.last_draw_call_count = frame.draw_calls.len() as u32;
 
         // ── Apply Environment component overrides ─────────────────────────────
         // Query the first active Environment component; if found, its settings

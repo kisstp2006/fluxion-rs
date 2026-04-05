@@ -237,11 +237,25 @@ impl EditorHost {
                 .unwrap_or_default();
             set_script_fields(current_fields);
             if let Some(behaviour) = self.gameplay_scripts.get_mut(&(entity_id, script_name.clone())) {
-                behaviour.tick(dt);
-                if let Some(err) = behaviour.error() {
-                    set_script_error(entity_id.to_bits(), &script_name, err.to_string());
-                } else {
-                    clear_script_error(entity_id.to_bits(), &script_name);
+                let tick_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    behaviour.tick(dt);
+                }));
+                match tick_result {
+                    Ok(()) => {
+                        if let Some(err) = behaviour.error() {
+                            set_script_error(entity_id.to_bits(), &script_name, err.to_string());
+                        } else {
+                            clear_script_error(entity_id.to_bits(), &script_name);
+                        }
+                    }
+                    Err(panic_val) => {
+                        let msg = panic_val.downcast_ref::<String>().map(|s| s.as_str())
+                            .or_else(|| panic_val.downcast_ref::<&str>().copied())
+                            .unwrap_or("unknown panic");
+                        let err_msg = format!("PANIC: {}", msg);
+                        log::error!("[ScriptBundle] {} / {}: {}", entity_id.to_bits(), script_name, err_msg);
+                        set_script_error(entity_id.to_bits(), &script_name, err_msg);
+                    }
                 }
             }
             // Drain updated fields back into ScriptEntry.
@@ -422,27 +436,14 @@ impl EditorHost {
                         self.world.despawn(edit.entity);
                     }
                 }
-                "__rename__" => {
-                    if edit.entity.is_valid() {
-                        self.world.set_name(edit.entity, &edit.field);
-                    }
-                }
                 "__duplicate__" => {
                     if edit.entity.is_valid() {
-                        let name = format!("{} (copy)", self.world.get_name(edit.entity));
-                        let new_e = self.world.spawn(Some(&name));
-                        let cloned_transform = self.world
-                            .get_component::<fluxion_core::Transform>(edit.entity)
-                            .map(|t| (*t).clone());
-                        if let Some(t) = cloned_transform {
-                            self.world.add_component(new_e, t);
-                        }
+                        self.duplicate_entity(edit.entity);
                     }
                 }
                 "__add_script__" => {
                     if edit.entity.is_valid() {
                         use fluxion_core::{ScriptBundle, scan_struct_fields, derive_script_name};
-                        // Read source to populate struct fields.
                         let abs_path = self.project_root.join("assets").join(&edit.field);
                         let source = std::fs::read_to_string(&abs_path).unwrap_or_default();
                         let script_name = derive_script_name(&edit.field);
@@ -493,6 +494,52 @@ impl EditorHost {
                             edit.entity,
                         ) {
                             log::warn!("remove_component: no remover for '{}'", edit.field);
+                        }
+                    }
+                }
+                "__create_prefab__" => {
+                    if edit.entity.is_valid() {
+                        let rel_path = &edit.field;
+                        let abs_path = if std::path::Path::new(rel_path).is_absolute() {
+                            std::path::PathBuf::from(rel_path)
+                        } else {
+                            self.project_root.join(rel_path)
+                        };
+                        if let Some(parent) = abs_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        // Serialize the entity using reflection into a single-entity SceneFileData.
+                        use fluxion_core::scene::{SceneFileData, SceneSettings, SerializedEntity, SerializedComponent};
+                        let eid = edit.entity;
+                        let entity_name = self.world.get_name(eid).to_string();
+                        let tags: Vec<String> = self.world.tags_of(eid).map(str::to_string).collect();
+                        let mut components: Vec<SerializedComponent> = Vec::new();
+                        for &comp_type in self.world.component_names(eid) {
+                            if let Some(reflected) = self.registry.get_reflect(comp_type, &self.world, eid) {
+                                components.push(SerializedComponent {
+                                    component_type: comp_type.to_string(),
+                                    data: reflected.to_serialized_data(),
+                                });
+                            }
+                        }
+                        let prefab_name = abs_path.file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "prefab".to_string());
+                        let data = SceneFileData {
+                            name: prefab_name,
+                            version: 2,
+                            settings: SceneSettings::default(),
+                            editor_camera: None,
+                            entities: vec![SerializedEntity {
+                                id: 1, name: entity_name, parent: None, tags, components,
+                            }],
+                        };
+                        match fluxion_core::scene::save_scene_file(abs_path.to_str().unwrap_or(""), &data) {
+                            Ok(()) => {
+                                log::info!("Prefab saved: {:?}", abs_path);
+                                self.asset_db.scan(&self.project_root);
+                            }
+                            Err(e) => log::warn!("Prefab save failed: {e}"),
                         }
                     }
                 }
@@ -618,5 +665,50 @@ impl EditorHost {
     /// Currently selected entity (forwarded from Rune world module state).
     pub fn selected_entity(&self) -> Option<fluxion_core::EntityId> {
         get_selected_id()
+    }
+
+    /// Deep-clone an entity: copies all reflected components + name onto a new entity.
+    pub fn duplicate_entity(&mut self, src: fluxion_core::EntityId) -> fluxion_core::EntityId {
+        let name = format!("{} (copy)", self.world.get_name(src));
+        let new_e = self.world.spawn(Some(&name));
+
+        // Collect component type names first to avoid borrow conflicts.
+        let comp_names: Vec<String> = self.world
+            .component_names(src)
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        for comp_type in &comp_names {
+            // Serialize via reflection, then re-attach via registry.
+            let json_opt = self.registry
+                .get_reflect(comp_type, &self.world, src)
+                .map(|r| r.to_serialized_data());
+            if let Some(json_data) = json_opt {
+                if let Err(e) = self.registry.attach(
+                    comp_type, &json_data, &mut self.world, new_e,
+                ) {
+                    log::warn!("duplicate_entity: attach '{}' failed: {e}", comp_type);
+                }
+            }
+        }
+        new_e
+    }
+
+    /// Duplicate the currently selected entity (Ctrl+D shortcut handler).
+    /// Returns true if anything was duplicated (so the caller can mark scene dirty).
+    pub fn duplicate_selected(&mut self) -> bool {
+        let Some(src) = self.selected_entity() else { return false; };
+        let new_e = self.duplicate_entity(src);
+        // Also duplicate multi-selected entities.
+        let others: Vec<_> = crate::rune_bindings::get_multi_selected()
+            .into_iter()
+            .filter(|e| *e != src)
+            .collect();
+        for other in others {
+            self.duplicate_entity(other);
+        }
+        crate::rune_bindings::set_selected_id(Some(new_e));
+        true
     }
 }

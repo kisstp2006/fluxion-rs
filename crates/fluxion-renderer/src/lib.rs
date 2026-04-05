@@ -25,6 +25,7 @@ pub mod mesh;
 pub mod lighting;
 pub mod shader;
 pub mod config;
+pub mod csg;
 
 pub use renderer::FluxionRenderer;
 pub use config::RendererConfig;

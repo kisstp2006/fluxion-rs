@@ -1,10 +1,12 @@
 // ============================================================
 // viewport_gizmo.rs — Rust-side 3D transform gizmo
 //
-// Supports three modes:
-//   Translate — colored axis arrows (cone tips)
-//   Rotate    — colored axis arcs (circles in screen space)
-//   Scale     — colored axis arrows with box caps
+// Supports five modes:
+//   Translate      — colored axis arrows (cone tips)
+//   Rotate         — colored axis arcs (circles in screen space)
+//   Scale          — colored axis arrows with box caps
+//   BoxFaceHandles — 6 colored squares, one per CSG box face
+//   BoxAxisArrows  — 3 symmetric arrows from face edges
 //
 // Axis convention: X=red, Y=green, Z=blue (right-hand, Y-up)
 // ============================================================
@@ -19,12 +21,17 @@ pub enum GizmoMode {
     Translate,
     Rotate,
     Scale,
+    /// CSG box: drag individual faces (asymmetric, adjusts size + position).
+    BoxFaceHandles,
+    /// CSG box: 3 symmetric arrows extending from face edges outward.
+    BoxAxisArrows,
 }
 
 // ── Per-axis state ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Axis { X, Y, Z }
+#[repr(usize)]
+pub enum Axis { X = 0, Y = 1, Z = 2 }
 
 impl Axis {
     fn color(self) -> Color32 {
@@ -59,10 +66,12 @@ pub struct GizmoDragState {
     pub active_axis: Option<Axis>,
     /// Delta produced this frame — consumed by caller after egui frame.
     pub pending_delta: Option<(usize, f32, GizmoMode)>,
+    /// Active face index for BoxFaceHandles (0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z).
+    pub box_drag_face: Option<u8>,
 }
 
 impl Default for GizmoDragState {
-    fn default() -> Self { Self { active_axis: None, pending_delta: None } }
+    fn default() -> Self { Self { active_axis: None, pending_delta: None, box_drag_face: None } }
 }
 
 // ── Main entry ────────────────────────────────────────────────────────────────
@@ -135,6 +144,8 @@ pub fn draw_and_interact(
                             }
                         }
                     }
+                    // Box modes handled by draw_box_and_interact.
+                    GizmoMode::BoxFaceHandles | GizmoMode::BoxAxisArrows => {}
                 }
             }
         }
@@ -162,6 +173,8 @@ pub fn draw_and_interact(
                     // Scale so 1 full viewport width ≈ 2π radians.
                     drag_delta.x / vp_w * std::f32::consts::TAU
                 }
+                // Box modes handled by draw_box_and_interact — no delta here.
+                GizmoMode::BoxFaceHandles | GizmoMode::BoxAxisArrows => 0.0,
             };
 
             if delta.abs() > 1e-7 {
@@ -208,6 +221,8 @@ pub fn draw_and_interact(
                 draw_arc(&painter, &arc_pts, color, thickness);
             }
         }
+        // Box modes are handled by draw_box_and_interact — nothing to draw here.
+        GizmoMode::BoxFaceHandles | GizmoMode::BoxAxisArrows => {}
     }
 
     // Center dot
@@ -348,4 +363,204 @@ fn brighten(c: Color32, factor: f32) -> Color32 {
         (c.g() as f32 * factor).min(255.0) as u8,
         (c.b() as f32 * factor).min(255.0) as u8,
     )
+}
+
+// ── Box resize gizmo ──────────────────────────────────────────────────────────
+
+/// Face descriptors: (world_offset_sign, axis, face_idx)
+/// Faces: 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z
+const FACES: [(f32, Axis, usize); 6] = [
+    ( 1.0, Axis::X, 0),
+    (-1.0, Axis::X, 1),
+    ( 1.0, Axis::Y, 2),
+    (-1.0, Axis::Y, 3),
+    ( 1.0, Axis::Z, 4),
+    (-1.0, Axis::Z, 5),
+];
+
+/// Draw the box resize gizmo and handle interaction for a `CsgShape` entity.
+///
+/// `csg_size` = `[width, height, depth]` (full extents, not half-extents).
+///
+/// # Return value
+/// `Some((idx, delta))` on drag:
+/// - **BoxFaceHandles**: `idx` = face index 0..5, `delta` = outward movement.
+///   The caller is responsible for updating both `size[axis]` and `position[axis]`.
+/// - **BoxAxisArrows**: `idx` = axis index 0..2, `delta` = symmetric resize delta.
+///   The caller should add `delta * 2.0` to `size[axis]`.
+pub fn draw_box_and_interact(
+    ui:               &mut Ui,
+    viewport_rect:    Rect,
+    entity_world_pos: Vec3,
+    csg_size:         [f32; 3],
+    view:             Mat4,
+    proj:             Mat4,
+    mode:             GizmoMode,
+    drag:             &mut GizmoDragState,
+) -> Option<(usize, f32)> {
+    let vp_w = viewport_rect.width();
+    let vp_h = viewport_rect.height();
+    if vp_w < 1.0 || vp_h < 1.0 { return None; }
+
+    let view_proj  = proj * view;
+    let handle_len = (vp_w.min(vp_h) * 0.10).clamp(40.0, 90.0);
+    let painter    = ui.painter_at(viewport_rect);
+
+    let cursor        = ui.input(|i| i.pointer.hover_pos());
+    let dragging      = ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+    let just_released = ui.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
+
+    if just_released {
+        drag.active_axis  = None;
+        drag.box_drag_face = None;
+    }
+
+    drag.pending_delta = None;
+
+    let center_screen = world_to_screen(entity_world_pos, view_proj, viewport_rect);
+
+    match mode {
+        // ── 6 face-square handles ─────────────────────────────────────────────
+        GizmoMode::BoxFaceHandles => {
+            // Compute face center positions and their screen projections.
+            let half = [csg_size[0] * 0.5, csg_size[1] * 0.5, csg_size[2] * 0.5];
+            let face_world: Vec<Vec3> = FACES.iter().map(|&(sign, ax, _)| {
+                entity_world_pos + ax.world_dir() * sign * half[ax as usize]
+            }).collect();
+            let face_screen: Vec<Option<Pos2>> = face_world.iter()
+                .map(|&wp| world_to_screen(wp, view_proj, viewport_rect))
+                .collect();
+
+            // Pick active face on drag start.
+            if dragging && drag.box_drag_face.is_none() {
+                if let Some(cp) = cursor {
+                    if viewport_rect.contains(cp) {
+                        for (fi, fs) in face_screen.iter().enumerate() {
+                            if let Some(sp) = *fs {
+                                if (cp - sp).length() < 14.0 {
+                                    drag.box_drag_face = Some(fi as u8);
+                                    drag.active_axis   = Some(FACES[fi].1);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Compute drag delta.
+            let mut result = None;
+            if dragging {
+                if let (Some(fi), Some(cs)) = (drag.box_drag_face, center_screen) {
+                    let fi = fi as usize;
+                    let (sign, ax, face_idx) = FACES[fi];
+                    let drag_delta = ui.input(|i| i.pointer.delta());
+                    // Project onto screen-space outward direction.
+                    let outward_world = entity_world_pos + ax.world_dir() * sign;
+                    if let Some(outward_screen) = world_to_screen(outward_world, view_proj, viewport_rect) {
+                        let screen_dir = (outward_screen - cs).normalized();
+                        let delta = drag_delta.dot(screen_dir) / handle_len;
+                        if delta.abs() > 1e-7 {
+                            result = Some((face_idx, delta));
+                            drag.pending_delta = Some((face_idx, delta, GizmoMode::BoxFaceHandles));
+                        }
+                    }
+                    let _ = sign; let _ = ax;
+                }
+            }
+
+            // Draw: thin guide lines from center + colored squares at faces.
+            if let Some(cs) = center_screen {
+                for (fi, fs) in face_screen.iter().enumerate() {
+                    if let Some(sp) = *fs {
+                        let (_, ax, _) = FACES[fi];
+                        let base = ax.color();
+                        let is_active  = drag.box_drag_face == Some(fi as u8);
+                        let is_hovered = cursor.map(|c|
+                            viewport_rect.contains(c) && (c - sp).length() < 14.0
+                        ).unwrap_or(false);
+                        let color = if is_active  { brighten(base, 1.5) }
+                                    else if is_hovered { brighten(base, 1.2) }
+                                    else { Color32::from_rgba_premultiplied(
+                                               base.r(), base.g(), base.b(), 210) };
+                        painter.line_segment([cs, sp], Stroke::new(1.0,
+                            Color32::from_rgba_premultiplied(base.r(), base.g(), base.b(), 80)));
+                        let r = egui::Rect::from_center_size(sp, egui::vec2(14.0, 14.0));
+                        painter.rect_filled(r, 2.0, color);
+                        painter.rect_stroke(r, 2.0, Stroke::new(1.5, Color32::WHITE));
+                    }
+                }
+                painter.circle_filled(cs, 3.5, Color32::WHITE);
+            }
+
+            result
+        }
+
+        // ── 3 symmetric axis arrows from face edges ───────────────────────────
+        GizmoMode::BoxAxisArrows => {
+            let half = [csg_size[0] * 0.5, csg_size[1] * 0.5, csg_size[2] * 0.5];
+
+            // Arrow: starts at face edge (+side), points outward.
+            let axis_tips: Vec<(Axis, usize, Pos2, Pos2)> = AXES.iter().enumerate().filter_map(|(ai, &ax)| {
+                let edge_world = entity_world_pos + ax.world_dir() * half[ai];
+                let tip_world  = edge_world + ax.world_dir();
+                let edge_screen = world_to_screen(edge_world, view_proj, viewport_rect)?;
+                let tip_screen  = world_to_screen(tip_world,  view_proj, viewport_rect)?;
+                let dir = (tip_screen - edge_screen).normalized();
+                if dir.length() < 0.001 { return None; }
+                Some((ax, ai, edge_screen, edge_screen + dir * handle_len))
+            }).collect();
+
+            // Pick active axis.
+            if dragging && drag.active_axis.is_none() {
+                if let Some(cp) = cursor {
+                    if viewport_rect.contains(cp) {
+                        for &(ax, _, from, to) in &axis_tips {
+                            if dist_point_to_segment(cp, from, to) < 10.0 {
+                                drag.active_axis = Some(ax);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Compute drag delta.
+            let mut result = None;
+            if dragging {
+                if let Some(active) = drag.active_axis {
+                    let drag_delta = ui.input(|i| i.pointer.delta());
+                    if let Some(&(_, ai, from, to)) = axis_tips.iter().find(|(ax, ..)| *ax == active) {
+                        let screen_dir = (to - from).normalized();
+                        let delta = drag_delta.dot(screen_dir) / handle_len;
+                        if delta.abs() > 1e-7 {
+                            result = Some((ai, delta));
+                            drag.pending_delta = Some((ai, delta, GizmoMode::BoxAxisArrows));
+                        }
+                    }
+                }
+            }
+
+            // Draw arrows.
+            for &(ax, _, from, to) in &axis_tips {
+                let base = ax.color();
+                let is_active  = drag.active_axis == Some(ax);
+                let is_hovered = cursor.map(|c|
+                    viewport_rect.contains(c) && dist_point_to_segment(c, from, to) < 10.0
+                ).unwrap_or(false);
+                let color = if is_active  { brighten(base, 1.5) }
+                            else if is_hovered { brighten(base, 1.2) }
+                            else { base };
+                let thickness = if is_active { 3.0 } else { 2.0 };
+                draw_translate_handle(&painter, from, to, color, thickness);
+            }
+            if let Some(cs) = center_screen {
+                painter.circle_filled(cs, 3.5, Color32::WHITE);
+            }
+
+            result
+        }
+
+        _ => None,
+    }
 }

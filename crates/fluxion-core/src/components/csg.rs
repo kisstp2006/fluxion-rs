@@ -157,38 +157,16 @@ impl Reflect for CsgShape {
 
 // ── System ────────────────────────────────────────────────────────────────────
 
-/// Stub system that collects dirty CSG entities and schedules a re-bake.
-///
-/// Currently the actual mesh boolean operations are NOT implemented (that
-/// requires a full BSP / Sutherland-Hodgman pipeline).  The system marks
-/// the entity as clean so the editor does not loop, and logs a one-time
-/// notice.  Replace the body of `bake_entity` with a real CSG library
-/// (e.g. `csgrs` crate) when available.
+/// Placeholder system — actual mesh baking happens in the renderer
+/// via `FluxionRenderer::upload_csg_meshes()` which has GPU access.
+/// `dirty = true` is intentionally NOT cleared here; the renderer clears
+/// it after uploading the GPU mesh.
 pub struct CsgSystem;
 
 impl CsgSystem {
-    /// Call once per frame (editor or runtime).
-    pub fn update(world: &mut crate::ecs::ECSWorld) {
-        let dirty_ids: Vec<crate::ecs::EntityId> = world
-            .all_entities()
-            .filter(|&id| {
-                world.get_component::<CsgShape>(id)
-                    .map(|c| c.dirty)
-                    .unwrap_or(false)
-            })
-            .collect();
-
-        for id in dirty_ids {
-            Self::bake_entity(world, id);
-        }
-    }
-
-    fn bake_entity(world: &mut crate::ecs::ECSWorld, id: crate::ecs::EntityId) {
-        if let Some(mut csg) = world.get_component_mut::<CsgShape>(id) {
-            csg.dirty = false;
-            // TODO: run BSP merge here using csgrs or similar.
-            // For now this is a no-op stub — values are stored and exposed
-            // in the inspector but no mesh is generated yet.
-        }
+    /// No-op: mesh generation is handled renderer-side.
+    pub fn update(_world: &mut crate::ecs::ECSWorld) {
+        // Baking is performed by FluxionRenderer::upload_csg_meshes.
+        // Keeping this stub so call sites remain valid.
     }
 }
