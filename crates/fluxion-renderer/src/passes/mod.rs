@@ -11,6 +11,7 @@ pub mod tonemap;
 pub mod particles;
 pub mod debug_lines;
 pub mod shadow;
+pub mod skinned_geometry;
 
 pub use geometry::GeometryPass;
 pub use lighting::LightingPass;
@@ -21,3 +22,4 @@ pub use tonemap::TonemapPass;
 pub use particles::ParticleOverlayPass;
 pub use debug_lines::DebugLinePass;
 pub use shadow::ShadowPass;
+pub use skinned_geometry::SkinnedGeometryPass;

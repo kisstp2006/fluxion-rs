@@ -52,3 +52,6 @@ pub const DEBUG_LINES: &str = include_str!("../../../../assets/shaders/debug_lin
 
 /// Shadow depth-only pass — renders scene from light's POV to produce a shadow map.
 pub const SHADOW_DEPTH: &str = include_str!("../../../../assets/shaders/shadow_depth.wgsl");
+
+/// Skinned geometry vertex — blends joint matrices before writing to GBuffer.
+pub const SKINNED_GEOMETRY_VERT: &str = include_str!("../../../../assets/shaders/skinned_geometry.vert.wgsl");

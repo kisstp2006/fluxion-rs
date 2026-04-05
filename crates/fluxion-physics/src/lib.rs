@@ -17,12 +17,12 @@ use rapier3d::prelude::*;
 use fluxion_core::{ECSWorld, EntityId, RigidBody, PhysicsShape, BodyType};
 use fluxion_core::transform::Transform;
 
-pub use rapier3d::prelude::RigidBodyHandle;
-
 #[cfg(feature = "rune-scripting")]
 pub mod rune_module;
 #[cfg(feature = "rune-scripting")]
 pub use rune_module::{build_physics_rune_module, set_physics_context, clear_physics_context};
+
+pub use rapier3d::prelude::RigidBodyHandle;
 
 // ── Collision event types ─────────────────────────────────────────────────────
 
@@ -300,8 +300,6 @@ impl PhysicsEcsWorld {
     /// Read-only access to the inner [`PhysicsWorld`] (e.g. for debug draw).
     pub fn inner(&self) -> &PhysicsWorld { &self.inner }
 
-    /// Mutable access to the Rapier rigid-body set (for scripting force/velocity).
-    pub fn bodies_mut(&mut self) -> &mut RigidBodySet { &mut self.inner.bodies }
 
     // ── Glam-friendly high-level API (used by editor scripting layer) ──────────
 

@@ -91,6 +91,18 @@ impl CameraData {
     }
 }
 
+/// A single skinned mesh draw call (has joint matrices for GPU skinning).
+pub struct SkinnedDrawCall {
+    pub skinned_mesh: u32,    // handle into SkinnedMeshRegistry
+    pub material:     u32,
+    pub world_matrix: Mat4,
+    pub normal_matrix: Mat4,
+    pub cast_shadow:  bool,
+    pub layer:        u8,
+    /// Per-joint bone matrices (MAX_JOINTS entries).
+    pub joint_matrices: Vec<Mat4>,
+}
+
 /// A single opaque mesh draw call.
 pub struct MeshDrawCall {
     pub mesh:         u32,        // handle into MeshRegistry
@@ -129,6 +141,8 @@ pub struct FrameData {
     pub shadow_view_proj: Mat4,
     /// Whether at least one light with `cast_shadow = true` is present this frame.
     pub has_shadow_caster: bool,
+    /// Skinned mesh draw calls (entities with Animator + SkinnedMeshRenderer).
+    pub skinned_draw_calls: Vec<SkinnedDrawCall>,
 }
 
 // ── Shared GPU render targets ─────────────────────────────────────────────────
@@ -232,4 +246,6 @@ pub struct RenderContext<'frame> {
     pub meshes:       &'frame MeshRegistry,
     /// Material registry — provides bind groups for each draw call.
     pub materials:    &'frame MaterialRegistry,
+    /// Skinned mesh registry — provides skinned vertex/index buffers.
+    pub skinned_meshes: &'frame crate::mesh::SkinnedMeshRegistry,
 }

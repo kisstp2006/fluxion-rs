@@ -468,6 +468,23 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
+    // instantiate_prefab(path: str) -> i64
+    // Loads a .scene file and spawns its entities as children of a new root entity.
+    // Returns the root entity id (i64) on success, or -1 on failure.
+    // The path is relative to the project root (e.g. "assets/prefabs/crate.scene").
+    m.function("instantiate_prefab", |path: Ref<str>| -> i64 {
+        let full_path = PROJECT_ROOT.with(|root| {
+            root.borrow().join(path.as_ref())
+        });
+        PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+            entity:    fluxion_core::EntityId::INVALID,
+            component: "__instantiate_prefab__".to_string(),
+            field:     full_path.to_string_lossy().to_string(),
+            value:     fluxion_core::reflect::ReflectValue::Bool(true),
+        }));
+        -1 // actual id is not available synchronously; host assigns it next flush
+    }).build()?;
+
     // ── Asset browser ─────────────────────────────────────────────────────────
 
     m.function("list_assets", |subdir: Ref<str>| -> Vec<String> {

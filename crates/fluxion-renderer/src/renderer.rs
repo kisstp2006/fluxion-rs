@@ -40,11 +40,11 @@ use fluxion_core::{
 use crate::{
     config::RendererConfig,
     render_graph::{RenderGraph, PassSlot, RenderContext, RenderResources},
-    render_graph::context::{FrameData, CameraData, MeshDrawCall, SkyParams, ParticleInstance},
-    passes::{GeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, ParticleOverlayPass, DebugLinePass, ShadowPass},
+    render_graph::context::{FrameData, CameraData, MeshDrawCall, SkinnedDrawCall, SkyParams, ParticleInstance},
+    passes::{GeometryPass, SkinnedGeometryPass, LightingPass, SkyboxPass, BloomPass, SsaoPass, TonemapPass, ParticleOverlayPass, DebugLinePass, ShadowPass},
     lighting::{LightBuffer, LightBufferData, LightUniform, LIGHT_DIRECTIONAL, LIGHT_POINT, LIGHT_SPOT, MAX_LIGHTS},
     material::MaterialRegistry,
-    mesh::{GpuMesh, MeshRegistry},
+    mesh::{GpuMesh, MeshRegistry, SkinnedMeshRegistry},
     texture::{GpuTexture, TextureCache},
     shader::ShaderCache,
 };
@@ -67,8 +67,9 @@ pub struct FluxionRenderer {
     pub render_graph: RenderGraph,
     pub resources:    RenderResources,
 
-    pub materials: MaterialRegistry,
-    pub meshes:    MeshRegistry,
+    pub materials:       MaterialRegistry,
+    pub meshes:          MeshRegistry,
+    pub skinned_meshes:  SkinnedMeshRegistry,
     pub textures:  TextureCache,
     pub shaders:   ShaderCache,
 
@@ -237,8 +238,9 @@ impl FluxionRenderer {
 
         let mut render_graph = RenderGraph::new();
         render_graph.add_pass("shadow",    PassSlot::Shadow,   Box::new(ShadowPass::new()));
-        render_graph.add_pass("geometry",  PassSlot::Geometry, Box::new(GeometryPass::new()));
-        render_graph.add_pass("lighting",  PassSlot::Lighting, Box::new(LightingPass::new()));
+        render_graph.add_pass("geometry",         PassSlot::Geometry, Box::new(GeometryPass::new()));
+        render_graph.add_pass("skinned_geometry",  PassSlot::Geometry, Box::new(SkinnedGeometryPass::new()));
+        render_graph.add_pass("lighting",          PassSlot::Lighting, Box::new(LightingPass::new()));
         render_graph.add_pass("skybox",    PassSlot::Skybox,   Box::new(SkyboxPass::new()));
         render_graph.add_pass("ssao",      PassSlot::Ssao,     Box::new(ssao));
         render_graph.add_pass("bloom",     PassSlot::Bloom,    Box::new(bloom));
@@ -258,7 +260,7 @@ impl FluxionRenderer {
             device, queue, surface,
             surface_config,
             render_graph, resources,
-            materials, meshes, textures, shaders: ShaderCache::new(),
+            materials, meshes, skinned_meshes: SkinnedMeshRegistry::new(), textures, shaders: ShaderCache::new(),
             mat_bgl,
             light_buffer,
             asset_source: None,
@@ -767,9 +769,10 @@ impl FluxionRenderer {
             resources:    &self.resources,
             frame:        &frame,
             surface_view: unsafe { &*vp_view },
-            light_buffer: &self.light_buffer.gpu_buffer,
-            meshes:       &self.meshes,
-            materials:    &self.materials,
+            light_buffer:   &self.light_buffer.gpu_buffer,
+            meshes:         &self.meshes,
+            materials:      &self.materials,
+            skinned_meshes: &self.skinned_meshes,
         };
         self.render_graph.execute(&mut ctx);
 
@@ -864,9 +867,10 @@ impl FluxionRenderer {
             resources:    &self.resources,
             frame:        &frame,
             surface_view: &surface_view,
-            light_buffer: &self.light_buffer.gpu_buffer,
-            meshes:       &self.meshes,
-            materials:    &self.materials,
+            light_buffer:   &self.light_buffer.gpu_buffer,
+            meshes:         &self.meshes,
+            materials:      &self.materials,
+            skinned_meshes: &self.skinned_meshes,
         };
 
         self.render_graph.execute(&mut ctx);
@@ -998,6 +1002,7 @@ impl FluxionRenderer {
             debug_lines,
             shadow_view_proj,
             has_shadow_caster,
+            skinned_draw_calls: Vec::new(),
         }
     }
 

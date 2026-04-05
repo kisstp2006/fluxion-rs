@@ -17,6 +17,7 @@ use fluxion_core::{
     transform::Transform,
     transform::system::TransformSystem,
     components::{Camera, Light, LightType, CameraControllerSystem},
+    AnimationSystem, LodSystem,
 };
 use glam::{Quat, Vec3};
 use fluxion_rune_scripting::RuneVm;
@@ -165,6 +166,12 @@ impl EditorHost {
         let dt = self.time.dt;
         CameraControllerSystem::update(&mut self.world, &self.input, dt);
 
+        // Skeletal animation
+        AnimationSystem::update(&self.world, dt);
+
+        // LOD switching
+        LodSystem::update(&self.world);
+
         // Transform propagation
         TransformSystem::update(&mut self.world);
 
@@ -184,6 +191,8 @@ impl EditorHost {
     /// Used while in Editing / Paused mode.
     pub fn tick_editor_only(&mut self) {
         self.time.tick();
+        AnimationSystem::update(&self.world, self.time.dt);
+        LodSystem::update(&self.world);
         TransformSystem::update(&mut self.world);
         self.vm.poll_hot_reload();
         self.flush_pending_edits();
@@ -264,6 +273,22 @@ impl EditorHost {
                         ) {
                             log::warn!("remove_component: no remover for '{}'", edit.field);
                         }
+                    }
+                }
+                "__instantiate_prefab__" => {
+                    let path = &edit.field;
+                    match fluxion_core::scene::load_scene_file(path) {
+                        Ok(data) => {
+                            match fluxion_core::scene::instantiate_entities(
+                                &mut self.world,
+                                &data.entities,
+                                &self.registry,
+                            ) {
+                                Ok(_) => log::info!("Prefab instantiated: {path}"),
+                                Err(e) => log::warn!("Prefab instantiate error: {e}"),
+                            }
+                        }
+                        Err(e) => log::warn!("Prefab load failed '{path}': {e}"),
                     }
                 }
                 "__set_parent__" => {

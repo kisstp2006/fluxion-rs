@@ -23,6 +23,10 @@ use anyhow::Context;
 use glam::{Quat, Vec2, Vec3};
 use image::RgbaImage;
 
+use fluxion_core::components::animator::{
+    AnimationClip, JointChannel, JointDef, KeyframeQuat, KeyframeVec3, Skeleton,
+};
+
 use crate::material::material_asset::{AlphaMode, MaterialAsset};
 
 use super::Vertex;
@@ -530,7 +534,151 @@ fn compose_orm_texture(
     Some(out)
 }
 
-// ── Geometry helpers (unchanged) ────────────────────────────────────────────────
+// ── Skeleton / Animation extraction ──────────────────────────────────────────────
+
+/// Extract the first skin and all animation clips from a glTF document.
+/// Returns `None` if the file has no skins.
+pub fn extract_skeleton(
+    doc:     &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+) -> Option<Skeleton> {
+    let skin = doc.skins().next()?;
+
+    // Build joint list.
+    let joint_nodes: Vec<gltf::Node<'_>> = skin.joints().collect();
+    let n = joint_nodes.len();
+
+    // Map from glTF node index → joint index.
+    let node_to_joint: std::collections::HashMap<usize, usize> = joint_nodes
+        .iter()
+        .enumerate()
+        .map(|(ji, node)| (node.index(), ji))
+        .collect();
+
+    // Read inverse bind matrices (or use identity if absent).
+    let ibm_reader = skin.reader(|buf| buffers.get(buf.index()).map(|d| d.as_ref()));
+    let inv_bind_mats: Vec<[[f32; 4]; 4]> = if let Some(iter) = ibm_reader.read_inverse_bind_matrices() {
+        iter.collect()
+    } else {
+        vec![glam::Mat4::IDENTITY.to_cols_array_2d(); n]
+    };
+
+    let mut joints = Vec::with_capacity(n);
+    for (ji, node) in joint_nodes.iter().enumerate() {
+        let parent = node_to_joint
+            .iter()
+            .find(|(&ni, _)| {
+                // Find a joint whose children list includes this node.
+                doc.nodes()
+                    .find(|pn| pn.index() == ni)
+                    .map(|pn| pn.children().any(|c| c.index() == node.index()))
+                    .unwrap_or(false)
+            })
+            .and_then(|(_, &pji)| if pji < ji { Some(pji) } else { None });
+
+        let ibm = inv_bind_mats.get(ji).copied()
+            .unwrap_or(glam::Mat4::IDENTITY.to_cols_array_2d());
+
+        joints.push(JointDef {
+            name:              node.name().unwrap_or("joint").to_string(),
+            parent,
+            inverse_bind_pose: ibm,
+        });
+    }
+
+    // Extract animation clips.
+    let mut clips = Vec::new();
+    for anim in doc.animations() {
+        let name = anim.name().unwrap_or("anim").to_string();
+        let mut channels: std::collections::HashMap<usize, JointChannel> =
+            std::collections::HashMap::new();
+        let mut duration = 0.0f32;
+
+        for channel in anim.channels() {
+            let target_node = channel.target().node().index();
+            let Some(&joint_index) = node_to_joint.get(&target_node) else { continue };
+
+            let sampler = channel.sampler();
+            let reader = channel.reader(|buf| buffers.get(buf.index()).map(|d| d.as_ref()));
+
+            // Read timestamps.
+            let times: Vec<f32> = match reader.read_inputs() {
+                Some(iter) => iter.collect(),
+                None => continue,
+            };
+            if let Some(&last) = times.last() {
+                if last > duration { duration = last; }
+            }
+
+            let ch = channels.entry(joint_index).or_insert(JointChannel {
+                joint_index,
+                translations: Vec::new(),
+                rotations:    Vec::new(),
+                scales:       Vec::new(),
+            });
+
+            use gltf::animation::Property;
+            match channel.target().property() {
+                Property::Translation => {
+                    if let Some(iter) = reader.read_outputs() {
+                        if let gltf::animation::util::ReadOutputs::Translations(it) = iter {
+                            for (t, v) in times.iter().zip(it) {
+                                ch.translations.push(KeyframeVec3 { time: *t, value: v });
+                            }
+                        }
+                    }
+                }
+                Property::Rotation => {
+                    if let Some(iter) = reader.read_outputs() {
+                        if let gltf::animation::util::ReadOutputs::Rotations(it) = iter {
+                            for (t, v) in times.iter().zip(it.into_f32()) {
+                                ch.rotations.push(KeyframeQuat { time: *t, value: v });
+                            }
+                        }
+                    }
+                }
+                Property::Scale => {
+                    if let Some(iter) = reader.read_outputs() {
+                        if let gltf::animation::util::ReadOutputs::Scales(it) = iter {
+                            for (t, v) in times.iter().zip(it) {
+                                ch.scales.push(KeyframeVec3 { time: *t, value: v });
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if duration > 0.0 {
+            clips.push(AnimationClip {
+                name,
+                duration,
+                channels: channels.into_values().collect(),
+            });
+        }
+    }
+
+    Some(Skeleton { joints, clips })
+}
+
+/// Load a skeleton from a `.glb` or `.gltf` file on disk.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_skeleton_from_path(path: &Path) -> anyhow::Result<Option<Skeleton>> {
+    let path_str = path.to_str().context("path must be UTF-8")?;
+    let (doc, buffers, _) = gltf::import(path_str)
+        .with_context(|| format!("gltf::import({path_str})"))?;
+    Ok(extract_skeleton(&doc, &buffers))
+}
+
+/// Load a skeleton from raw `.glb` bytes.
+pub fn load_skeleton_from_bytes(data: &[u8]) -> anyhow::Result<Option<Skeleton>> {
+    let (doc, buffers, _) = gltf::import_slice(data)
+        .context("gltf::import_slice")?;
+    Ok(extract_skeleton(&doc, &buffers))
+}
+
+// ── Geometry helpers ──────────────────────────────────────────────────────────
 
 fn compute_vertex_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     let mut acc: Vec<Vec3> = vec![Vec3::ZERO; positions.len()];

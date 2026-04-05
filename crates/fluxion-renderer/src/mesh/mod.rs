@@ -8,13 +8,18 @@
 
 pub mod primitives;
 pub mod gltf_loader;
+pub mod skinned;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use gltf_loader::{load_gltf_path, load_gltf_path_full};
 pub use gltf_loader::{
     load_gltf_slice, load_gltf_slice_full, load_gltf_slice_full_with_resolver, GltfHierarchyNode,
     GltfLoadOutput, GltfPrimitiveData,
+    extract_skeleton, load_skeleton_from_bytes,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use gltf_loader::load_skeleton_from_path;
+pub use skinned::{SkinnedVertex, SkinnedGpuMesh, SkinnedMeshRegistry};
 
 use wgpu::Device;
 use bytemuck::{Pod, Zeroable};
