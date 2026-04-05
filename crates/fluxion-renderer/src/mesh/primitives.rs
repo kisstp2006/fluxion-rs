@@ -126,7 +126,7 @@ pub fn plane() -> (Vec<Vertex>, Vec<u32>) {
         Vertex { position: [ h, 0.0,  h], normal, tangent, uv: [1.0, 1.0] },
         Vertex { position: [-h, 0.0,  h], normal, tangent, uv: [0.0, 1.0] },
     ];
-    let indices = vec![0, 1, 2, 0, 2, 3];
+    let indices = vec![0, 2, 1, 0, 3, 2];
     (vertices, indices)
 }
 

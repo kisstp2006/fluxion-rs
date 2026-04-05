@@ -606,6 +606,15 @@ impl EditorInner {
                         (viewport_gizmo::GizmoMode::Translate, 0) => t.position.x += delta,
                         (viewport_gizmo::GizmoMode::Translate, 1) => t.position.y += delta,
                         (viewport_gizmo::GizmoMode::Translate, 2) => t.position.z += delta,
+                        (viewport_gizmo::GizmoMode::Rotate, axis_idx) => {
+                            let rot_axis = match axis_idx {
+                                0 => glam::Vec3::X,
+                                1 => glam::Vec3::Y,
+                                _ => glam::Vec3::Z,
+                            };
+                            let rot = glam::Quat::from_axis_angle(rot_axis, delta);
+                            t.rotation = (rot * t.rotation).normalize();
+                        }
                         (viewport_gizmo::GizmoMode::Scale, 0) => t.scale.x = (t.scale.x + delta).max(0.001),
                         (viewport_gizmo::GizmoMode::Scale, 1) => t.scale.y = (t.scale.y + delta).max(0.001),
                         (viewport_gizmo::GizmoMode::Scale, 2) => t.scale.z = (t.scale.z + delta).max(0.001),
