@@ -17,6 +17,8 @@ thread_local! {
     static VP_RESPONSE: RefCell<Option<egui::Response>> = RefCell::new(None);
     /// Stored rect of the viewport image for coordinate conversion.
     pub static VP_RECT: Cell<egui::Rect> = Cell::new(egui::Rect::NOTHING);
+    /// Response from the last widget call — used by `prop_context_menu`.
+    static LAST_WIDGET_RESP: RefCell<Option<egui::Response>> = RefCell::new(None);
 }
 
 /// Returns the last viewport image rect (set by `image_interactive`).
@@ -374,6 +376,244 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let a2 = egui::pos2(tip.x - head * (nx - ny * 0.5), tip.y - head * (ny + nx * 0.5));
             painter.line_segment([tip, a1], egui::Stroke::new(thickness, color));
             painter.line_segment([tip, a2], egui::Stroke::new(thickness, color));
+        });
+    }).build()?;
+
+    // ── Inline vector widgets (Unity-style horizontal X/Y/Z) ──────────────────
+
+    m.function("vec3_inline", |label: Ref<str>, x: f64, y: f64, z: f64, speed: f64| -> Vec<f64> {
+        with_ui(|ui| {
+            let mut v = [x as f32, y as f32, z as f32];
+            ui.horizontal(|ui| {
+                ui.label(label.as_ref());
+                ui.colored_label(egui::Color32::from_rgb(220, 80, 80),   "X");
+                let resp = ui.add(egui::DragValue::new(&mut v[0]).speed(speed as f32));
+                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
+                ui.colored_label(egui::Color32::from_rgb(80, 200, 80),   "Y");
+                ui.add(egui::DragValue::new(&mut v[1]).speed(speed as f32));
+                ui.colored_label(egui::Color32::from_rgb(80, 120, 220),  "Z");
+                ui.add(egui::DragValue::new(&mut v[2]).speed(speed as f32));
+            });
+            vec![v[0] as f64, v[1] as f64, v[2] as f64]
+        }).unwrap_or_else(|| vec![x, y, z])
+    }).build()?;
+
+    m.function("vec2_inline", |label: Ref<str>, x: f64, y: f64, speed: f64| -> Vec<f64> {
+        with_ui(|ui| {
+            let mut v = [x as f32, y as f32];
+            ui.horizontal(|ui| {
+                ui.label(label.as_ref());
+                ui.colored_label(egui::Color32::from_rgb(220, 80, 80),  "X");
+                let resp = ui.add(egui::DragValue::new(&mut v[0]).speed(speed as f32));
+                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
+                ui.colored_label(egui::Color32::from_rgb(80, 200, 80),  "Y");
+                ui.add(egui::DragValue::new(&mut v[1]).speed(speed as f32));
+            });
+            vec![v[0] as f64, v[1] as f64]
+        }).unwrap_or_else(|| vec![x, y])
+    }).build()?;
+
+    m.function("vec4_inline", |label: Ref<str>, vals: Vec<f64>, speed: f64| -> Vec<f64> {
+        let (x, y, z, w) = if vals.len() >= 4 {
+            (vals[0], vals[1], vals[2], vals[3])
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        };
+        with_ui(|ui| {
+            let mut v = [x as f32, y as f32, z as f32, w as f32];
+            ui.horizontal(|ui| {
+                ui.label(label.as_ref());
+                ui.colored_label(egui::Color32::from_rgb(220, 80, 80),   "X");
+                let resp = ui.add(egui::DragValue::new(&mut v[0]).speed(speed as f32));
+                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
+                ui.colored_label(egui::Color32::from_rgb(80, 200, 80),   "Y");
+                ui.add(egui::DragValue::new(&mut v[1]).speed(speed as f32));
+                ui.colored_label(egui::Color32::from_rgb(80, 120, 220),  "Z");
+                ui.add(egui::DragValue::new(&mut v[2]).speed(speed as f32));
+                ui.colored_label(egui::Color32::from_rgb(160, 160, 160), "W");
+                ui.add(egui::DragValue::new(&mut v[3]).speed(speed as f32));
+            });
+            vec![v[0] as f64, v[1] as f64, v[2] as f64, v[3] as f64]
+        }).unwrap_or_else(|| vec![x, y, z, w])
+    }).build()?;
+
+    m.function("quat_euler_inline", |label: Ref<str>, pitch: f64, yaw: f64, roll: f64| -> Vec<f64> {
+        with_ui(|ui| {
+            let mut v = [pitch as f32, yaw as f32, roll as f32];
+            ui.horizontal(|ui| {
+                ui.label(label.as_ref());
+                ui.colored_label(egui::Color32::from_rgb(220, 80, 80),   "P");
+                let resp = ui.add(egui::DragValue::new(&mut v[0]).speed(0.5f32).range(-360.0f32..=360.0f32));
+                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
+                ui.colored_label(egui::Color32::from_rgb(80, 200, 80),   "Y");
+                ui.add(egui::DragValue::new(&mut v[1]).speed(0.5f32).range(-360.0f32..=360.0f32));
+                ui.colored_label(egui::Color32::from_rgb(80, 120, 220),  "R");
+                ui.add(egui::DragValue::new(&mut v[2]).speed(0.5f32).range(-360.0f32..=360.0f32));
+            });
+            vec![v[0] as f64, v[1] as f64, v[2] as f64]
+        }).unwrap_or_else(|| vec![pitch, yaw, roll])
+    }).build()?;
+
+    // ── Two-column layout helpers ─────────────────────────────────────────────
+
+    m.function("prop_row_begin", |label: Ref<str>| {
+        with_ui(|ui| {
+            let available = ui.available_width();
+            let label_width = (available * 0.40).max(80.0).min(160.0);
+            ui.horizontal(|ui| {
+                ui.set_min_width(available);
+                ui.add_sized(
+                    egui::Vec2::new(label_width, ui.spacing().interact_size.y),
+                    egui::Label::new(
+                        egui::RichText::new(label.as_ref())
+                            .color(egui::Color32::from_rgb(180, 180, 190))
+                    ),
+                );
+            });
+        });
+    }).build()?;
+
+    // ── Context menu system ───────────────────────────────────────────────────
+
+    m.function("prop_context_menu", |_field_id: Ref<str>| -> String {
+        let mut action = String::new();
+        LAST_WIDGET_RESP.with(|resp_ref| {
+            if let Some(resp) = resp_ref.borrow().as_ref() {
+                resp.context_menu(|ui| {
+                    if ui.button("Copy value").clicked() {
+                        action = "copy".to_string();
+                        ui.close_menu();
+                    }
+                    if ui.button("Paste value").clicked() {
+                        action = "paste".to_string();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Reset to default").clicked() {
+                        action = "reset".to_string();
+                        ui.close_menu();
+                    }
+                });
+            }
+        });
+        action
+    }).build()?;
+
+    m.function("copy_to_clipboard", |text: Ref<str>| {
+        with_ui(|ui| {
+            ui.ctx().copy_text(text.as_ref().to_string());
+        });
+    }).build()?;
+
+    m.function("paste_from_clipboard", || -> String {
+        with_ui(|ui| {
+            ui.ctx().input(|i| i.events.iter().find_map(|e| {
+                if let egui::Event::Paste(s) = e { Some(s.clone()) } else { None }
+            })).unwrap_or_default()
+        }).unwrap_or_default()
+    }).build()?;
+
+    // ── Enum combo-box ────────────────────────────────────────────────────────
+
+    m.function("enum_combo", |label: Ref<str>, current: Ref<str>, options: Vec<String>| -> String {
+        with_ui(|ui| {
+            let mut chosen = current.as_ref().to_string();
+            let resp = egui::ComboBox::from_label(label.as_ref())
+                .selected_text(current.as_ref())
+                .show_ui(ui, |ui| {
+                    for opt in &options {
+                        ui.selectable_value(&mut chosen, opt.clone(), opt.as_str());
+                    }
+                });
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp.response));
+            chosen
+        }).unwrap_or_else(|| current.as_ref().to_string())
+    }).build()?;
+
+    // ── Asset path picker ─────────────────────────────────────────────────────
+
+    m.function("asset_path_picker", |label: Ref<str>, path: Ref<str>| -> String {
+        with_ui(|ui| {
+            let mut v = path.as_ref().to_string();
+            ui.horizontal(|ui| {
+                ui.label(label.as_ref());
+                let resp = ui.text_edit_singleline(&mut v);
+                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
+                ui.small("…");
+            });
+            v
+        }).unwrap_or_else(|| path.as_ref().to_string())
+    }).build()?;
+
+    // ── Menu bar bindings (for menubar.rn) ────────────────────────────────────
+
+    m.function("menu_bar_begin", || {
+        // The actual TopBottomPanel is opened by the Rust main loop context.
+        // This is a no-op placeholder — the panel is driven from main.rs via a
+        // Rune call whose ui pointer is a menu-bar ui.
+    }).build()?;
+
+    m.function("menu_bar_end", || {}).build()?;
+
+    m.function("menu_begin", |label: Ref<str>| -> bool {
+        // Returns true so Rune code can call menu_item inside an `if` block.
+        // The actual open/close is handled by egui's menu_button.
+        // We use a thread-local bool to track open state per-frame.
+        with_ui(|ui| {
+            let mut opened = false;
+            ui.menu_button(label.as_ref(), |_ui| {
+                opened = true;
+            });
+            opened
+        }).unwrap_or(false)
+    }).build()?;
+
+    m.function("menu_end", || {}).build()?;
+
+    m.function("menu_item", |label: Ref<str>| -> bool {
+        with_ui(|ui| ui.button(label.as_ref()).clicked()).unwrap_or(false)
+    }).build()?;
+
+    m.function("menu_separator", || {
+        with_ui(|ui| { ui.separator(); });
+    }).build()?;
+
+    // ── Toolbar bindings (for toolbar.rn) ─────────────────────────────────────
+
+    m.function("toolbar_begin", || {}).build()?;
+    m.function("toolbar_end",   || {}).build()?;
+
+    m.function("tool_button", |label: Ref<str>, active: bool| -> bool {
+        with_ui(|ui| {
+            let color = if active {
+                egui::Color32::from_rgb(220, 180, 60)
+            } else {
+                egui::Color32::from_rgb(180, 180, 190)
+            };
+            let text = egui::RichText::new(label.as_ref())
+                .font(egui::FontId::proportional(12.0))
+                .color(color);
+            ui.selectable_label(active, text).clicked()
+        }).unwrap_or(false)
+    }).build()?;
+
+    m.function("toolbar_separator", || {
+        with_ui(|ui| { ui.separator(); });
+    }).build()?;
+
+    m.function("badge_right", |text: Ref<str>, r: f64, g: f64, b: f64| {
+        with_ui(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(text.as_ref())
+                        .font(egui::FontId::monospace(10.0))
+                        .color(egui::Color32::from_rgb(
+                            (r * 255.0) as u8,
+                            (g * 255.0) as u8,
+                            (b * 255.0) as u8,
+                        )),
+                );
+            });
         });
     }).build()?;
 

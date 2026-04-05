@@ -14,6 +14,7 @@ pub use world_module::{
     set_world_context, clear_world_context, WorldContextGuard,
     drain_pending_edits, PendingEdit,
     push_log, get_selected_id, set_project_root, set_undo_state, set_frame_time,
+    set_editor_shell_state, drain_action_signals, get_editor_mode_str, get_transform_tool_str,
 };
 pub use camera_module::{
     set_camera_snapshot, set_camera_world, clear_camera_world,

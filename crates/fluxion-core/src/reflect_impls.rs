@@ -98,7 +98,8 @@ fn mesh_renderer_fields() -> &'static [FieldDescriptor] {
     MESH_RENDERER_FIELDS.get_or_init(|| vec![
         FieldDescriptor::new("mesh_path",      "Mesh Path",       ReflectFieldType::OptionStr),
         FieldDescriptor::new("material_path",  "Material Path",   ReflectFieldType::OptionStr),
-        FieldDescriptor::new("primitive",      "Primitive Type",  ReflectFieldType::Enum),
+        FieldDescriptor::new("primitive",      "Primitive Type",  ReflectFieldType::Enum)
+            .with_variants(&["Cube", "Sphere", "Plane", "Cylinder", "Capsule"]),
         FieldDescriptor::new("cast_shadow",    "Cast Shadow",     ReflectFieldType::Bool),
         FieldDescriptor::new("receive_shadow", "Receive Shadow",  ReflectFieldType::Bool),
         FieldDescriptor::new("layer",          "Render Layer",    ReflectFieldType::U8),
@@ -187,13 +188,15 @@ fn camera_fields() -> &'static [FieldDescriptor] {
             .with_range(RangeHint::min_max(0.001, 10.0)),
         FieldDescriptor::new("far",              "Far Plane",        ReflectFieldType::F32)
             .with_range(RangeHint::min_max(1.0, 100_000.0)),
-        FieldDescriptor::new("projection",       "Projection Mode",  ReflectFieldType::Enum),
+        FieldDescriptor::new("projection",       "Projection Mode",  ReflectFieldType::Enum)
+            .with_variants(&["Perspective", "Orthographic"]),
         FieldDescriptor::new("ortho_size",       "Ortho Size",       ReflectFieldType::F32)
             .with_range(RangeHint::min_max(0.1, 1000.0)),
         FieldDescriptor::new("is_active",        "Is Active",        ReflectFieldType::Bool),
         FieldDescriptor::new("depth",            "Depth",            ReflectFieldType::F32),
         FieldDescriptor::new("culling_mask",     "Culling Mask",     ReflectFieldType::U32),
-        FieldDescriptor::new("clear_flags",      "Clear Flags",      ReflectFieldType::Enum),
+        FieldDescriptor::new("clear_flags",      "Clear Flags",      ReflectFieldType::Enum)
+            .with_variants(&["Skybox", "SolidColor", "DepthOnly", "Nothing"]),
         FieldDescriptor::new("background_color", "Background Color", ReflectFieldType::Color4),
         FieldDescriptor::new("allow_hdr",        "Allow HDR",        ReflectFieldType::Bool),
         FieldDescriptor::new("allow_msaa",       "Allow MSAA",       ReflectFieldType::Bool),
@@ -277,7 +280,8 @@ static LIGHT_FIELDS: OnceLock<Vec<FieldDescriptor>> = OnceLock::new();
 
 fn light_fields() -> &'static [FieldDescriptor] {
     LIGHT_FIELDS.get_or_init(|| vec![
-        FieldDescriptor::new("light_type",     "Light Type",     ReflectFieldType::Enum),
+        FieldDescriptor::new("light_type",     "Light Type",     ReflectFieldType::Enum)
+            .with_variants(&["Directional", "Point", "Spot"]),
         FieldDescriptor::new("color",          "Color",          ReflectFieldType::Color3),
         FieldDescriptor::new("intensity",      "Intensity",      ReflectFieldType::F32)
             .with_range(RangeHint::min_max(0.0, 200_000.0)),
@@ -439,8 +443,10 @@ static RIGID_BODY_FIELDS: OnceLock<Vec<FieldDescriptor>> = OnceLock::new();
 
 fn rigid_body_fields() -> &'static [FieldDescriptor] {
     RIGID_BODY_FIELDS.get_or_init(|| vec![
-        FieldDescriptor::new("body_type",       "Body Type",        ReflectFieldType::Enum),
-        FieldDescriptor::new("shape",           "Shape",            ReflectFieldType::Enum),
+        FieldDescriptor::new("body_type",       "Body Type",        ReflectFieldType::Enum)
+            .with_variants(&["Dynamic", "Kinematic", "Static"]),
+        FieldDescriptor::new("shape",           "Shape",            ReflectFieldType::Enum)
+            .with_variants(&["Box", "Sphere", "Capsule", "HalfSpace"]),
         FieldDescriptor::new("shape_param_x",   "Shape Param X",    ReflectFieldType::F32)
             .with_range(RangeHint::min_max(0.001, 100.0)),
         FieldDescriptor::new("shape_param_y",   "Shape Param Y",    ReflectFieldType::F32)

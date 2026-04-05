@@ -407,11 +407,27 @@ impl EditorInner {
         };
         window.set_title(&title);
 
-        // Deferred scene-save request from menu.
-        let mut do_save_scene   = false;
-        let mut do_open_scene   = false;
-        let mut do_new_scene    = false;
-        let mut new_editor_mode = *editor_mode;
+        // Push current editor state to Rune thread-locals before UI calls.
+        {
+            let mode_str = match *editor_mode {
+                crate::toolbar::EditorMode::Editing => "Editing",
+                crate::toolbar::EditorMode::Playing => "Playing",
+                crate::toolbar::EditorMode::Paused  => "Paused",
+            };
+            let tool_str = match *transform_tool {
+                crate::toolbar::TransformTool::Translate => "Translate",
+                crate::toolbar::TransformTool::Rotate    => "Rotate",
+                crate::toolbar::TransformTool::Scale     => "Scale",
+            };
+            crate::rune_bindings::set_editor_shell_state(
+                mode_str, tool_str, &project.name, &scene_name,
+            );
+        }
+
+        // Deferred scene-save request from menu / toolbar.
+        let mut do_save_scene = false;
+        let mut do_open_scene = false;
+        let mut do_new_scene  = false;
 
         let result = self.renderer.render_ui_only(|device, queue, encoder, view| {
             ui_shell.paint(&window, device, queue, encoder, view, w, h, |ctx| {
@@ -420,50 +436,34 @@ impl EditorInner {
                     *theme_applied = true;
                 }
 
-                // ── Menu bar ────────────────────────────────────────────────
+                // ── Menu bar (Rune-driven) ───────────────────────────────
                 egui::TopBottomPanel::top("editor_menu")
                     .frame(egui::Frame::none()
                         .fill(crate::theme::MENU_BG)
                         .inner_margin(egui::Margin::symmetric(4.0, 2.0)))
                     .show(ctx, |ui| {
                         egui::menu::bar(ui, |ui| {
-                            ui.menu_button("File", |ui| {
-                                if ui.button("New Scene        Ctrl+N").clicked() {
-                                    do_new_scene = true;
-                                    ui.close_menu();
-                                }
-                                if ui.button("Open Scene…").clicked() {
-                                    do_open_scene = true;
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                if ui.button("Save Scene        Ctrl+S").clicked() {
-                                    do_save_scene = true;
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                if ui.button("Exit").clicked() {
-                                    std::process::exit(0);
-                                }
-                            });
-                            ui.menu_button("Edit", |_ui| {});
-                            ui.menu_button("View", |_ui| {});
-                            ui.menu_button("Help", |ui| {
-                                if ui.button("About").clicked() {
-                                    ui.close_menu();
-                                }
-                            });
+                            let _guard = crate::rune_bindings::set_current_ui(ui);
+                            if let Err(e) = vm.call_fn(&["menubar", "panel"], ()) {
+                                log::error!("menubar::panel: {e:#}");
+                            }
                         });
                     });
 
-                // ── Toolbar ─────────────────────────────────────────────────
-                new_editor_mode = crate::toolbar::show_toolbar(
-                    ctx,
-                    *editor_mode,
-                    transform_tool,
-                    &project.name,
-                    &scene_name,
-                );
+                // ── Toolbar (Rune-driven) ────────────────────────────────────
+                egui::TopBottomPanel::top("toolbar_panel")
+                    .exact_height(32.0)
+                    .frame(egui::Frame::none()
+                        .fill(crate::theme::TOOLBAR_BG)
+                        .inner_margin(egui::Margin::symmetric(6.0, 4.0)))
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            let _guard = crate::rune_bindings::set_current_ui(ui);
+                            if let Err(e) = vm.call_fn(&["toolbar", "panel"], ()) {
+                                log::error!("toolbar::panel: {e:#}");
+                            }
+                        });
+                    });
 
                 // ── Dock area ───────────────────────────────────────────────
                 show_dock(ctx, dock_state, vm);
@@ -495,8 +495,30 @@ impl EditorInner {
             })
         });
 
-        // Apply deferred mode change.
-        *editor_mode = new_editor_mode;
+        // Consume action signals queued by Rune scripts this frame.
+        for signal in crate::rune_bindings::drain_action_signals() {
+            match signal.as_str() {
+                "new_scene"  => do_new_scene  = true,
+                "open_scene" => do_open_scene = true,
+                "save_scene" => do_save_scene = true,
+                "exit"       => std::process::exit(0),
+                _            => {}
+            }
+        }
+
+        // Sync editor mode and transform tool from Rune state.
+        let mode_str = crate::rune_bindings::get_editor_mode_str();
+        *editor_mode = match mode_str.as_str() {
+            "Playing" => crate::toolbar::EditorMode::Playing,
+            "Paused"  => crate::toolbar::EditorMode::Paused,
+            _         => crate::toolbar::EditorMode::Editing,
+        };
+        let tool_str = crate::rune_bindings::get_transform_tool_str();
+        *transform_tool = match tool_str.as_str() {
+            "Rotate" => crate::toolbar::TransformTool::Rotate,
+            "Scale"  => crate::toolbar::TransformTool::Scale,
+            _        => crate::toolbar::TransformTool::Translate,
+        };
 
         // Apply gizmo drag delta to selected entity transform.
         if let Some((axis, delta, mode)) = self.gizmo_drag.pending_delta.take() {

@@ -24,6 +24,7 @@ const TONE_LINEAR:   u32 = 1u;
 const TONE_REINHARD: u32 = 2u;
 const TONE_ACES:     u32 = 3u;
 const TONE_AGX:      u32 = 4u;
+const TONE_UCHIMURA: u32 = 5u;
 
 struct TonemapParams {
     exposure:             f32,  // EV stops, 1.0 = no change. Multiply before tonemapping.
@@ -49,54 +50,124 @@ struct FragInput {
 
 // ── ACES filmic tonemapping ───────────────────────────────────────────────────
 //
-// Approximation by Krzysztof Narkowicz:
-//   https://knarkowicz.wordpress.com/2016/01/06/aces-filmic-tone-mapping-curve/
-// Provides a pleasing S-curve that lifts shadows and compresses highlights,
-// matching the look of ACES film stock.
+// Stephen Hill / MJP Baking Lab RRT+ODT fitted ACES.
+// Uses proper AP1 input/output matrices + RRT+ODT rational approximation.
+// Source: https://github.com/TheRealMJP/BakingLab/blob/master/BakingLab/ACES.hlsl
+// This is the same implementation used by WickedEngine, Unreal Engine, etc.
+//
+// sRGB → XYZ → D65_2_D60 → AP1 → RRT_SAT
+const ACES_INPUT_MAT: mat3x3<f32> = mat3x3<f32>(
+    vec3<f32>(0.59719, 0.07600, 0.02840),
+    vec3<f32>(0.35458, 0.90834, 0.13383),
+    vec3<f32>(0.04823, 0.01566, 0.83777),
+);
+// ODT_SAT → XYZ → D60_2_D65 → sRGB
+const ACES_OUTPUT_MAT: mat3x3<f32> = mat3x3<f32>(
+    vec3<f32>( 1.60475, -0.10208, -0.00327),
+    vec3<f32>(-0.53108,  1.10813, -0.07276),
+    vec3<f32>(-0.07367, -0.00605,  1.07602),
+);
 
-fn aces_narkowicz(x: vec3<f32>) -> vec3<f32> {
-    let a: f32 = 2.51;
-    let b: f32 = 0.03;
-    let c: f32 = 2.43;
-    let d: f32 = 0.59;
-    let e: f32 = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+fn aces_rrt_odt_fit(v: vec3<f32>) -> vec3<f32> {
+    let a = v * (v + vec3<f32>(0.0245786)) - vec3<f32>(0.000090537);
+    let b = v * (0.983729 * v + vec3<f32>(0.4329510)) + vec3<f32>(0.238081);
+    return a / b;
 }
 
-// Reinhard global tonemapping.
+fn aces_fitted(color: vec3<f32>) -> vec3<f32> {
+    var c = ACES_INPUT_MAT * color;
+    // Clamp to avoid half-precision issues near very bright point light centers
+    c = clamp(c, vec3<f32>(0.0), vec3<f32>(100.0));
+    c = aces_rrt_odt_fit(c);
+    c = ACES_OUTPUT_MAT * c;
+    return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Reinhard global (simple, fast).
 fn reinhard(x: vec3<f32>) -> vec3<f32> {
     return x / (x + vec3<f32>(1.0));
 }
 
-// AgX tonemapping — perceptual, neutral highlights (Blender-style).
-// Based on Troy Sobotka's AgX transform, simplified approximation.
-fn agx(x: vec3<f32>) -> vec3<f32> {
-    // Inset matrix (sRGB → AgX log space)
-    let m = mat3x3<f32>(
-        vec3<f32>(0.842479062253094,  0.0423282422610123, 0.0423756549057051),
-        vec3<f32>(0.0784335999999992, 0.878468636469772,  0.0784336),
-        vec3<f32>(0.0792237451477643, 0.0791661274605434, 0.879142973793104),
+// Reinhard Extended — luminance-based, preserves hue under saturation.
+// Max white Lw can be tuned; 4.0 works well for typical HDR scenes.
+fn reinhard_extended(x: vec3<f32>) -> vec3<f32> {
+    let lw: f32 = 4.0;
+    let lum = dot(x, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let lum_out = (lum * (1.0 + lum / (lw * lw))) / (1.0 + lum);
+    let scale = select(lum_out / lum, 0.0, lum <= 0.0);
+    return clamp(x * scale, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Uchimura tone mapping (Gran Turismo 7 style).
+// Reference: "Driving Toward Reality: Physically Based Tone Mapping and Perceptual
+//             Fidelity in Gran Turismo 7"
+// https://www.desmos.com/calculator/gslcdxvipg
+fn uchimura_curve(x: f32, P: f32, a: f32, m: f32, l: f32, c: f32, b: f32) -> f32 {
+    let l0  = ((P - m) * l) / a;
+    let L0  = m - m / a;
+    let L1  = m + (1.0 - m) / a;
+    let S0  = m + l0;
+    let S1  = m + a * l0;
+    let C2  = (a * P) / (P - S1);
+    let CP  = -C2 / P;
+    let w0  = 1.0 - smoothstep(0.0, m, x);
+    let w2  = step(m + l0, x);
+    let w1  = 1.0 - w0 - w2;
+    let T   = m * pow(max(x / m, 0.0001), c) + b;
+    let S   = P - (P - S1) * exp(CP * (x - S0));
+    let L   = m + a * (x - m);
+    return T * w0 + L * w1 + S * w2;
+}
+
+fn uchimura(color: vec3<f32>) -> vec3<f32> {
+    // Default parameters tuned for GT7 look
+    let P: f32 = 1.0;   // Max brightness
+    let a: f32 = 1.0;   // Contrast
+    let m: f32 = 0.22;  // Linear section start
+    let l: f32 = 0.4;   // Linear section length
+    let c: f32 = 1.33;  // Black tightness
+    let b: f32 = 0.0;   // Pedestal
+    return vec3<f32>(
+        uchimura_curve(color.r, P, a, m, l, c, b),
+        uchimura_curve(color.g, P, a, m, l, c, b),
+        uchimura_curve(color.b, P, a, m, l, c, b),
     );
+}
+
+// AgX tonemapping — perceptual, neutral highlights (Blender-style).
+// Based on Troy Sobotka's AgX transform.
+// Inset/outset matrices from https://iolite-engine.com/blog_posts/minimal_agx_implementation
+const AGX_INSET_MAT: mat3x3<f32> = mat3x3<f32>(
+    vec3<f32>(0.842479062253094,  0.0423282422610123, 0.0423756549057051),
+    vec3<f32>(0.0784335999999992, 0.878468636469772,  0.0784336),
+    vec3<f32>(0.0792237451477643, 0.0791661274605434, 0.879142973793104),
+);
+const AGX_OUTSET_MAT: mat3x3<f32> = mat3x3<f32>(
+    vec3<f32>( 1.19687900512661,  -0.0528968517574562, -0.0529716355144492),
+    vec3<f32>(-0.0980208811401368, 1.15190312990417,   -0.0980434501171241),
+    vec3<f32>(-0.0990297440797205, -0.0989611768448433, 1.15107367264116),
+);
+
+fn agx_default_contrast_approx(x: vec3<f32>) -> vec3<f32> {
+    // Polynomial sigmoid in Horner form — correctly ordered
+    // Coefficients: c0=0.228, c1=-0.202, c2=0.502, c3=1.010, c4=-0.028
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    return 0.228086381506378 +
+           x  * (-0.202116101926749 +
+           x  * ( 0.501825783573368 +
+           x  * ( 1.01007777459823  +
+           x  * (-0.0275826090694))));
+}
+
+fn agx(color: vec3<f32>) -> vec3<f32> {
     let min_ev = -12.47393;
     let max_ev =  4.026069;
-    var v = m * max(x, vec3<f32>(0.0));
+    var v = AGX_INSET_MAT * max(color, vec3<f32>(0.0));
     v = clamp(log2(v + vec3<f32>(0.0000001)), vec3<f32>(min_ev), vec3<f32>(max_ev));
     v = (v - min_ev) / (max_ev - min_ev);
-    // Sigmoid contrast curve
-    let c1 = -0.202116101926749;
-    let c2 =  0.501825783573368;
-    let c3 =  1.01007777459823;
-    let c4 = -0.0275826090694;
-    let c5 =  0.228086381506378;
-    let t  = v;
-    v = t * (t * (t * (t * c4 + c3) + c2) + c1) + c5;
-    // Outset matrix (AgX log → sRGB)
-    let mi = mat3x3<f32>(
-        vec3<f32>( 1.19687900512661,  -0.0528968517574562, -0.0529716355144492),
-        vec3<f32>(-0.0980208811401368, 1.15190312990417,   -0.0980434501171241),
-        vec3<f32>(-0.0990297440797205, -0.0989611768448433, 1.15107367264116),
-    );
-    v = mi * v;
+    v = agx_default_contrast_approx(v);
+    v = AGX_OUTSET_MAT * v;
     return clamp(v, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
@@ -173,16 +244,18 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
 
     // Tonemapping: HDR → LDR (mode selected from uniform)
     var ldr_color: vec3<f32>;
-    if params.tone_mode == TONE_NONE {
-        ldr_color = clamp(hdr_color, vec3<f32>(0.0), vec3<f32>(1.0));
-    } else if params.tone_mode == TONE_LINEAR {
+    if params.tone_mode == TONE_NONE || params.tone_mode == TONE_LINEAR {
         ldr_color = clamp(hdr_color, vec3<f32>(0.0), vec3<f32>(1.0));
     } else if params.tone_mode == TONE_REINHARD {
-        ldr_color = reinhard(hdr_color);
+        ldr_color = reinhard_extended(hdr_color);
+    } else if params.tone_mode == TONE_ACES {
+        ldr_color = aces_fitted(hdr_color);
     } else if params.tone_mode == TONE_AGX {
         ldr_color = agx(hdr_color);
+    } else if params.tone_mode == TONE_UCHIMURA {
+        ldr_color = uchimura(hdr_color);
     } else {
-        ldr_color = aces_narkowicz(hdr_color);
+        ldr_color = aces_fitted(hdr_color);
     }
 
     // Gamma correction: linear → sRGB

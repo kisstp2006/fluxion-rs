@@ -33,10 +33,12 @@ pub enum ToneMapMode {
     Linear,
     /// Reinhard global tonemapping.
     Reinhard,
-    /// ACES Narkowicz filmic approximation (default).
+    /// ACES fitted (Stephen Hill / Baking Lab RRT+ODT, industry standard).
     Aces,
     /// AgX perceptual tonemapping (Blender-style, good for neutrals).
     AgX,
+    /// Uchimura / Gran Turismo 7 style — punchy but natural highlights.
+    Uchimura,
 }
 
 impl ToneMapMode {
@@ -47,6 +49,7 @@ impl ToneMapMode {
             Self::Reinhard => "Reinhard",
             Self::Aces     => "Aces",
             Self::AgX      => "AgX",
+            Self::Uchimura => "Uchimura",
         }
     }
 
@@ -56,6 +59,7 @@ impl ToneMapMode {
             "Linear"   => Self::Linear,
             "Reinhard" => Self::Reinhard,
             "AgX"      => Self::AgX,
+            "Uchimura" => Self::Uchimura,
             _          => Self::Aces,
         }
     }
@@ -67,6 +71,7 @@ impl ToneMapMode {
             Self::Reinhard => 2,
             Self::Aces     => 3,
             Self::AgX      => 4,
+            Self::Uchimura => 5,
         }
     }
 }
@@ -384,7 +389,8 @@ fn env_fields() -> &'static [FieldDescriptor] {
         };
         vec![
             // Sky
-            FieldDescriptor::new("sky_mode",          "Sky / Mode",             ReflectFieldType::Enum),
+            FieldDescriptor::new("sky_mode",          "Sky / Mode",             ReflectFieldType::Enum)
+                .with_variants(&["Gradient", "ProceduralSky", "SolidColor", "Panorama"]),
             FieldDescriptor::new("sky_solid_color",    "Sky / Solid Color",       ReflectFieldType::Color3),
             FieldDescriptor::new("sky_horizon_color",  "Sky / Horizon Color",     ReflectFieldType::Color3),
             FieldDescriptor::new("sky_zenith_color",   "Sky / Zenith Color",      ReflectFieldType::Color3),
@@ -412,7 +418,8 @@ fn env_fields() -> &'static [FieldDescriptor] {
             // Fog
             FieldDescriptor::new("fog_enabled", "Fog / Enabled", ReflectFieldType::Bool),
             FieldDescriptor::new("fog_color",   "Fog / Color",   ReflectFieldType::Color3),
-            FieldDescriptor::new("fog_mode",    "Fog / Mode",    ReflectFieldType::Enum),
+            FieldDescriptor::new("fog_mode",    "Fog / Mode",    ReflectFieldType::Enum)
+                .with_variants(&["Linear", "Exponential", "ExponentialSquared"]),
             FieldDescriptor::new("fog_density", "Fog / Density", ReflectFieldType::F32)
                 .with_range(r(0.0, 0.1, 0.001)),
             FieldDescriptor::new("fog_near", "Fog / Near", ReflectFieldType::F32)
@@ -420,7 +427,8 @@ fn env_fields() -> &'static [FieldDescriptor] {
             FieldDescriptor::new("fog_far",  "Fog / Far",  ReflectFieldType::F32)
                 .with_range(r(0.0, 5000.0, 10.0)),
             // Tonemap
-            FieldDescriptor::new("tone_mode", "Tonemap / Mode",     ReflectFieldType::Enum),
+            FieldDescriptor::new("tone_mode", "Tonemap / Mode",     ReflectFieldType::Enum)
+                .with_variants(&["None", "Linear", "Reinhard", "Aces", "AgX", "Uchimura"]),
             FieldDescriptor::new("exposure",  "Tonemap / Exposure", ReflectFieldType::F32)
                 .with_range(r(0.0, 5.0, 0.05)),
             // Bloom

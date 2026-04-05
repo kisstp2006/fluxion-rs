@@ -112,6 +112,9 @@ pub struct FieldDescriptor {
     pub range: RangeHint,
     /// Whether the field is read-only in the editor (e.g. world-space cache).
     pub read_only: bool,
+    /// For `Enum` fields: the list of valid variant name strings.
+    /// Used by the editor to populate a combo-box.
+    pub enum_variants: Option<&'static [&'static str]>,
 }
 
 impl FieldDescriptor {
@@ -123,6 +126,7 @@ impl FieldDescriptor {
             field_type,
             range: RangeHint::none(),
             read_only: false,
+            enum_variants: None,
         }
     }
     /// Same as `new` but marks the field as read-only.
@@ -133,10 +137,16 @@ impl FieldDescriptor {
             field_type,
             range: RangeHint::none(),
             read_only: true,
+            enum_variants: None,
         }
     }
     pub const fn with_range(mut self, range: RangeHint) -> Self {
         self.range = range;
+        self
+    }
+    /// Attach allowed enum variant names to this descriptor (for combo-box rendering).
+    pub const fn with_variants(mut self, variants: &'static [&'static str]) -> Self {
+        self.enum_variants = Some(variants);
         self
     }
 }

@@ -40,6 +40,16 @@ thread_local! {
     static UNDO_STATE: Cell<(bool, bool)> = Cell::new((false, false));
     /// Last frame delta time in milliseconds.
     static FRAME_TIME_MS: Cell<f64> = Cell::new(0.0);
+    /// Editor mode string: "Editing" | "Playing" | "Paused".
+    static EDITOR_MODE: RefCell<String> = RefCell::new(String::from("Editing"));
+    /// Transform tool string: "Translate" | "Rotate" | "Scale".
+    static TRANSFORM_TOOL: RefCell<String> = RefCell::new(String::from("Translate"));
+    /// Project name for display in toolbar.
+    static PROJECT_NAME: RefCell<String> = RefCell::new(String::new());
+    /// Scene name for display in toolbar.
+    static SCENE_NAME: RefCell<String> = RefCell::new(String::new());
+    /// Signals queued by Rune scripts for main.rs to consume.
+    static ACTION_SIGNALS: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
 
 /// A deferred field mutation queued by Rune, applied after the panel call.
@@ -126,6 +136,29 @@ pub fn set_undo_state(can_undo: bool, can_redo: bool) {
 /// Push the last frame delta time (milliseconds) for the debugger panel.
 pub fn set_frame_time(ms: f64) {
     FRAME_TIME_MS.with(|c| c.set(ms));
+}
+
+/// Update editor mode/tool/names — called each frame from EditorHost.
+pub fn set_editor_shell_state(mode: &str, tool: &str, project: &str, scene: &str) {
+    EDITOR_MODE   .with(|c| *c.borrow_mut() = mode.to_string());
+    TRANSFORM_TOOL.with(|c| *c.borrow_mut() = tool.to_string());
+    PROJECT_NAME  .with(|c| *c.borrow_mut() = project.to_string());
+    SCENE_NAME    .with(|c| *c.borrow_mut() = scene.to_string());
+}
+
+/// Drain action signals ("new_scene", "open_scene", "save_scene", "exit", etc.) queued by Rune.
+pub fn drain_action_signals() -> Vec<String> {
+    ACTION_SIGNALS.with(|s| std::mem::take(&mut *s.borrow_mut()))
+}
+
+/// Read the editor mode as set by Rune (may have changed this frame).
+pub fn get_editor_mode_str() -> String {
+    EDITOR_MODE.with(|c| c.borrow().clone())
+}
+
+/// Read the transform tool as set by Rune.
+pub fn get_transform_tool_str() -> String {
+    TRANSFORM_TOOL.with(|c| c.borrow().clone())
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -274,6 +307,15 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                 .map(|d| d.read_only)
                 .unwrap_or(false)
         }).unwrap_or(false)
+    }).build()?;
+
+    m.function("get_enum_options", |id: i64, component: Ref<str>, field: Ref<str>| -> Vec<String> {
+        let _ = id;
+        with_ctx(|_, registry| {
+            get_descriptor(registry, &component, &field)
+                .and_then(|d| d.enum_variants)
+                .map(|variants| variants.iter().map(|s| s.to_string()).collect())
+        }).flatten().unwrap_or_default()
     }).build()?;
 
     // ── Typed getters ─────────────────────────────────────────────────────────
@@ -755,6 +797,48 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                     ReflectValue::Quat([q.x, q.y, q.z, q.w]));
             }
         }
+    }).build()?;
+
+    // ── Editor shell state (for toolbar.rn / menubar.rn) ─────────────────────
+
+    m.function("get_editor_mode", || -> String {
+        EDITOR_MODE.with(|c| c.borrow().clone())
+    }).build()?;
+
+    m.function("set_editor_mode", |mode: Ref<str>| {
+        EDITOR_MODE.with(|c| *c.borrow_mut() = mode.as_ref().to_string());
+    }).build()?;
+
+    m.function("get_transform_tool", || -> String {
+        TRANSFORM_TOOL.with(|c| c.borrow().clone())
+    }).build()?;
+
+    m.function("set_transform_tool", |tool: Ref<str>| {
+        TRANSFORM_TOOL.with(|c| *c.borrow_mut() = tool.as_ref().to_string());
+    }).build()?;
+
+    m.function("get_project_name", || -> String {
+        PROJECT_NAME.with(|c| c.borrow().clone())
+    }).build()?;
+
+    m.function("get_scene_name", || -> String {
+        SCENE_NAME.with(|c| c.borrow().clone())
+    }).build()?;
+
+    m.function("do_new_scene", || {
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push("new_scene".to_string()));
+    }).build()?;
+
+    m.function("do_open_scene", || {
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push("open_scene".to_string()));
+    }).build()?;
+
+    m.function("do_save_scene", || {
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push("save_scene".to_string()));
+    }).build()?;
+
+    m.function("exit_app", || {
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push("exit".to_string()));
     }).build()?;
 
     Ok(m)

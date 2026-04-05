@@ -1,0 +1,49 @@
+// ============================================================
+// menubar.rn — Top menu bar (File / Edit / View / Help)
+//
+// Replaces the hardcoded Rust menu bar in main.rs.
+// Called once per frame by main.rs via vm.call_fn(["menubar","panel"], ()).
+// The Rust host sets the egui ui pointer to the menu bar ui before calling.
+// ============================================================
+
+pub mod menubar {
+
+pub fn panel() {
+    if fluxion::ui::menu_begin("File") {
+        if fluxion::ui::menu_item("New Scene          Ctrl+N") {
+            fluxion::world::do_new_scene();
+        }
+        if fluxion::ui::menu_item("Open Scene…") {
+            fluxion::world::do_open_scene();
+        }
+        fluxion::ui::menu_separator();
+        if fluxion::ui::menu_item("Save Scene         Ctrl+S") {
+            fluxion::world::do_save_scene();
+        }
+        fluxion::ui::menu_separator();
+        if fluxion::ui::menu_item("Exit") {
+            fluxion::world::exit_app();
+        }
+        fluxion::ui::menu_end();
+    }
+
+    if fluxion::ui::menu_begin("Edit") {
+        let can_undo = fluxion::world::can_undo();
+        let can_redo = fluxion::world::can_redo();
+        if fluxion::ui::menu_item(`Undo    Ctrl+Z  [${can_undo}]`) { }
+        if fluxion::ui::menu_item(`Redo    Ctrl+Y  [${can_redo}]`) { }
+        fluxion::ui::menu_end();
+    }
+
+    if fluxion::ui::menu_begin("View") {
+        fluxion::ui::menu_item("Reset Layout");
+        fluxion::ui::menu_end();
+    }
+
+    if fluxion::ui::menu_begin("Help") {
+        fluxion::ui::menu_item("About FluxionRS");
+        fluxion::ui::menu_end();
+    }
+}
+
+} // pub mod menubar

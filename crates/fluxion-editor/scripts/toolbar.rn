@@ -1,0 +1,64 @@
+// ============================================================
+// toolbar.rn — Play/Pause/Stop toolbar + transform tool selector
+//
+// Replaces the hardcoded Rust toolbar in toolbar.rs / main.rs.
+// Called once per frame by main.rs via vm.call_fn(["toolbar","panel"], ()).
+// The Rust host opens the TopBottomPanel and sets the egui ui pointer before calling.
+// ============================================================
+
+pub mod toolbar {
+
+pub fn panel() {
+    let tool = fluxion::world::get_transform_tool();
+    let mode = fluxion::world::get_editor_mode();
+
+    // ── Transform tool selector ──────────────────────────────────────────────
+    if fluxion::ui::tool_button("⇔ Move",   tool == "Translate") {
+        fluxion::world::set_transform_tool("Translate");
+    }
+    if fluxion::ui::tool_button("↻ Rotate", tool == "Rotate") {
+        fluxion::world::set_transform_tool("Rotate");
+    }
+    if fluxion::ui::tool_button("⊞ Scale",  tool == "Scale") {
+        fluxion::world::set_transform_tool("Scale");
+    }
+
+    fluxion::ui::toolbar_separator();
+
+    // ── Play / Pause / Stop ──────────────────────────────────────────────────
+    if fluxion::ui::tool_button("▶", mode == "Playing") {
+        if mode == "Playing" {
+            fluxion::world::set_editor_mode("Editing");
+        } else {
+            fluxion::world::set_editor_mode("Playing");
+        }
+    }
+    if fluxion::ui::tool_button("⏸", mode == "Paused") {
+        if mode == "Playing" {
+            fluxion::world::set_editor_mode("Paused");
+        } else if mode == "Paused" {
+            fluxion::world::set_editor_mode("Playing");
+        }
+    }
+    if fluxion::ui::tool_button("⏹", mode == "Editing") {
+        fluxion::world::set_editor_mode("Editing");
+    }
+
+    fluxion::ui::toolbar_separator();
+
+    // ── Project / scene name ─────────────────────────────────────────────────
+    let proj  = fluxion::world::get_project_name();
+    let scene = fluxion::world::get_scene_name();
+    fluxion::ui::small(`${proj}  ›  ${scene}`);
+
+    // ── Mode badge (right-aligned) ───────────────────────────────────────────
+    if mode == "Editing" {
+        fluxion::ui::badge_right("EDITOR",  0.39, 0.55, 0.86);
+    } else if mode == "Playing" {
+        fluxion::ui::badge_right("PLAYING", 0.39, 0.82, 0.39);
+    } else {
+        fluxion::ui::badge_right("PAUSED",  0.86, 0.75, 0.24);
+    }
+}
+
+} // pub mod toolbar

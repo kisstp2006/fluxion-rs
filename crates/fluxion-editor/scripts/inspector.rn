@@ -1,8 +1,9 @@
 // ============================================================
-// inspector.rn — Inspector panel
+// inspector.rn — Inspector panel (Unity-style)
 //
 // Renders editable property widgets for the selected entity.
-// Entity IDs are i64 (Copy) — safe to pass to multiple functions.
+// Uses inline vec3/quat, two-column layout, enum combos,
+// asset pickers, and right-click context menus on every field.
 // ============================================================
 
 pub mod inspector {
@@ -17,8 +18,6 @@ pub fn panel() {
         return;
     }
 
-    // entity_name returns a String — clone before passing to heading so
-    // the variable is not snapshotted/moved.
     let name = fluxion::world::entity_name(sel);
     fluxion::ui::heading(name.clone());
     fluxion::ui::separator();
@@ -41,56 +40,50 @@ pub fn panel() {
             let fields = fluxion::world::fields(sel, c.clone());
             for field in fields {
                 let f     = field.clone();
-                // ft is used many times in the if-else chain; clone each use.
                 let ft    = fluxion::world::field_type(sel, c.clone(), f.clone());
                 let ro    = fluxion::world::field_readonly(sel, c.clone(), f.clone());
                 let range = fluxion::world::field_range(sel, c.clone(), f.clone());
                 let min   = range[0];
                 let max   = range[1];
+                let fid   = `${c}_${f}`;
 
-                if ft.clone() == "f32" {
+                if ft == "vec3" {
+                    let v  = fluxion::world::get_vec3(sel, c.clone(), f.clone());
+                    let nv = fluxion::ui::vec3_inline(f.clone(), v[0], v[1], v[2], 0.01);
+                    if nv[0] != v[0] || nv[1] != v[1] || nv[2] != v[2] {
+                        fluxion::world::set_vec3(sel, c.clone(), f.clone(), [nv[0], nv[1], nv[2]]);
+                    }
+                    fluxion::ui::prop_context_menu(fid.clone());
+
+                } else if ft == "quat" {
+                    let v  = fluxion::world::get_euler(sel, c.clone(), f.clone());
+                    let nv = fluxion::ui::quat_euler_inline(f.clone(), v[0], v[1], v[2]);
+                    if nv[0] != v[0] || nv[1] != v[1] || nv[2] != v[2] {
+                        fluxion::world::set_euler(sel, c.clone(), f.clone(), [nv[0], nv[1], nv[2]]);
+                    }
+                    fluxion::ui::prop_context_menu(fid.clone());
+
+                } else if ft == "f32" {
                     let v = fluxion::world::get_f32(sel, c.clone(), f.clone());
                     if ro {
                         fluxion::ui::label(`${f}: ${v}`);
                     } else {
                         let nv = fluxion::ui::drag_float(f.clone(), v, 0.01, min, max);
                         if nv != v { fluxion::world::set_f32(sel, c.clone(), f.clone(), nv); }
+                        fluxion::ui::prop_context_menu(fid.clone());
                     }
-                } else if ft.clone() == "bool" {
+
+                } else if ft == "bool" {
                     let v = fluxion::world::get_bool(sel, c.clone(), f.clone());
                     if ro {
                         fluxion::ui::label(`${f}: ${v}`);
                     } else {
                         let nv = fluxion::ui::checkbox(f.clone(), v);
                         if nv != v { fluxion::world::set_bool(sel, c.clone(), f.clone(), nv); }
+                        fluxion::ui::prop_context_menu(fid.clone());
                     }
-                } else if ft.clone() == "str" || ft.clone() == "option_str" {
-                    let v = fluxion::world::get_str(sel, c.clone(), f.clone());
-                    if ro {
-                        fluxion::ui::label(`${f}: ${v}`);
-                    } else {
-                        let nv = fluxion::ui::input_text(f.clone(), v);
-                        if nv != v { fluxion::world::set_str(sel, c.clone(), f.clone(), nv); }
-                    }
-                } else if ft.clone() == "vec3" {
-                    let v = fluxion::world::get_vec3(sel, c.clone(), f.clone());
-                    fluxion::ui::label(f.clone());
-                    let nx = fluxion::ui::drag_float("  X", v[0], 0.01, -1e9, 1e9);
-                    let ny = fluxion::ui::drag_float("  Y", v[1], 0.01, -1e9, 1e9);
-                    let nz = fluxion::ui::drag_float("  Z", v[2], 0.01, -1e9, 1e9);
-                    if nx != v[0] || ny != v[1] || nz != v[2] {
-                        fluxion::world::set_vec3(sel, c.clone(), f.clone(), [nx, ny, nz]);
-                    }
-                } else if ft.clone() == "quat" {
-                    let v = fluxion::world::get_euler(sel, c.clone(), f.clone());
-                    fluxion::ui::label(`${f} (Euler deg)`);
-                    let nx = fluxion::ui::drag_float("  Pitch", v[0], 0.5, -360.0, 360.0);
-                    let ny = fluxion::ui::drag_float("  Yaw",   v[1], 0.5, -360.0, 360.0);
-                    let nz = fluxion::ui::drag_float("  Roll",  v[2], 0.5, -360.0, 360.0);
-                    if nx != v[0] || ny != v[1] || nz != v[2] {
-                        fluxion::world::set_euler(sel, c.clone(), f.clone(), [nx, ny, nz]);
-                    }
-                } else if ft.clone() == "color3" {
+
+                } else if ft == "color3" {
                     let v = fluxion::world::get_color3(sel, c.clone(), f.clone());
                     if ro {
                         fluxion::ui::label(`${f}: [${v[0]}, ${v[1]}, ${v[2]}]`);
@@ -99,8 +92,10 @@ pub fn panel() {
                         if nc[0] != v[0] || nc[1] != v[1] || nc[2] != v[2] {
                             fluxion::world::set_color3(sel, c.clone(), f.clone(), [nc[0], nc[1], nc[2]]);
                         }
+                        fluxion::ui::prop_context_menu(fid.clone());
                     }
-                } else if ft.clone() == "color4" {
+
+                } else if ft == "color4" {
                     let v = fluxion::world::get_color4(sel, c.clone(), f.clone());
                     if ro {
                         fluxion::ui::label(`${f}: [${v[0]}, ${v[1]}, ${v[2]}, ${v[3]}]`);
@@ -109,18 +104,50 @@ pub fn panel() {
                         if nc[0] != v[0] || nc[1] != v[1] || nc[2] != v[2] || nc[3] != v[3] {
                             fluxion::world::set_color4(sel, c.clone(), f.clone(), [nc[0], nc[1], nc[2], nc[3]]);
                         }
+                        fluxion::ui::prop_context_menu(fid.clone());
                     }
-                } else if ft.clone() == "u32" || ft.clone() == "u8" || ft.clone() == "usize" {
+
+                } else if ft == "enum" {
+                    let v    = fluxion::world::get_str(sel, c.clone(), f.clone());
+                    let opts = fluxion::world::get_enum_options(sel, c.clone(), f.clone());
+                    if ro || opts.is_empty() {
+                        fluxion::ui::label(`${f}: ${v}`);
+                    } else {
+                        let nv = fluxion::ui::enum_combo(f.clone(), v.clone(), opts);
+                        if nv != v {
+                            fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
+                        }
+                        fluxion::ui::prop_context_menu(fid.clone());
+                    }
+
+                } else if ft == "texture" {
+                    let v  = fluxion::world::get_str(sel, c.clone(), f.clone());
+                    let nv = fluxion::ui::asset_path_picker(f.clone(), v.clone());
+                    if nv != v {
+                        fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
+                    }
+                    fluxion::ui::prop_context_menu(fid.clone());
+
+                } else if ft == "str" || ft == "option_str" {
+                    let v = fluxion::world::get_str(sel, c.clone(), f.clone());
+                    if ro {
+                        fluxion::ui::label(`${f}: ${v}`);
+                    } else {
+                        let nv = fluxion::ui::input_text(f.clone(), v.clone());
+                        if nv != v { fluxion::world::set_str(sel, c.clone(), f.clone(), nv); }
+                        fluxion::ui::prop_context_menu(fid.clone());
+                    }
+
+                } else if ft == "u32" || ft == "u8" || ft == "usize" {
                     let v = fluxion::world::get_u32(sel, c.clone(), f.clone());
                     if ro {
                         fluxion::ui::label(`${f}: ${v}`);
                     } else {
                         let nv = fluxion::ui::drag_int(f.clone(), v);
                         if nv != v { fluxion::world::set_u32(sel, c.clone(), f.clone(), nv); }
+                        fluxion::ui::prop_context_menu(fid.clone());
                     }
-                } else if ft.clone() == "enum" {
-                    let v = fluxion::world::get_str(sel, c.clone(), f.clone());
-                    fluxion::ui::label(`${f}: ${v}`);
+
                 } else {
                     fluxion::ui::small(`${f}: (${ft})`);
                 }
@@ -134,7 +161,6 @@ pub fn panel() {
     fluxion::ui::separator();
     let available = fluxion::world::available_components();
     let chosen = fluxion::ui::combo_box("+ Add Component", available);
-    // chosen is a String — clone before comparing so the value isn't snapshotted.
     if chosen.clone() != "" {
         fluxion::world::add_component(sel, chosen);
     }
