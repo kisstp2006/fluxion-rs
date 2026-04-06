@@ -1601,23 +1601,6 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
-    // icon_button(name, tooltip, size) — clickable icon, returns true when clicked.
-    m.function("icon_button", |name: Ref<str>, tooltip: Ref<str>, size: f64| -> bool {
-        with_ui(|ui| {
-            let sz   = size as f32;
-            let tint = ui.visuals().text_color();
-            if let Some(bytes) = crate::icons::icon_bytes(name.as_ref()) {
-                let uri  = crate::icons::icon_uri(name.as_ref());
-                let img  = egui::Image::from_bytes(uri, bytes)
-                    .fit_to_exact_size(egui::vec2(sz, sz))
-                    .tint(tint);
-                let resp = ui.add(egui::ImageButton::new(img));
-                let resp = if tooltip.as_ref().is_empty() { resp } else { resp.on_hover_text(tooltip.as_ref()) };
-                return resp.clicked();
-            }
-            false
-        }).unwrap_or(false)
-    }).build()?;
 
     // asset_row_button(icon, label, meta, size) — composite row: icon + label + dim meta text.
     // Returns true when the row is clicked.

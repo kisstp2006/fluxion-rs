@@ -121,7 +121,7 @@ pub fn panel() {
     fluxion::ui::horizontal_end();
 
     fluxion::ui::horizontal_begin();
-    if fluxion::ui::icon_button("refresh-cw", "Rescan assets", 14.0) {
+    if fluxion::ui::icon_button("refresh-cw", 14.0, 0.7, 0.7, 0.75) {
         fluxion::world::asset_rescan();
     }
     fluxion::ui::horizontal_end();

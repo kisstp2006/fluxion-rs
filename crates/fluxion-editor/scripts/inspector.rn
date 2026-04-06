@@ -256,14 +256,14 @@ fn draw_asset_inspector(path) {
 
     // ── Actions ───────────────────────────────────────────────────────────
     if t == "scene" {
-        if fluxion::ui::icon_button("film", "Open this scene", 14.0) {
+        if fluxion::ui::icon_button("film", 14.0, 0.7, 0.7, 0.75) {
             fluxion::world::load_scene(path.clone());
         }
         fluxion::ui::label(" Open Scene");
     } else if t == "script" {
         let entity = fluxion::world::selected();
         if entity != -1 {
-            if fluxion::ui::icon_button("code", "Attach to selected entity", 14.0) {
+            if fluxion::ui::icon_button("code", 14.0, 0.7, 0.7, 0.75) {
                 fluxion::world::add_script(entity, path.clone());
             }
             fluxion::ui::label(" Attach to Selected Entity");
