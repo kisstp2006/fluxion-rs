@@ -97,13 +97,100 @@ pub fn panel() {
     fluxion::ui::separator();
 
     // ── CVar command bar ─────────────────────────────────────────────────────
-    let cmd_buf = fluxion::world::get_console_cmd();
-    let result  = fluxion::ui::input_text_enter("  > ", cmd_buf);
-    let submitted = result[0] == "1";
-    fluxion::world::set_console_cmd(result[1].clone());
-    if submitted && result[1].len() > 0 {
-        handle_command(result[1].clone());
+    let cmd_buf     = fluxion::world::get_console_cmd();
+    let suggestions = compute_suggestions(cmd_buf.clone());
+    let result      = fluxion::ui::input_text_autocomplete("  > ", cmd_buf, suggestions);
+    let submitted   = result[0] == "1";
+    let new_val     = result[1].clone();
+    let completed   = result[2].clone();
+
+    fluxion::world::set_console_cmd(new_val.clone());
+
+    if completed.len() > 0 {
+        apply_completion(new_val.clone(), completed.clone());
+    } else if submitted && new_val.len() > 0 {
+        handle_command(new_val.clone());
         fluxion::world::set_console_cmd("");
+    }
+}
+
+fn all_cvar_names() {
+    let pairs = fluxion::settings::cvar_list();
+    let names = [];
+    for pair in pairs {
+        names.push(pair[0].clone());
+    }
+    names
+}
+
+fn compute_suggestions(buf) {
+    let verbs = ["set", "get", "cvars"];
+
+    if buf.len() == 0 {
+        return verbs;
+    }
+
+    let parts = fluxion::world::cmd_split(buf.clone());
+    if parts.is_empty() {
+        return verbs;
+    }
+
+    let part0 = parts[0].clone();
+    // Still typing the first token when there is only one part and no trailing space.
+    let typing_verb = parts.len() == 1 && buf.len() <= part0.len();
+
+    if typing_verb {
+        let result = [];
+        for v in verbs {
+            if v.starts_with(part0) {
+                result.push(v.clone());
+            }
+        }
+        return result;
+    }
+
+    // Verb is done — complete the cvar name.
+    if part0 == "set" || part0 == "get" {
+        let prefix = if parts.len() >= 2 { parts[1].clone() } else { "" };
+        let cvar_names = all_cvar_names();
+        let result = [];
+        for name in cvar_names {
+            if prefix.len() == 0 || name.starts_with(prefix) {
+                result.push(name.clone());
+            }
+        }
+        return result;
+    }
+
+    let empty = [];
+    empty
+}
+
+fn apply_completion(current_val, completed) {
+    let verbs = ["set", "get", "cvars"];
+    let is_verb = false;
+    for v in verbs {
+        if v == completed { is_verb = true; }
+    }
+
+    if is_verb {
+        // Verb completed — append space so the user can type the cvar name immediately.
+        fluxion::world::set_console_cmd(completed + " ");
+    } else {
+        // CVar name (or LCP) completed — reconstruct "verb name [default]".
+        let parts = fluxion::world::cmd_split(current_val.clone());
+        let verb  = if parts.len() >= 1 { parts[0].clone() } else { "get" };
+
+        if verb == "set" {
+            let default_val = fluxion::settings::cvar_builtin_default(completed.clone());
+            if default_val.len() > 0 {
+                fluxion::world::set_console_cmd(`${verb} ${completed} ${default_val}`);
+            } else {
+                fluxion::world::set_console_cmd(`${verb} ${completed}`);
+            }
+        } else {
+            fluxion::world::set_console_cmd(`${verb} ${completed}`);
+        }
     }
 }
 

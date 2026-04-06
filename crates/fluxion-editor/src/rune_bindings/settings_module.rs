@@ -54,16 +54,37 @@ thread_local! {
     static SETTINGS_SEARCH: RefCell<String> = RefCell::new(String::new());
 }
 
+// ── Built-in CVar definitions ────────────────────────────────────────────────
+
+/// Hardcoded built-in console variables with their default values.
+/// These are seeded into every project's cvar map on first load.
+pub const BUILTIN_CVARS: &[(&str, &str)] = &[
+    ("r.shadows",      "true"),
+    ("r.vsync",        "true"),
+    ("r.tonemap",      "aces"),
+    ("a.master_volume","1.0"),
+    ("p.gravity_y",    "-9.81"),
+    ("e.show_grid",    "true"),
+];
+
 // ── Public host API ────────────────────────────────────────────────────────────
 
 /// Called by main.rs after a project is opened.
-pub fn set_settings_context(config: ProjectConfig, prefs: EditorPrefs, root: PathBuf) {
+pub fn set_settings_context(mut config: ProjectConfig, prefs: EditorPrefs, root: PathBuf) {
+    // Seed built-in cvars with defaults if not already stored in the project.
+    let mut seeded = false;
+    for &(name, default) in BUILTIN_CVARS {
+        if !config.settings.cvars.contains_key(name) {
+            config.settings.cvars.insert(name.to_string(), default.to_string());
+            seeded = true;
+        }
+    }
     SETTINGS_DEFAULTS_P.with(|d| *d.borrow_mut() = Some(config.clone()));
     SETTINGS_DEFAULTS_E.with(|d| *d.borrow_mut() = Some(prefs.clone()));
     SETTINGS_CONFIG.with(|c| *c.borrow_mut() = Some(config));
     SETTINGS_PREFS .with(|p| *p.borrow_mut() = Some(prefs));
     SETTINGS_ROOT  .with(|r| *r.borrow_mut() = root);
-    SETTINGS_DIRTY_P.with(|d| d.set(false));
+    SETTINGS_DIRTY_P.with(|d| d.set(seeded));
     SETTINGS_DIRTY_E.with(|d| d.set(false));
     SETTINGS_SEARCH.with(|s| s.borrow_mut().clear());
 }
@@ -764,6 +785,19 @@ pub fn build_settings_module() -> anyhow::Result<Module> {
                 })
                 .unwrap_or_default()
         })
+    }).build()?;
+
+    // ── Built-in CVar helpers ──────────────────────────────────────────────────
+
+    m.function("cvar_builtin_names", || -> Vec<String> {
+        BUILTIN_CVARS.iter().map(|&(name, _)| name.to_string()).collect()
+    }).build()?;
+
+    m.function("cvar_builtin_default", |name: String| -> String {
+        BUILTIN_CVARS.iter()
+            .find(|&&(n, _)| n == name)
+            .map(|&(_, d)| d.to_string())
+            .unwrap_or_default()
     }).build()?;
 
     // ── Collision layer names ─────────────────────────────────────────────────

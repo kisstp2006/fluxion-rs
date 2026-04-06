@@ -43,6 +43,11 @@ thread_local! {
     static MENU_BTN_RECT: Cell<egui::Rect> = Cell::new(egui::Rect::NOTHING);
     /// True if the popup was toggled open THIS frame (suppresses immediate close).
     static MENU_JUST_OPENED: Cell<bool> = Cell::new(false);
+    /// Keyboard-highlighted row index in the autocomplete dropdown (-1 = none).
+    static AUTOCOMPLETE_IDX: Cell<i64> = Cell::new(-1);
+    /// True if the pointer was inside the autocomplete popup area last frame.
+    /// Used to keep the popup alive through the click (mouse-up) frame.
+    static POPUP_HOVERED: Cell<bool> = Cell::new(false);
     // ── Settings modals ──────────────────────────────────────────────────────────────────
     /// ID of the currently open modal window, or None.
     static MODAL_OPEN:  RefCell<Option<String>> = RefCell::new(None);
@@ -84,6 +89,16 @@ pub fn set_current_ui(ui: &mut egui::Ui) -> UiContextGuard {
 #[allow(dead_code)]
 pub fn clear_current_ui() {
     CURRENT_UI.with(|c| c.set(None));
+}
+
+fn longest_common_prefix(strs: &[String]) -> String {
+    if strs.is_empty() { return String::new(); }
+    let first = strs[0].as_str();
+    let mut len = first.len();
+    for s in &strs[1..] {
+        len = first.chars().zip(s.chars()).take_while(|(a,b)| a == b).count().min(len);
+    }
+    first[..len].to_string()
 }
 
 fn with_ui<R>(f: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
@@ -716,6 +731,159 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             });
             v
         }).unwrap_or_else(|| value.as_ref().to_string())
+    }).build()?;
+
+    // input_text_autocomplete(label, value, suggestions) → [submitted, value, completed]
+    // submitted  = "1" if Enter was pressed with no item selected in the dropdown.
+    // completed  = the chosen suggestion, or "" if nothing was chosen yet.
+    // Tab fills the longest common prefix; ↑/↓ navigate the dropdown.
+    m.function("input_text_autocomplete", |label: Ref<str>, value: Ref<str>, suggestions: Vec<String>| -> Vec<String> {
+        with_ui(|ui| {
+            let mut v       = value.as_ref().to_string();
+            let mut submitted  = false;
+            let mut completed  = String::new();
+
+            // Use a stable Id so we can query focus state from the previous frame.
+            let edit_id = egui::Id::new("__cvar_cmd_input__");
+            let had_focus = ui.ctx().memory(|m| m.has_focus(edit_id));
+
+            // ── Tab: pre-consume before text_edit renders ─────────────────────
+            // egui processes Tab for focus-cycling during widget rendering, so we
+            // must consume it beforehand using last frame's focus state.
+            let tab_pressed = if had_focus && !suggestions.is_empty() {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab))
+            } else {
+                false
+            };
+
+            let resp = ui.horizontal(|ui| {
+                ui.label(label.as_ref());
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut v)
+                        .id(edit_id)
+                        .desired_width(ui.available_width())
+                );
+                r
+            }).inner;
+
+            let has_focus = resp.has_focus();
+
+            // ── Tab: apply completion ─────────────────────────────────────────
+            if tab_pressed {
+                let lcp = longest_common_prefix(&suggestions);
+                if !lcp.is_empty() {
+                    if suggestions.len() == 1 {
+                        completed = suggestions[0].clone();
+                    } else {
+                        completed = lcp;
+                    }
+                }
+                AUTOCOMPLETE_IDX.with(|c| c.set(-1));
+            }
+
+            // ── Arrow key navigation ──────────────────────────────────────────
+            if has_focus && !suggestions.is_empty() {
+                let down = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+                let up   = ui.input(|i| i.key_pressed(egui::Key::ArrowUp));
+                AUTOCOMPLETE_IDX.with(|c| {
+                    let mut idx = c.get();
+                    if down { idx = (idx + 1).min(suggestions.len() as i64 - 1); }
+                    if up   { idx = (idx - 1).max(-1); }
+                    c.set(idx);
+                });
+            }
+
+            // Reset index when suggestions list changes length (new typing).
+            let idx = AUTOCOMPLETE_IDX.with(|c| c.get());
+            if idx >= suggestions.len() as i64 {
+                AUTOCOMPLETE_IDX.with(|c| c.set(-1));
+            }
+            let idx = AUTOCOMPLETE_IDX.with(|c| c.get());
+
+            // ── Escape: dismiss dropdown ──────────────────────────────────────
+            if has_focus {
+                let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if esc {
+                    AUTOCOMPLETE_IDX.with(|c| c.set(-1));
+                }
+            }
+
+            // ── Enter: submit OR confirm dropdown selection ───────────────────
+            if has_focus {
+                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if enter {
+                    if idx >= 0 {
+                        // Confirm dropdown selection.
+                        completed = suggestions[idx as usize].clone();
+                        AUTOCOMPLETE_IDX.with(|c| c.set(-1));
+                    } else {
+                        submitted = true;
+                    }
+                }
+            }
+
+            // ── Dropdown popup ────────────────────────────────────────────────
+            // POPUP_HOVERED tracks mouse presence inside the popup area.
+            // This keeps the popup alive through mouse-down → mouse-up so
+            // row.clicked() can fire even after the text field lost focus.
+            // AUTOCOMPLETE_IDX is now ONLY mutated by arrow keys, never by
+            // hover, so it cannot stale-intercept Enter submissions.
+            let popup_was_hovered = POPUP_HOVERED.with(|c| c.get());
+            if !suggestions.is_empty() && (has_focus || popup_was_hovered) {
+                let popup_id  = egui::Id::new("__cvar_autocomplete_popup__");
+                let field_pos = egui::pos2(resp.rect.left(), resp.rect.top());
+                let mut any_row_hovered = false;
+
+                egui::Area::new(popup_id)
+                    .order(egui::Order::Foreground)
+                    .pivot(egui::Align2::LEFT_BOTTOM)
+                    .fixed_pos(field_pos)
+                    .show(ui.ctx(), |popup_ui| {
+                        egui::Frame::popup(popup_ui.style()).show(popup_ui, |inner| {
+                            inner.set_min_width(resp.rect.width());
+                            egui::ScrollArea::vertical()
+                                .max_height(130.0)
+                                .show(inner, |scroll| {
+                                    for (i, suggestion) in suggestions.iter().enumerate() {
+                                        let kbd_selected = i as i64 == idx;
+                                        let row = scroll.selectable_label(
+                                            kbd_selected,
+                                            egui::RichText::new(suggestion).monospace().size(11.0),
+                                        );
+                                        if row.hovered() {
+                                            // Hover gives visual feedback via egui's built-in
+                                            // hover style on selectable_label; we do NOT update
+                                            // AUTOCOMPLETE_IDX here to avoid stale state.
+                                            any_row_hovered = true;
+                                        }
+                                        if row.clicked() {
+                                            completed = suggestion.clone();
+                                            AUTOCOMPLETE_IDX.with(|c| c.set(-1));
+                                        }
+                                    }
+                                });
+                        });
+                    });
+
+                POPUP_HOVERED.with(|c| c.set(any_row_hovered));
+            } else {
+                POPUP_HOVERED.with(|c| c.set(false));
+                if suggestions.is_empty() {
+                    AUTOCOMPLETE_IDX.with(|c| c.set(-1));
+                }
+            }
+
+            // ── Restore focus after completion ────────────────────────────────
+            if !completed.is_empty() {
+                ui.ctx().memory_mut(|m| m.request_focus(edit_id));
+            }
+
+            vec![
+                if submitted { "1".to_string() } else { "0".to_string() },
+                v,
+                completed,
+            ]
+        }).unwrap_or_else(|| vec!["0".to_string(), value.as_ref().to_string(), String::new()])
     }).build()?;
 
     m.function("input_text_enter", |label: Ref<str>, value: Ref<str>| -> Vec<String> {
