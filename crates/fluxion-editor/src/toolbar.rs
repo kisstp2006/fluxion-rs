@@ -3,6 +3,7 @@
 // ============================================================
 
 use egui::{Color32, Context, RichText, TopBottomPanel, FontId};
+use crate::icons;
 
 // ── Editor mode ───────────────────────────────────────────────────────────────
 
@@ -43,17 +44,22 @@ pub fn show_toolbar(
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // ── Transform tool selector ──────────────────────────────────
-                let tool_btn = |ui: &mut egui::Ui, lbl: &str, t: TransformTool, current: TransformTool| {
+                let icon_tool_btn = |ui: &mut egui::Ui, icon: &str, tip: &str, t: TransformTool, current: TransformTool| {
                     let selected = t == current;
-                    let text = RichText::new(lbl)
-                        .font(FontId::proportional(12.0))
-                        .color(if selected { Color32::from_rgb(220, 180, 60) } else { Color32::from_rgb(180, 180, 190) });
-                    ui.selectable_label(selected, text)
+                    let tint = if selected { Color32::from_rgb(220, 180, 60) } else { Color32::from_rgb(160, 160, 175) };
+                    let resp = ui.add(
+                        egui::ImageButton::new(icons::img(icon, 16.0, tint)).frame(false)
+                    ).on_hover_text(tip);
+                    if selected {
+                        let rect = resp.rect;
+                        ui.painter().rect_stroke(rect.expand(2.0), 2.0, egui::Stroke::new(1.0, tint));
+                    }
+                    resp
                 };
 
-                if tool_btn(ui, "⇔ Move",   TransformTool::Translate, *tool).clicked() { *tool = TransformTool::Translate; }
-                if tool_btn(ui, "↻ Rotate", TransformTool::Rotate,    *tool).clicked() { *tool = TransformTool::Rotate;    }
-                if tool_btn(ui, "⊞ Scale",  TransformTool::Scale,     *tool).clicked() { *tool = TransformTool::Scale;     }
+                if icon_tool_btn(ui, "move",       "Move (W)",   TransformTool::Translate, *tool).clicked() { *tool = TransformTool::Translate; }
+                if icon_tool_btn(ui, "rotate-cw",  "Rotate (E)", TransformTool::Rotate,    *tool).clicked() { *tool = TransformTool::Rotate;    }
+                if icon_tool_btn(ui, "maximize-2", "Scale (R)",  TransformTool::Scale,     *tool).clicked() { *tool = TransformTool::Scale;     }
 
                 ui.separator();
 
@@ -62,25 +68,14 @@ pub fn show_toolbar(
                 let pause_col = if mode == EditorMode::Paused  { Color32::from_rgb(220, 200, 60)  } else { Color32::from_rgb(180, 180, 190) };
                 let stop_col  = if mode == EditorMode::Editing { Color32::from_rgb(180, 180, 190) } else { Color32::from_rgb(230, 100, 80)  };
 
-                if ui.add(egui::Button::new(
-                    RichText::new("▶").font(FontId::proportional(14.0)).color(play_col)
-                )).on_hover_text("Play").clicked() {
+                if ui.add(egui::ImageButton::new(icons::img("play",   18.0, play_col )).frame(false)).on_hover_text("Play") .clicked() {
                     new_mode = if mode == EditorMode::Playing { EditorMode::Editing } else { EditorMode::Playing };
                 }
-
-                if ui.add(egui::Button::new(
-                    RichText::new("⏸").font(FontId::proportional(14.0)).color(pause_col)
-                )).on_hover_text("Pause").clicked() {
-                    if mode == EditorMode::Playing {
-                        new_mode = EditorMode::Paused;
-                    } else if mode == EditorMode::Paused {
-                        new_mode = EditorMode::Playing;
-                    }
+                if ui.add(egui::ImageButton::new(icons::img("pause",  18.0, pause_col)).frame(false)).on_hover_text("Pause").clicked() {
+                    if mode == EditorMode::Playing      { new_mode = EditorMode::Paused;  }
+                    else if mode == EditorMode::Paused  { new_mode = EditorMode::Playing; }
                 }
-
-                if ui.add(egui::Button::new(
-                    RichText::new("⏹").font(FontId::proportional(14.0)).color(stop_col)
-                )).on_hover_text("Stop").clicked() {
+                if ui.add(egui::ImageButton::new(icons::img("square", 18.0, stop_col )).frame(false)).on_hover_text("Stop") .clicked() {
                     new_mode = EditorMode::Editing;
                 }
 

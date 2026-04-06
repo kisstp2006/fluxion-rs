@@ -47,7 +47,7 @@ pub fn panel() {
     }
 
     // ── Search bar ───────────────────────────────────────────────────────────
-    let new_search = fluxion::ui::search_bar("🔍  Filter messages…", search.clone());
+    let new_search = fluxion::ui::search_bar("Filter messages…", search.clone());
     if new_search != search {
         fluxion::world::set_console_search(new_search.clone());
         fluxion::world::log_select(-1);

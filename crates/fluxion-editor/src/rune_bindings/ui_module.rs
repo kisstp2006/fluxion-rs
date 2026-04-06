@@ -203,10 +203,8 @@ fn v3_f32(ui: &mut egui::Ui, label: &str, desc: &str,
             [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
             egui::DragValue::new(&mut v).speed(speed).range(min..=max).max_decimals(dec)
         ).changed() { res = Some(v); }
-        if is_mod && ui.add_sized(
-            [S_RESET_W, S_ROW_H - 2.0],
-            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
-        ).on_hover_text("Reset to default").clicked() { res = Some(def); }
+        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
     });
     res
 }
@@ -226,10 +224,8 @@ fn v3_bool(ui: &mut egui::Ui, label: &str, desc: &str, val: bool, def: bool) -> 
             egui::vec2(avail, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
             |ui| { if ui.checkbox(&mut v, "").changed() { res = Some(v); } }
         );
-        if is_mod && ui.add_sized(
-            [S_RESET_W, S_ROW_H - 2.0],
-            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
-        ).on_hover_text("Reset to default").clicked() { res = Some(def); }
+        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
     });
     res
 }
@@ -250,10 +246,8 @@ fn v3_slider(ui: &mut egui::Ui, label: &str, desc: &str,
             [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
             egui::Slider::new(&mut v, min as f32..=max as f32).max_decimals(dec)
         ).changed() { res = Some(v); }
-        if is_mod && ui.add_sized(
-            [S_RESET_W, S_ROW_H - 2.0],
-            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
-        ).on_hover_text("Reset to default").clicked() { res = Some(def); }
+        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
     });
     res
 }
@@ -274,10 +268,8 @@ fn v3_u32(ui: &mut egui::Ui, label: &str, desc: &str,
             [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
             egui::DragValue::new(&mut v).range(min..=max)
         ).changed() { res = Some(v); }
-        if is_mod && ui.add_sized(
-            [S_RESET_W, S_ROW_H - 2.0],
-            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
-        ).on_hover_text("Reset to default").clicked() { res = Some(def); }
+        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
     });
     res
 }
@@ -296,10 +288,8 @@ fn v3_string(ui: &mut egui::Ui, label: &str, desc: &str, val: &str, def: &str) -
             [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
             egui::TextEdit::singleline(&mut s)
         ).changed() { res = Some(s); }
-        if is_mod && ui.add_sized(
-            [S_RESET_W, S_ROW_H - 2.0],
-            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
-        ).on_hover_text("Reset to default").clicked() { res = Some(def.to_string()); }
+        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def.to_string()); }
     });
     res
 }
@@ -326,10 +316,8 @@ fn v3_select(ui: &mut egui::Ui, label: &str, desc: &str,
                     }
                 }
             });
-        if is_mod && ui.add_sized(
-            [S_RESET_W, S_ROW_H - 2.0],
-            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
-        ).on_hover_text("Reset to default").clicked() { res = Some(def.to_string()); }
+        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def.to_string()); }
     });
     res
 }
@@ -354,10 +342,8 @@ fn v3_vec3(ui: &mut egui::Ui, label: &str, desc: &str,
             }
         }
         if changed { res = Some(v); }
-        if is_mod && ui.add_sized(
-            [S_RESET_W, S_ROW_H - 2.0],
-            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
-        ).on_hover_text("Reset to default").clicked() { res = Some(def); }
+        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
     });
     res
 }
@@ -512,7 +498,12 @@ fn render_project_content_v3(ui: &mut egui::Ui, tab: &str) {
             let errs = sm::validate_project();
             if !errs.is_empty() {
                 ui.add_space(4.0);
-                for e in &errs { ui.label(egui::RichText::new(format!("⚠ {e}")).color(sc_yellow()).size(11.0)); }
+                for e in &errs {
+                    ui.horizontal(|ui| {
+                        ui.add(crate::icons::img("alert-triangle", 12.0, sc_yellow()));
+                        ui.label(egui::RichText::new(e.as_str()).color(sc_yellow()).size(11.0));
+                    });
+                }
             }
         }
         _ => {}
@@ -701,9 +692,10 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 m.data.get_persisted::<bool>(id).unwrap_or(true)
             });
             let clicked = ui.horizontal(|ui| {
-                let sym = if is_open { "▼" } else { "▶" };
+                let chev = if is_open { "chevron-down" } else { "chevron-right" };
+                let resp = ui.add(crate::icons::img(chev, 12.0, ui.visuals().text_color()).sense(egui::Sense::click()));
                 ui.label(display);
-                ui.small_button(sym).clicked()
+                resp.clicked()
             }).inner;
             if clicked {
                 let toggled = !is_open;
@@ -742,9 +734,10 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             .tint(tint),
                     );
                 }
-                let sym = if is_open { "▼" } else { "▶" };
+                let chev = if is_open { "chevron-down" } else { "chevron-right" };
+                let resp = ui.add(crate::icons::img(chev, 12.0, ui.visuals().text_color()).sense(egui::Sense::click()));
                 ui.label(display);
-                ui.small_button(sym).clicked()
+                resp.clicked()
             }).inner;
             if clicked {
                 let toggled = !is_open;
@@ -1192,6 +1185,49 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 .color(color);
             ui.selectable_label(active, text).clicked()
         }).unwrap_or(false)
+    }).build()?;
+
+    // icon_tool_button(icon_name, active) → bool
+    // Renders an SVG icon as a toolbar toggle button.
+    // active=true tints the icon yellow; false = muted grey.
+    m.function("icon_tool_button", |icon: Ref<str>, active: bool| -> bool {
+        with_ui(|ui| {
+            let tint = if active {
+                egui::Color32::from_rgb(220, 180, 60)
+            } else {
+                egui::Color32::from_rgb(160, 160, 175)
+            };
+            let resp = ui.add(
+                egui::ImageButton::new(crate::icons::img(icon.as_ref(), 18.0, tint)).frame(false)
+            );
+            if active {
+                ui.painter().rect_stroke(resp.rect.expand(1.0), 2.0, egui::Stroke::new(1.0, tint));
+            }
+            resp.clicked()
+        }).unwrap_or(false)
+    }).build()?;
+
+    // icon_button(icon_name, size, r, g, b) → bool
+    // Renders a frameless SVG icon button with explicit tint color.
+    m.function("icon_button", |icon: Ref<str>, size: f64, r: f64, g: f64, b: f64| -> bool {
+        with_ui(|ui| {
+            let tint = egui::Color32::from_rgb(
+                (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8
+            );
+            ui.add(
+                egui::ImageButton::new(crate::icons::img(icon.as_ref(), size as f32, tint)).frame(false)
+            ).clicked()
+        }).unwrap_or(false)
+    }).build()?;
+
+    // icon_label(icon_name, size, r, g, b) — renders an inline SVG icon (non-interactive).
+    m.function("icon_label", |icon: Ref<str>, size: f64, r: f64, g: f64, b: f64| {
+        with_ui(|ui| {
+            let tint = egui::Color32::from_rgb(
+                (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8
+            );
+            ui.add(crate::icons::img(icon.as_ref(), size as f32, tint));
+        });
     }).build()?;
 
     m.function("toolbar_separator", || {
@@ -1726,13 +1762,14 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
                             // Header bar
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("⚙  Project Settings").size(13.0).color(sc_text()).strong());
+                                ui.add(crate::icons::img("settings", 14.0, sc_text()));
+                                ui.label(egui::RichText::new(" Project Settings").size(13.0).color(sc_text()).strong());
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.add(egui::Button::new(egui::RichText::new("✕").size(13.0)).frame(false)).clicked() {
+                                    if crate::icons::btn(ui, "x", 14.0, sc_text(), "Close") {
                                         sm::close_project_settings_ui();
                                         keep_open = false;
                                     }
-                                    if ui.add(egui::Button::new(egui::RichText::new("↺ Reset All").color(sc_red()).size(11.0)).small()).clicked() {
+                                    if crate::icons::btn(ui, "rotate-ccw", 13.0, sc_red(), "Reset All to defaults") {
                                         sm::reset_project_to_defaults();
                                     }
                                 });
@@ -1741,11 +1778,14 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
                             // Search bar
                             let mut search = sm::settings_search_query();
-                            if ui.add(
-                                egui::TextEdit::singleline(&mut search)
-                                    .hint_text("🔍 Search settings…")
+                            let search_resp = ui.horizontal(|ui| {
+                                ui.add(crate::icons::img("search", 13.0, egui::Color32::from_gray(140)));
+                                ui.add(egui::TextEdit::singleline(&mut search)
+                                    .hint_text("Search settings…")
                                     .desired_width(ui.available_width())
-                            ).changed() {
+                                    .frame(false))
+                            }).inner;
+                            if search_resp.changed() {
                                 sm::set_settings_search_query(search.clone());
                             }
                             ui.separator();
@@ -1817,13 +1857,14 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
                             // Header bar
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("⚙  Editor Preferences").size(13.0).color(sc_text()).strong());
+                                ui.add(crate::icons::img("settings", 14.0, sc_text()));
+                                ui.label(egui::RichText::new(" Editor Preferences").size(13.0).color(sc_text()).strong());
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.add(egui::Button::new(egui::RichText::new("✕").size(13.0)).frame(false)).clicked() {
+                                    if crate::icons::btn(ui, "x", 14.0, sc_text(), "Close") {
                                         sm::close_editor_prefs_ui();
                                         keep_open = false;
                                     }
-                                    if ui.add(egui::Button::new(egui::RichText::new("↺ Reset All").color(sc_red()).size(11.0)).small()).clicked() {
+                                    if crate::icons::btn(ui, "rotate-ccw", 13.0, sc_red(), "Reset All to defaults") {
                                         sm::reset_prefs_to_defaults();
                                     }
                                 });
@@ -1832,11 +1873,14 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
                             // Search bar
                             let mut search = sm::settings_search_query();
-                            if ui.add(
-                                egui::TextEdit::singleline(&mut search)
-                                    .hint_text("🔍 Search preferences…")
+                            let search_resp = ui.horizontal(|ui| {
+                                ui.add(crate::icons::img("search", 13.0, egui::Color32::from_gray(140)));
+                                ui.add(egui::TextEdit::singleline(&mut search)
+                                    .hint_text("Search preferences…")
                                     .desired_width(ui.available_width())
-                            ).changed() {
+                                    .frame(false))
+                            }).inner;
+                            if search_resp.changed() {
                                 sm::set_settings_search_query(search.clone());
                             }
                             ui.separator();
@@ -1922,13 +1966,18 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("search_bar", |placeholder: Ref<str>, current: Ref<str>| -> String {
         with_ui(|ui| {
             let mut v = current.as_ref().to_string();
-            let hint = egui::RichText::new(placeholder.as_ref())
-                .color(ui.visuals().weak_text_color());
-            ui.add(
-                egui::TextEdit::singleline(&mut v)
-                    .hint_text(hint)
-                    .desired_width(f32::INFINITY),
-            );
+            let changed = ui.horizontal(|ui| {
+                ui.add(crate::icons::img("search", 13.0, ui.visuals().weak_text_color()));
+                let hint = egui::RichText::new(placeholder.as_ref())
+                    .color(ui.visuals().weak_text_color());
+                ui.add(
+                    egui::TextEdit::singleline(&mut v)
+                        .hint_text(hint)
+                        .desired_width(f32::INFINITY)
+                        .frame(false),
+                ).changed()
+            }).inner;
+            let _ = changed;
             v
         }).unwrap_or_else(|| current.as_ref().to_string())
     }).build()?;

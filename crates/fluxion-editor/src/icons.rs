@@ -66,6 +66,38 @@ pub fn icon_uri(name: &str) -> String {
     format!("bytes://feather/{name}.svg")
 }
 
+// ── Widget helpers ────────────────────────────────────────────────────────────
+
+/// Returns an `egui::Image` widget for `name`, displayed at `size×size` pixels
+/// and tinted with `color`.  Bytes are loaded/cached on first call.
+pub fn img(name: &str, size: f32, color: egui::Color32) -> egui::Image<'static> {
+    let uri = icon_uri(name);
+    match icon_bytes(name) {
+        Some(b) => egui::Image::from_bytes(uri, b)
+            .fit_to_exact_size(egui::vec2(size, size))
+            .tint(color),
+        None => egui::Image::from_bytes(
+            "bytes://feather/__missing__.svg",
+            &b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect x='2' y='2' width='20' height='20' stroke='white' fill='none' stroke-width='2'/></svg>"[..],
+        )
+        .fit_to_exact_size(egui::vec2(size, size))
+        .tint(color),
+    }
+}
+
+/// Renders a frameless icon image-button.  Returns `true` if clicked.
+/// Pass `tooltip = ""` to skip the hover tooltip.
+pub fn btn(
+    ui: &mut egui::Ui,
+    name: &str,
+    size: f32,
+    color: egui::Color32,
+    tooltip: &str,
+) -> bool {
+    let resp = ui.add(egui::ImageButton::new(img(name, size, color)).frame(false));
+    if tooltip.is_empty() { resp.clicked() } else { resp.on_hover_text(tooltip).clicked() }
+}
+
 // ── File loading ──────────────────────────────────────────────────────────────
 
 fn read_svg_file(name: &str) -> Option<Vec<u8>> {

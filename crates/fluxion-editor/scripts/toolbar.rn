@@ -13,34 +13,34 @@ pub fn panel() {
     let mode = fluxion::world::get_editor_mode();
 
     // ── Transform tool selector ──────────────────────────────────────────────
-    if fluxion::ui::tool_button("⇔ Move",   tool == "Translate") {
+    if fluxion::ui::icon_tool_button("move",      tool == "Translate") {
         fluxion::world::set_transform_tool("Translate");
     }
-    if fluxion::ui::tool_button("↻ Rotate", tool == "Rotate") {
+    if fluxion::ui::icon_tool_button("rotate-cw",  tool == "Rotate") {
         fluxion::world::set_transform_tool("Rotate");
     }
-    if fluxion::ui::tool_button("⊞ Scale",  tool == "Scale") {
+    if fluxion::ui::icon_tool_button("maximize-2", tool == "Scale") {
         fluxion::world::set_transform_tool("Scale");
     }
 
     fluxion::ui::toolbar_separator();
 
     // ── Play / Pause / Stop ──────────────────────────────────────────────────
-    if fluxion::ui::tool_button("▶", mode == "Playing") {
+    if fluxion::ui::icon_tool_button("play", mode == "Playing") {
         if mode == "Playing" {
             fluxion::world::set_editor_mode("Editing");
         } else {
             fluxion::world::set_editor_mode("Playing");
         }
     }
-    if fluxion::ui::tool_button("⏸", mode == "Paused") {
+    if fluxion::ui::icon_tool_button("pause", mode == "Paused") {
         if mode == "Playing" {
             fluxion::world::set_editor_mode("Paused");
         } else if mode == "Paused" {
             fluxion::world::set_editor_mode("Playing");
         }
     }
-    if fluxion::ui::tool_button("⏹", mode == "Editing") {
+    if fluxion::ui::icon_tool_button("square", mode == "Editing") {
         fluxion::world::set_editor_mode("Editing");
     }
 
@@ -48,7 +48,7 @@ pub fn panel() {
 
     // ── Snap controls ────────────────────────────────────────────────────────
     let snap = fluxion::world::get_snap_enabled();
-    if fluxion::ui::tool_button("⊟ Snap", snap) {
+    if fluxion::ui::icon_tool_button("crosshair", snap) {
         fluxion::world::set_snap_enabled(!snap);
     }
     if snap {
@@ -68,14 +68,14 @@ pub fn panel() {
     if fluxion::world::selected_has_csg() {
         fluxion::ui::toolbar_separator();
         let bm = fluxion::world::get_box_gizmo_mode();
-        if fluxion::ui::tool_button("⊡ Face", bm == "face") {
+        if fluxion::ui::icon_tool_button("box", bm == "face") {
             if bm == "face" {
                 fluxion::world::set_box_gizmo_mode("");
             } else {
                 fluxion::world::set_box_gizmo_mode("face");
             }
         }
-        if fluxion::ui::tool_button("↔ Axis", bm == "axis") {
+        if fluxion::ui::icon_tool_button("sliders", bm == "axis") {
             if bm == "axis" {
                 fluxion::world::set_box_gizmo_mode("");
             } else {

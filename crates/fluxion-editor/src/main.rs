@@ -586,6 +586,8 @@ impl EditorInner {
                 // Cache ctx once per frame so settings window bindings can use it
                 // without requiring a live CURRENT_UI pointer.
                 crate::rune_bindings::set_egui_ctx(ctx);
+                // Install SVG/image loaders (idempotent after first call).
+                crate::icons::install_loaders(ctx);
 
                 if !*theme_applied {
                     theme::apply_theme(ctx);
