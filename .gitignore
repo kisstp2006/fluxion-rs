@@ -34,3 +34,4 @@ desktop.ini
 # wasm-pack / wasm-bindgen generated (if you add them later)
 /pkg/
 dist/
+build_errors.txt
