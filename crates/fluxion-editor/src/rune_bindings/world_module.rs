@@ -290,6 +290,14 @@ pub fn get_snap_translate() -> f64  { SNAP_TRANSLATE.with(|c| c.get()) }
 pub fn get_snap_rotate()    -> f64  { SNAP_ROTATE   .with(|c| c.get()) }
 pub fn get_snap_scale()     -> f64  { SNAP_SCALE    .with(|c| c.get()) }
 
+/// Live-set snap values from settings_module (called when user edits project settings).
+pub fn set_snap_translate_value(v: f64) { SNAP_TRANSLATE.with(|c| c.set(v)); }
+pub fn set_snap_rotate_value(v: f64)    { SNAP_ROTATE   .with(|c| c.set(v)); }
+pub fn set_snap_scale_value(v: f64)     { SNAP_SCALE    .with(|c| c.set(v)); }
+
+/// Live-set editor camera speed from settings_module.
+pub fn set_editor_cam_speed(v: f64) { EDITOR_CAM_SPEED.with(|c| c.set(v)); }
+
 /// Read the current CSG box gizmo mode (0=none, 1=FaceHandles, 2=AxisArrows).
 pub fn get_box_gizmo_mode_raw() -> u8 { BOX_GIZMO_MODE.with(|c| c.get()) }
 

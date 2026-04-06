@@ -6,11 +6,12 @@ pub mod input_module;
 pub mod camera_module;
 pub mod environment_module;
 pub mod gameplay_module;
+pub mod settings_module;
 
 use anyhow::Result;
 use rune::Module;
 
-pub use ui_module::{set_current_ui, UiContextGuard, get_viewport_rect, drain_cursor_grab, drain_cursor_visible, accumulate_raw_mouse_delta, drain_raw_mouse_delta};
+pub use ui_module::{set_current_ui, UiContextGuard, get_viewport_rect, drain_cursor_grab, drain_cursor_visible, accumulate_raw_mouse_delta, drain_raw_mouse_delta, set_egui_ctx};
 pub use world_module::{
     set_world_context, WorldContextGuard,
     drain_pending_edits, PendingEdit,
@@ -43,6 +44,12 @@ pub use gameplay_module::{
     set_compile_summary,
     set_script_fields, drain_script_fields,
 };
+#[allow(unused_imports)]
+pub use settings_module::{
+    set_settings_context, clear_settings_context,
+    drain_settings_saves, get_current_prefs,
+    get_show_project_settings, get_show_editor_prefs,
+};
 
 pub fn all_editor_modules() -> Result<Vec<Module>> {
     Ok(vec![
@@ -54,5 +61,6 @@ pub fn all_editor_modules() -> Result<Vec<Module>> {
         fluxion_audio::build_audio_rune_module()?,
         input_module::build_input_module()?,
         environment_module::build_environment_module()?,
+        settings_module::build_settings_module()?,
     ])
 }

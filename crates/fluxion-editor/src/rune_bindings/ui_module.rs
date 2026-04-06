@@ -43,6 +43,15 @@ thread_local! {
     static MENU_BTN_RECT: Cell<egui::Rect> = Cell::new(egui::Rect::NOTHING);
     /// True if the popup was toggled open THIS frame (suppresses immediate close).
     static MENU_JUST_OPENED: Cell<bool> = Cell::new(false);
+    // ── Settings modals ──────────────────────────────────────────────────────────────────
+    /// ID of the currently open modal window, or None.
+    static MODAL_OPEN:  RefCell<Option<String>> = RefCell::new(None);
+    /// Set to true by modal_close() to signal the modal should close this frame.
+    static MODAL_CLOSE: Cell<bool>              = Cell::new(false);
+    /// Cached egui Context for the current frame — set once per frame from main.rs.
+    /// Lets settings window bindings work without needing a live CURRENT_UI pointer.
+    static CURRENT_CTX: RefCell<Option<egui::Context>> = RefCell::new(None);
+
     // ── Floating input dialog ────────────────────────────────────────────────────────────
     /// True when the dialog window is currently shown.
     static DIALOG_OPEN:   Cell<bool>      = Cell::new(false);
@@ -107,6 +116,465 @@ pub fn drain_cursor_visible() -> Option<bool> {
     CURSOR_VISIBLE.with(|c| c.take())
 }
 
+/// Cache the egui Context for this frame.  Must be called once per frame from
+/// main.rs before any Rune script that may invoke settings window bindings.
+pub fn set_egui_ctx(ctx: &egui::Context) {
+    CURRENT_CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// V3 Settings UI — free rendering helpers (used by project_settings_window /
+// editor_prefs_window Rune bindings)
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[inline] fn sc_label()    -> egui::Color32 { egui::Color32::from_rgb(157,157,157) }
+#[inline] fn sc_accent()   -> egui::Color32 { egui::Color32::from_rgb(77,158,255) }
+#[inline] fn sc_accent_d() -> egui::Color32 { egui::Color32::from_rgba_unmultiplied(77,158,255,38) }
+#[inline] fn sc_yellow()   -> egui::Color32 { egui::Color32::from_rgb(204,167,0) }
+#[inline] fn sc_red()      -> egui::Color32 { egui::Color32::from_rgb(241,76,76) }
+#[inline] fn sc_sidebar()  -> egui::Color32 { egui::Color32::from_rgb(37,37,38) }
+#[inline] fn sc_text()     -> egui::Color32 { egui::Color32::from_rgb(204,204,204) }
+
+const S_ROW_H:   f32 = 22.0;
+const S_LABEL_W: f32 = 140.0;
+const S_RESET_W: f32 = 22.0;
+
+// ── Sidebar ────────────────────────────────────────────────────────────────────
+
+fn v3_sidebar(ui: &mut egui::Ui, cats: &[&str], counts: &[usize], active: &str) -> String {
+    let mut result = active.to_string();
+    for (i, cat) in cats.iter().enumerate() {
+        let is_active = *cat == active;
+        let cnt = counts.get(i).copied().unwrap_or(0);
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), 26.0), egui::Sense::click()
+        );
+        let bg = if is_active { sc_accent_d() }
+                 else if resp.hovered() { egui::Color32::from_rgb(45,45,45) }
+                 else { egui::Color32::TRANSPARENT };
+        ui.painter().rect_filled(rect, 0.0, bg);
+        if is_active {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
+                0.0, sc_accent(),
+            );
+        }
+        let tc = if is_active { sc_text() } else { sc_label() };
+        ui.painter().text(
+            egui::pos2(rect.min.x + 10.0, rect.center().y),
+            egui::Align2::LEFT_CENTER, *cat,
+            egui::FontId::proportional(12.0), tc,
+        );
+        if cnt > 0 {
+            ui.painter().text(
+                egui::pos2(rect.max.x - 6.0, rect.center().y),
+                egui::Align2::RIGHT_CENTER, cnt.to_string(),
+                egui::FontId::proportional(10.0), sc_yellow(),
+            );
+        }
+        if resp.clicked() { result = cat.to_string(); }
+    }
+    result
+}
+
+// ── Section header ─────────────────────────────────────────────────────────────
+
+fn v3_section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(6.0);
+    ui.label(egui::RichText::new(title).color(sc_text()).size(11.5).strong());
+    ui.separator();
+}
+
+// ── Property rows ──────────────────────────────────────────────────────────────
+
+fn v3_f32(ui: &mut egui::Ui, label: &str, desc: &str,
+          val: f32, def: f32, speed: f64, min: f64, max: f64, dec: usize) -> Option<f32>
+{
+    let is_mod = (val - def).abs() > 1e-5;
+    let mut res: Option<f32> = None;
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
+        );
+        let rw = if is_mod { S_RESET_W } else { 0.0 };
+        let mut v = val;
+        if ui.add_sized(
+            [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
+            egui::DragValue::new(&mut v).speed(speed).range(min..=max).max_decimals(dec)
+        ).changed() { res = Some(v); }
+        if is_mod && ui.add_sized(
+            [S_RESET_W, S_ROW_H - 2.0],
+            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
+        ).on_hover_text("Reset to default").clicked() { res = Some(def); }
+    });
+    res
+}
+
+fn v3_bool(ui: &mut egui::Ui, label: &str, desc: &str, val: bool, def: bool) -> Option<bool> {
+    let is_mod = val != def;
+    let mut res: Option<bool> = None;
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
+        );
+        let rw = if is_mod { S_RESET_W } else { 0.0 };
+        let avail = (ui.available_width() - rw).max(20.0);
+        let mut v = val;
+        ui.allocate_ui_with_layout(
+            egui::vec2(avail, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { if ui.checkbox(&mut v, "").changed() { res = Some(v); } }
+        );
+        if is_mod && ui.add_sized(
+            [S_RESET_W, S_ROW_H - 2.0],
+            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
+        ).on_hover_text("Reset to default").clicked() { res = Some(def); }
+    });
+    res
+}
+
+fn v3_slider(ui: &mut egui::Ui, label: &str, desc: &str,
+             val: f32, def: f32, min: f64, max: f64, dec: usize) -> Option<f32>
+{
+    let is_mod = (val - def).abs() > 1e-5;
+    let mut res: Option<f32> = None;
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
+        );
+        let rw = if is_mod { S_RESET_W } else { 0.0 };
+        let mut v = val;
+        if ui.add_sized(
+            [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
+            egui::Slider::new(&mut v, min as f32..=max as f32).max_decimals(dec)
+        ).changed() { res = Some(v); }
+        if is_mod && ui.add_sized(
+            [S_RESET_W, S_ROW_H - 2.0],
+            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
+        ).on_hover_text("Reset to default").clicked() { res = Some(def); }
+    });
+    res
+}
+
+fn v3_u32(ui: &mut egui::Ui, label: &str, desc: &str,
+          val: u32, def: u32, min: u32, max: u32) -> Option<u32>
+{
+    let is_mod = val != def;
+    let mut res: Option<u32> = None;
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
+        );
+        let rw = if is_mod { S_RESET_W } else { 0.0 };
+        let mut v = val;
+        if ui.add_sized(
+            [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
+            egui::DragValue::new(&mut v).range(min..=max)
+        ).changed() { res = Some(v); }
+        if is_mod && ui.add_sized(
+            [S_RESET_W, S_ROW_H - 2.0],
+            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
+        ).on_hover_text("Reset to default").clicked() { res = Some(def); }
+    });
+    res
+}
+
+fn v3_string(ui: &mut egui::Ui, label: &str, desc: &str, val: &str, def: &str) -> Option<String> {
+    let is_mod = val != def;
+    let mut res: Option<String> = None;
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
+        );
+        let rw = if is_mod { S_RESET_W } else { 0.0 };
+        let mut s = val.to_string();
+        if ui.add_sized(
+            [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
+            egui::TextEdit::singleline(&mut s)
+        ).changed() { res = Some(s); }
+        if is_mod && ui.add_sized(
+            [S_RESET_W, S_ROW_H - 2.0],
+            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
+        ).on_hover_text("Reset to default").clicked() { res = Some(def.to_string()); }
+    });
+    res
+}
+
+fn v3_select(ui: &mut egui::Ui, label: &str, desc: &str,
+             val: &str, def: &str, opts: &[&str]) -> Option<String>
+{
+    let is_mod = val != def;
+    let mut res: Option<String> = None;
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
+        );
+        let rw = if is_mod { S_RESET_W } else { 0.0 };
+        let avail = (ui.available_width() - rw).max(20.0);
+        egui::ComboBox::from_id_salt(label)
+            .selected_text(val)
+            .width(avail)
+            .show_ui(ui, |ui| {
+                for opt in opts {
+                    if ui.selectable_label(val == *opt, *opt).clicked() {
+                        res = Some(opt.to_string());
+                    }
+                }
+            });
+        if is_mod && ui.add_sized(
+            [S_RESET_W, S_ROW_H - 2.0],
+            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
+        ).on_hover_text("Reset to default").clicked() { res = Some(def.to_string()); }
+    });
+    res
+}
+
+fn v3_vec3(ui: &mut egui::Ui, label: &str, desc: &str,
+           val: [f32;3], def: [f32;3], speed: f64) -> Option<[f32;3]>
+{
+    let is_mod = val != def;
+    let mut res: Option<[f32;3]> = None;
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
+            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
+        );
+        let rw = if is_mod { S_RESET_W } else { 0.0 };
+        let w3 = ((ui.available_width() - rw) / 3.0).max(20.0);
+        let mut v = val;
+        let mut changed = false;
+        for c in &mut v {
+            if ui.add_sized([w3, S_ROW_H - 2.0], egui::DragValue::new(c).speed(speed).max_decimals(3)).changed() {
+                changed = true;
+            }
+        }
+        if changed { res = Some(v); }
+        if is_mod && ui.add_sized(
+            [S_RESET_W, S_ROW_H - 2.0],
+            egui::Button::new(egui::RichText::new("↺").color(sc_yellow()).size(10.0))
+        ).on_hover_text("Reset to default").clicked() { res = Some(def); }
+    });
+    res
+}
+
+// ── Project Settings tab content ───────────────────────────────────────────────
+
+fn render_project_content_v3(ui: &mut egui::Ui, tab: &str) {
+    use crate::rune_bindings::settings_module as sm;
+    match tab {
+        "Physics" => {
+            v3_section(ui, "Physics");
+            let g  = sm::with_project_config(|c| c.settings.physics.gravity).unwrap_or([0.0,-9.81,0.0]);
+            let gd = sm::with_project_defaults(|c| c.settings.physics.gravity).unwrap_or([0.0,-9.81,0.0]);
+            if let Some(v) = v3_vec3(ui, "Gravity", "World gravity vector", g, gd, 0.01) {
+                sm::modify_project_config(|c| c.settings.physics.gravity = v);
+            }
+            let ts  = sm::with_project_config(|c| c.settings.physics.fixed_timestep).unwrap_or(1.0/60.0);
+            let tsd = sm::with_project_defaults(|c| c.settings.physics.fixed_timestep).unwrap_or(1.0/60.0);
+            if let Some(v) = v3_f32(ui, "Fixed Timestep", "Physics fixed update interval (s)", ts, tsd, 0.001, 0.001, 1.0, 4) {
+                sm::modify_project_config(|c| c.settings.physics.fixed_timestep = v.clamp(0.001, 1.0));
+            }
+        }
+        "Rendering" => {
+            v3_section(ui, "Rendering");
+            let sh  = sm::with_project_config(|c| c.settings.render.shadows).unwrap_or(true);
+            let shd = sm::with_project_defaults(|c| c.settings.render.shadows).unwrap_or(true);
+            if let Some(v) = v3_bool(ui, "Shadows", "Enable shadow rendering", sh, shd) {
+                sm::modify_project_config(|c| c.settings.render.shadows = v);
+            }
+            let sms  = sm::with_project_config(|c| c.settings.render.shadow_map_size).unwrap_or(2048);
+            let smsd = sm::with_project_defaults(|c| c.settings.render.shadow_map_size).unwrap_or(2048);
+            let sms_str  = sms.to_string();
+            let smsd_str = smsd.to_string();
+            if let Some(v) = v3_select(ui, "Shadow Map Size", "Shadow map resolution (px)", &sms_str, &smsd_str, &["256","512","1024","2048","4096","8192"]) {
+                if let Ok(n) = v.parse::<u32>() { sm::modify_project_config(|c| c.settings.render.shadow_map_size = n); }
+            }
+            let tm  = sm::with_project_config(|c| c.settings.render.tone_mapping.clone()).unwrap_or_else(|| "ACES".to_string());
+            let tmd = sm::with_project_defaults(|c| c.settings.render.tone_mapping.clone()).unwrap_or_else(|| "ACES".to_string());
+            if let Some(v) = v3_select(ui, "Tone Mapping", "HDR tone mapping operator", &tm, &tmd, &["ACES","Filmic","Linear","Reinhard"]) {
+                sm::modify_project_config(|c| c.settings.render.tone_mapping = v);
+            }
+            let exp  = sm::with_project_config(|c| c.settings.render.exposure).unwrap_or(1.2);
+            let expd = sm::with_project_defaults(|c| c.settings.render.exposure).unwrap_or(1.2);
+            if let Some(v) = v3_f32(ui, "Exposure", "Camera exposure multiplier", exp, expd, 0.01, 0.0, 10.0, 2) {
+                sm::modify_project_config(|c| c.settings.render.exposure = v.clamp(0.0, 10.0));
+            }
+            v3_section(ui, "Grid & Snap");
+            let sg  = sm::with_project_config(|c| c.settings.editor.show_grid).unwrap_or(true);
+            let sgd = sm::with_project_defaults(|c| c.settings.editor.show_grid).unwrap_or(true);
+            if let Some(v) = v3_bool(ui, "Show Grid", "Display world grid in viewport", sg, sgd) {
+                sm::modify_project_config(|c| c.settings.editor.show_grid = v);
+            }
+            let st   = sm::with_project_config(|c| c.settings.editor.snap_translation).unwrap_or(1.0);
+            let stdf = sm::with_project_defaults(|c| c.settings.editor.snap_translation).unwrap_or(1.0);
+            if let Some(v) = v3_f32(ui, "Snap Translate", "Translation snap step (m)", st, stdf, 0.01, 0.001, 100.0, 3) {
+                sm::modify_project_config(|c| c.settings.editor.snap_translation = v.clamp(0.001,100.0));
+                crate::rune_bindings::world_module::set_snap_translate_value(v as f64);
+            }
+            let sr   = sm::with_project_config(|c| c.settings.editor.snap_rotation).unwrap_or(15.0);
+            let srdf = sm::with_project_defaults(|c| c.settings.editor.snap_rotation).unwrap_or(15.0);
+            if let Some(v) = v3_f32(ui, "Snap Rotate °", "Rotation snap step (degrees)", sr, srdf, 0.1, 0.1, 180.0, 1) {
+                sm::modify_project_config(|c| c.settings.editor.snap_rotation = v.clamp(0.1,180.0));
+                crate::rune_bindings::world_module::set_snap_rotate_value(v as f64);
+            }
+            let ss   = sm::with_project_config(|c| c.settings.editor.snap_scale).unwrap_or(0.25);
+            let ssdf = sm::with_project_defaults(|c| c.settings.editor.snap_scale).unwrap_or(0.25);
+            if let Some(v) = v3_f32(ui, "Snap Scale", "Scale snap step", ss, ssdf, 0.01, 0.001, 10.0, 3) {
+                sm::modify_project_config(|c| c.settings.editor.snap_scale = v.clamp(0.001,10.0));
+                crate::rune_bindings::world_module::set_snap_scale_value(v as f64);
+            }
+        }
+        "Audio" => {
+            v3_section(ui, "Audio");
+            let mv  = sm::with_project_config(|c| c.settings.audio.master_volume).unwrap_or(1.0);
+            let mvd = sm::with_project_defaults(|c| c.settings.audio.master_volume).unwrap_or(1.0);
+            if let Some(v) = v3_slider(ui, "Master Volume", "Overall audio volume", mv, mvd, 0.0, 1.0, 2) {
+                sm::modify_project_config(|c| c.settings.audio.master_volume = v.clamp(0.0,1.0));
+            }
+            let mu  = sm::with_project_config(|c| c.settings.audio.music_volume).unwrap_or(1.0);
+            let mud = sm::with_project_defaults(|c| c.settings.audio.music_volume).unwrap_or(1.0);
+            if let Some(v) = v3_slider(ui, "Music Volume", "Background music volume", mu, mud, 0.0, 1.0, 2) {
+                sm::modify_project_config(|c| c.settings.audio.music_volume = v.clamp(0.0,1.0));
+            }
+            let sx  = sm::with_project_config(|c| c.settings.audio.sfx_volume).unwrap_or(1.0);
+            let sxd = sm::with_project_defaults(|c| c.settings.audio.sfx_volume).unwrap_or(1.0);
+            if let Some(v) = v3_slider(ui, "SFX Volume", "Sound effect volume", sx, sxd, 0.0, 1.0, 2) {
+                sm::modify_project_config(|c| c.settings.audio.sfx_volume = v.clamp(0.0,1.0));
+            }
+        }
+        "Input" => {
+            v3_section(ui, "Input");
+            let ms  = sm::with_project_config(|c| c.settings.input.mouse_sensitivity).unwrap_or(1.0);
+            let msd = sm::with_project_defaults(|c| c.settings.input.mouse_sensitivity).unwrap_or(1.0);
+            if let Some(v) = v3_slider(ui, "Mouse Sensitivity", "Mouse look sensitivity", ms, msd, 0.05, 10.0, 2) {
+                sm::modify_project_config(|c| c.settings.input.mouse_sensitivity = v.clamp(0.05,10.0));
+            }
+            let dz  = sm::with_project_config(|c| c.settings.input.gamepad_deadzone).unwrap_or(0.15);
+            let dzd = sm::with_project_defaults(|c| c.settings.input.gamepad_deadzone).unwrap_or(0.15);
+            if let Some(v) = v3_slider(ui, "Gamepad Deadzone", "Analog stick dead zone", dz, dzd, 0.0, 0.9, 2) {
+                sm::modify_project_config(|c| c.settings.input.gamepad_deadzone = v.clamp(0.0,0.9));
+            }
+        }
+        "Tags & Layers" => {
+            v3_section(ui, "Tags");
+            let tags = sm::with_project_config(|c| c.settings.tags.list.clone()).unwrap_or_default();
+            let mut to_remove: Option<String> = None;
+            for tag in &tags {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(tag).color(sc_label()).size(11.0));
+                    if ui.add(egui::Button::new(egui::RichText::new("−").color(sc_red()).size(11.0)).small().frame(false)).clicked() {
+                        to_remove = Some(tag.clone());
+                    }
+                });
+            }
+            if let Some(t) = to_remove {
+                sm::modify_project_config(|c| c.settings.tags.list.retain(|x| x != &t));
+            }
+            ui.add_space(4.0);
+        }
+        "Build" => {
+            v3_section(ui, "Build");
+            let pl  = sm::with_project_config(|c| c.settings.build.target_platform.clone()).unwrap_or_else(|| "Windows".to_string());
+            let pld = sm::with_project_defaults(|c| c.settings.build.target_platform.clone()).unwrap_or_else(|| "Windows".to_string());
+            if let Some(v) = v3_select(ui, "Target Platform", "Build target OS", &pl, &pld, &["Windows","Linux","macOS","Web (WASM)"]) {
+                sm::modify_project_config(|c| c.settings.build.target_platform = v);
+            }
+            let wt  = sm::with_project_config(|c| c.settings.build.window_title.clone()).unwrap_or_default();
+            let wtd = sm::with_project_defaults(|c| c.settings.build.window_title.clone()).unwrap_or_default();
+            if let Some(v) = v3_string(ui, "Window Title", "App window title", &wt, &wtd) {
+                sm::modify_project_config(|c| c.settings.build.window_title = v);
+            }
+            let ww  = sm::with_project_config(|c| c.settings.build.window_width).unwrap_or(1920);
+            let wwd = sm::with_project_defaults(|c| c.settings.build.window_width).unwrap_or(1920);
+            if let Some(v) = v3_u32(ui, "Window Width", "Default window width (px)", ww, wwd, 320, 7680) {
+                sm::modify_project_config(|c| c.settings.build.window_width = v);
+            }
+            let wh  = sm::with_project_config(|c| c.settings.build.window_height).unwrap_or(1080);
+            let whd = sm::with_project_defaults(|c| c.settings.build.window_height).unwrap_or(1080);
+            if let Some(v) = v3_u32(ui, "Window Height", "Default window height (px)", wh, whd, 200, 4320) {
+                sm::modify_project_config(|c| c.settings.build.window_height = v);
+            }
+            let vs  = sm::with_project_config(|c| c.settings.build.vsync).unwrap_or(true);
+            let vsd = sm::with_project_defaults(|c| c.settings.build.vsync).unwrap_or(true);
+            if let Some(v) = v3_bool(ui, "VSync", "Vertical synchronization", vs, vsd) {
+                sm::modify_project_config(|c| c.settings.build.vsync = v);
+            }
+            let fs  = sm::with_project_config(|c| c.settings.build.fullscreen).unwrap_or(false);
+            let fsd = sm::with_project_defaults(|c| c.settings.build.fullscreen).unwrap_or(false);
+            if let Some(v) = v3_bool(ui, "Fullscreen", "Start in fullscreen mode", fs, fsd) {
+                sm::modify_project_config(|c| c.settings.build.fullscreen = v);
+            }
+            let errs = sm::validate_project();
+            if !errs.is_empty() {
+                ui.add_space(4.0);
+                for e in &errs { ui.label(egui::RichText::new(format!("⚠ {e}")).color(sc_yellow()).size(11.0)); }
+            }
+        }
+        _ => {}
+    }
+}
+
+// ── Editor Prefs tab content ───────────────────────────────────────────────────
+
+fn render_prefs_content_v3(ui: &mut egui::Ui, tab: &str) {
+    use crate::rune_bindings::settings_module as sm;
+    match tab {
+        "General" => {
+            v3_section(ui, "Appearance");
+            let th  = sm::with_prefs(|p| p.theme.clone()).unwrap_or_else(|| "dark".to_string());
+            let thd = sm::with_prefs_defaults(|p| p.theme.clone()).unwrap_or_else(|| "dark".to_string());
+            if let Some(v) = v3_select(ui, "Theme", "Editor color theme", &th, &thd, &["dark","light"]) {
+                sm::modify_prefs(|p| p.theme = v);
+            }
+            let fs  = sm::with_prefs(|p| p.font_size).unwrap_or(13.0);
+            let fsd = sm::with_prefs_defaults(|p| p.font_size).unwrap_or(13.0);
+            if let Some(v) = v3_slider(ui, "Font Size", "UI font size (pt)", fs, fsd, 9.0, 24.0, 1) {
+                sm::modify_prefs(|p| p.font_size = v.clamp(9.0,24.0));
+            }
+            v3_section(ui, "Autosave");
+            let ai  = sm::with_prefs(|p| p.autosave_interval_secs).unwrap_or(120);
+            let aid = sm::with_prefs_defaults(|p| p.autosave_interval_secs).unwrap_or(120);
+            if let Some(v) = v3_u32(ui, "Autosave Interval", "Autosave interval in seconds (0 = off)", ai, aid, 0, 3600) {
+                sm::modify_prefs(|p| p.autosave_interval_secs = v);
+            }
+            let rl  = sm::with_prefs(|p| p.restore_layout).unwrap_or(true);
+            let rld = sm::with_prefs_defaults(|p| p.restore_layout).unwrap_or(true);
+            if let Some(v) = v3_bool(ui, "Restore Layout", "Restore panel layout on startup", rl, rld) {
+                sm::modify_prefs(|p| p.restore_layout = v);
+            }
+        }
+        "Camera" => {
+            v3_section(ui, "Fly Camera");
+            let cs  = sm::with_prefs(|p| p.camera_speed).unwrap_or(5.0);
+            let csd = sm::with_prefs_defaults(|p| p.camera_speed).unwrap_or(5.0);
+            if let Some(v) = v3_f32(ui, "Camera Speed", "Editor fly camera speed (m/s)", cs, csd, 0.1, 0.1, 500.0, 1) {
+                sm::modify_prefs(|p| p.camera_speed = v.clamp(0.1,500.0));
+                crate::rune_bindings::world_module::set_editor_cam_speed(v as f64);
+            }
+            let se  = sm::with_prefs(|p| p.camera_sensitivity).unwrap_or(1.0);
+            let sed = sm::with_prefs_defaults(|p| p.camera_sensitivity).unwrap_or(1.0);
+            if let Some(v) = v3_f32(ui, "Mouse Sensitivity", "Editor camera mouse look sensitivity", se, sed, 0.01, 0.05, 10.0, 2) {
+                sm::modify_prefs(|p| p.camera_sensitivity = v.clamp(0.05,10.0));
+            }
+        }
+        "Console" => {
+            v3_section(ui, "Console");
+            let lm  = sm::with_prefs(|p| p.log_max_entries).unwrap_or(10_000);
+            let lmd = sm::with_prefs_defaults(|p| p.log_max_entries).unwrap_or(10_000);
+            if let Some(v) = v3_u32(ui, "Max Log Entries", "Maximum console log lines (100–100 000)", lm, lmd, 100, 100_000) {
+                sm::modify_prefs(|p| p.log_max_entries = v);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 pub fn build_ui_module() -> anyhow::Result<Module> {
     let mut m = Module::with_crate_item("fluxion", ["ui"])?;
 
@@ -1163,6 +1631,264 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             });
             clicked
         }).unwrap_or(false)
+    }).build()?;
+
+    // ── Settings modal windows ───────────────────────────────────────────────
+
+    // modal_begin(id, title, width, height) → bool
+    // Opens a centered egui::Window with a dim overlay.
+    // Returns true while the modal is open and should render its body.
+    // Must always be followed by modal_end().
+    m.function("modal_begin",
+        |id: Ref<str>, title: Ref<str>, width: f64, height: f64| -> bool
+    {
+        let id_s    = id.as_ref().to_string();
+        let title_s = title.as_ref().to_string();
+        // If close was signalled last frame, clear modal
+        if MODAL_CLOSE.with(|c| c.get()) {
+            MODAL_CLOSE.with(|c| c.set(false));
+            MODAL_OPEN.with(|m| *m.borrow_mut() = None);
+            return false;
+        }
+        // If no modal open yet with this id, open it
+        let currently_open = MODAL_OPEN.with(|m| m.borrow().as_deref() == Some(&id_s));
+        if !currently_open {
+            // If another modal is open, don't override
+            let any_open = MODAL_OPEN.with(|m| m.borrow().is_some());
+            if any_open { return false; }
+            MODAL_OPEN.with(|m| *m.borrow_mut() = Some(id_s.clone()));
+        }
+        with_ui(|ui| {
+            // Dim overlay behind the modal
+            let screen = ui.ctx().screen_rect();
+            ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::PanelResizeLine,
+                egui::Id::new("modal_overlay"),
+            )).rect_filled(screen, 0.0, egui::Color32::from_black_alpha(140));
+
+            let mut open = true;
+            egui::Window::new(title_s.as_str())
+                .id(egui::Id::new(id_s.as_str()))
+                .collapsible(false)
+                .resizable(true)
+                .min_size([width as f32 * 0.5, height as f32 * 0.5])
+                .default_size([width as f32, height as f32])
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ui.ctx(), |_inner_ui| {
+                    // Body is rendered by Rune script between modal_begin/end
+                });
+            if !open {
+                MODAL_OPEN.with(|m| *m.borrow_mut() = None);
+            }
+            open
+        }).unwrap_or(false)
+    }).build()?;
+
+    // modal_end() — must be called unconditionally after modal_begin.
+    m.function("modal_end", || {
+        // No-op: body was already rendered inside the Window::show closure via
+        // the side-by-side layout approach below. State cleanup is handled by modal_begin.
+    }).build()?;
+
+    // modal_close() — call from Rune to close the current modal next frame.
+    m.function("modal_close", || {
+        MODAL_CLOSE.with(|c| c.set(true));
+    }).build()?;
+
+    // modal_open(id) — open a modal by setting the active modal ID.
+    // Call this from menubar / button handler to trigger a modal next frame.
+    m.function("modal_open", |id: Ref<str>| {
+        let close_pending = MODAL_CLOSE.with(|c| c.get());
+        if !close_pending {
+            MODAL_OPEN.with(|m| *m.borrow_mut() = Some(id.as_ref().to_string()));
+        }
+    }).build()?;
+
+    // modal_is_open(id) → bool — returns true when this modal id is active.
+    m.function("modal_is_open", |id: Ref<str>| -> bool {
+        MODAL_OPEN.with(|m| m.borrow().as_deref() == Some(id.as_ref()))
+    }).build()?;
+
+    // project_settings_window(width, height) → bool
+    // Renders the full V3-style Project Settings modal (dim overlay + sidebar + rows).
+    // Returns true while open, false when ✕ is clicked.
+    m.function("project_settings_window", |width: f64, height: f64| -> bool {
+        use super::settings_module as sm;
+        let ctx = match CURRENT_CTX.with(|c| c.borrow().clone()) {
+            Some(c) => c,
+            None    => return false,
+        };
+        let mut keep_open = true;
+        {
+            let screen = ctx.screen_rect();
+            ctx.layer_painter(egui::LayerId::new(
+                egui::Order::PanelResizeLine,
+                egui::Id::new("proj_settings_v3_overlay"),
+            )).rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
+
+            let w = width as f32;
+            let h = height as f32;
+            egui::Area::new(egui::Id::new("proj_settings_v3"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(&ctx, |ui| {
+                    egui::Frame::window(ui.style())
+                        .fill(egui::Color32::from_rgb(30, 30, 30))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60,60,60)))
+                        .show(ui, |ui| {
+                            ui.set_min_size(egui::vec2(w, h));
+                            ui.set_max_width(w);
+
+                            // Header bar
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("⚙  Project Settings").size(13.0).color(sc_text()).strong());
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.add(egui::Button::new(egui::RichText::new("✕").size(13.0)).frame(false)).clicked() {
+                                        sm::close_project_settings_ui();
+                                        keep_open = false;
+                                    }
+                                    if ui.add(egui::Button::new(egui::RichText::new("↺ Reset All").color(sc_red()).size(11.0)).small()).clicked() {
+                                        sm::reset_project_to_defaults();
+                                    }
+                                });
+                            });
+                            ui.separator();
+
+                            // Search bar
+                            let mut search = sm::settings_search_query();
+                            if ui.add(
+                                egui::TextEdit::singleline(&mut search)
+                                    .hint_text("🔍 Search settings…")
+                                    .desired_width(ui.available_width())
+                            ).changed() {
+                                sm::set_settings_search_query(search.clone());
+                            }
+                            ui.separator();
+
+                            // Sidebar + content
+                            let cats = ["Physics","Rendering","Audio","Input","Tags & Layers","Build"];
+                            let counts: Vec<usize> = cats.iter().map(|c| sm::project_category_modified_count(c)).collect();
+
+                            egui::SidePanel::left("proj_settings_sidebar_v3")
+                                .exact_width(160.0)
+                                .frame(egui::Frame::default()
+                                    .fill(sc_sidebar())
+                                    .inner_margin(egui::Margin::same(4.0))
+                                )
+                                .show_inside(ui, |ui| {
+                                    let active = sm::project_tab();
+                                    let new_tab = v3_sidebar(ui, &cats, &counts, &active);
+                                    if new_tab != active { sm::set_project_tab_ui(new_tab); }
+                                });
+
+                            egui::ScrollArea::vertical()
+                                .id_salt("proj_settings_content_v3")
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    ui.add_space(4.0);
+                                    let search = sm::settings_search_query();
+                                    if search.is_empty() {
+                                        render_project_content_v3(ui, &sm::project_tab());
+                                    } else {
+                                        for cat in &cats { render_project_content_v3(ui, cat); }
+                                    }
+                                    ui.add_space(8.0);
+                                });
+                        });
+                });
+            keep_open
+        }
+    }).build()?;
+
+    // editor_prefs_window(width, height) → bool
+    // Renders the full V3-style Editor Preferences modal.
+    // Returns true while open, false when ✕ is clicked.
+    m.function("editor_prefs_window", |width: f64, height: f64| -> bool {
+        use super::settings_module as sm;
+        let ctx = match CURRENT_CTX.with(|c| c.borrow().clone()) {
+            Some(c) => c,
+            None    => return false,
+        };
+        let mut keep_open = true;
+        {
+            let screen = ctx.screen_rect();
+            ctx.layer_painter(egui::LayerId::new(
+                egui::Order::PanelResizeLine,
+                egui::Id::new("editor_prefs_v3_overlay"),
+            )).rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
+
+            let w = width as f32;
+            let h = height as f32;
+            egui::Area::new(egui::Id::new("editor_prefs_v3"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(&ctx, |ui| {
+                    egui::Frame::window(ui.style())
+                        .fill(egui::Color32::from_rgb(30, 30, 30))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(60,60,60)))
+                        .show(ui, |ui| {
+                            ui.set_min_size(egui::vec2(w, h));
+                            ui.set_max_width(w);
+
+                            // Header bar
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("⚙  Editor Preferences").size(13.0).color(sc_text()).strong());
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.add(egui::Button::new(egui::RichText::new("✕").size(13.0)).frame(false)).clicked() {
+                                        sm::close_editor_prefs_ui();
+                                        keep_open = false;
+                                    }
+                                    if ui.add(egui::Button::new(egui::RichText::new("↺ Reset All").color(sc_red()).size(11.0)).small()).clicked() {
+                                        sm::reset_prefs_to_defaults();
+                                    }
+                                });
+                            });
+                            ui.separator();
+
+                            // Search bar
+                            let mut search = sm::settings_search_query();
+                            if ui.add(
+                                egui::TextEdit::singleline(&mut search)
+                                    .hint_text("🔍 Search preferences…")
+                                    .desired_width(ui.available_width())
+                            ).changed() {
+                                sm::set_settings_search_query(search.clone());
+                            }
+                            ui.separator();
+
+                            let cats = ["General","Camera","Console"];
+                            let counts: Vec<usize> = cats.iter().map(|c| sm::prefs_category_modified_count(c)).collect();
+
+                            egui::SidePanel::left("editor_prefs_sidebar_v3")
+                                .exact_width(140.0)
+                                .frame(egui::Frame::default()
+                                    .fill(sc_sidebar())
+                                    .inner_margin(egui::Margin::same(4.0))
+                                )
+                                .show_inside(ui, |ui| {
+                                    let active = sm::prefs_tab();
+                                    let new_tab = v3_sidebar(ui, &cats, &counts, &active);
+                                    if new_tab != active { sm::set_prefs_tab_ui(new_tab); }
+                                });
+
+                            egui::ScrollArea::vertical()
+                                .id_salt("editor_prefs_content_v3")
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    ui.add_space(4.0);
+                                    let search = sm::settings_search_query();
+                                    if search.is_empty() {
+                                        render_prefs_content_v3(ui, &sm::prefs_tab());
+                                    } else {
+                                        for cat in &cats { render_prefs_content_v3(ui, cat); }
+                                    }
+                                    ui.add_space(8.0);
+                                });
+                        });
+                });
+            keep_open
+        }
     }).build()?;
 
     // ── Console panel widgets ────────────────────────────────────────────────

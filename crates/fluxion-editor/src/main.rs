@@ -32,7 +32,9 @@ use winit::{
 };
 
 use fluxion_renderer::{FluxionRenderer, RendererConfig};
-use fluxion_core::ProjectConfig;
+use fluxion_core::{ProjectConfig, EditorPrefs};
+#[cfg(not(target_arch = "wasm32"))]
+use fluxion_core::{load_editor_prefs, save_editor_prefs, save_project};
 use fluxion_core::scene::{load_scene_into_world, world_to_scene_data, SceneSettings, save_scene_file, load_scene_file};
 
 use crate::dock::{default_dock_state, show_dock, EditorTab};
@@ -146,6 +148,11 @@ struct EditorInner {
     file_watcher_rx: Option<std::sync::mpsc::Receiver<notify::Result<notify::Event>>>,
     /// Debounce: seconds remaining before the next rescan is allowed.
     file_watcher_cooldown: f32,
+
+    // Editor preferences (user-level, persists across projects)
+    editor_prefs: EditorPrefs,
+    /// Autosave countdown timer in seconds.
+    autosave_timer: f32,
 }
 
 // ── ApplicationHandler impl ───────────────────────────────────────────────────
@@ -255,6 +262,9 @@ impl ApplicationHandler for EditorApp {
                                     if g.host.duplicate_selected() {
                                         g.scene_dirty = true;
                                     }
+                                }
+                                PhysicalKey::Code(KeyCode::Comma) if ctrl => {
+                                    crate::rune_bindings::settings_module::set_show_editor_prefs_flag(true);
                                 }
                                 PhysicalKey::Code(KeyCode::Delete) => g.delete_selected(),
                                 _ => {}
@@ -405,6 +415,8 @@ impl EditorApp {
             _file_watcher:  watcher_opt,
             file_watcher_rx: rx_opt,
             file_watcher_cooldown: 0.0,
+            editor_prefs: EditorPrefs::default(),
+            autosave_timer: 0.0,
         };
 
         // Push project root so Rune asset browser can enumerate files.
@@ -415,6 +427,17 @@ impl EditorApp {
         // Scan the asset database now that we know the project root.
         inner.host.asset_db.scan(&inner.project_root);
         log::info!("AssetDatabase: {} assets indexed", inner.host.asset_db.count());
+
+        // Load editor preferences and push settings context to Rune.
+        let prefs = load_editor_prefs();
+        // Apply prefs immediately
+        crate::rune_bindings::world_module::set_editor_cam_speed(prefs.camera_speed as f64);
+        crate::rune_bindings::set_settings_context(
+            inner.project.clone(),
+            prefs.clone(),
+            inner.project_root.clone(),
+        );
+        inner.editor_prefs = prefs;
 
         *self = EditorApp::Running(Rc::new(RefCell::new(inner)));
     }
@@ -560,6 +583,10 @@ impl EditorInner {
 
         let result = self.renderer.render_ui_only(|device, queue, encoder, view| {
             ui_shell.paint(&window, device, queue, encoder, view, w, h, |ctx| {
+                // Cache ctx once per frame so settings window bindings can use it
+                // without requiring a live CURRENT_UI pointer.
+                crate::rune_bindings::set_egui_ctx(ctx);
+
                 if !*theme_applied {
                     theme::apply_theme(ctx);
                     *theme_applied = true;
@@ -596,6 +623,14 @@ impl EditorInner {
 
                 // ── Dock area ───────────────────────────────────────────────
                 show_dock(ctx, dock_state, vm);
+
+                // ── Settings modals (run every frame, ctx-only, no UI pointer needed) ─
+                if let Err(e) = vm.call_fn(&["settings", "project_panel"], ()) {
+                    log::error!("settings::project_panel: {e:#}");
+                }
+                if let Err(e) = vm.call_fn(&["settings", "editor_panel"], ()) {
+                    log::error!("settings::editor_panel: {e:#}");
+                }
 
                 // ── Editor camera update ─────────────────────────────────────
                 // Called after show_dock so VP_RESPONSE is already set by viewport::panel.
@@ -897,6 +932,46 @@ impl EditorInner {
         }
         if let Some(path) = do_load_scene {
             self.load_scene_from_path(path);
+        }
+
+        // ── Settings saves (drain dirty flags written by Rune settings panel) ──
+        {
+            let (proj_save, prefs_save) = crate::rune_bindings::drain_settings_saves();
+
+            if let Some((cfg, root)) = proj_save {
+                // Persist to disk atomically.
+                match save_project(&root, &cfg) {
+                    Ok(()) => log::info!("Project settings saved."),
+                    Err(e) => log::error!("Failed to save project settings: {e}"),
+                }
+                self.project = cfg;
+            }
+
+            if let Some(prefs) = prefs_save {
+                // Apply live camera speed
+                crate::rune_bindings::world_module::set_editor_cam_speed(prefs.camera_speed as f64);
+                match save_editor_prefs(&prefs) {
+                    Ok(()) => log::info!("Editor preferences saved."),
+                    Err(e) => log::error!("Failed to save editor prefs: {e}"),
+                }
+                self.editor_prefs = prefs;
+            }
+        }
+
+        // ── Autosave ──────────────────────────────────────────────────────────
+        {
+            let interval = self.editor_prefs.autosave_interval_secs;
+            if interval > 0 && self.scene_dirty {
+                let dt = self.host.time.dt;
+                self.autosave_timer += dt;
+                if self.autosave_timer >= interval as f32 {
+                    self.autosave_timer = 0.0;
+                    self.save_scene();
+                    log::info!("Autosave triggered.");
+                }
+            } else {
+                self.autosave_timer = 0.0;
+            }
         }
 
         // _world_ctx drops here, clearing world thread-locals.

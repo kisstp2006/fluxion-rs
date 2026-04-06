@@ -1,0 +1,37 @@
+// ============================================================
+// settings.rn — V3 Project Settings + Editor Preferences
+//
+// Called every frame from main.rs.
+// All rendering is handled inside Rust (project_settings_window /
+// editor_prefs_window). This script is just the entry-point guard.
+// ============================================================
+
+pub mod settings {
+
+// ── Project Settings modal ────────────────────────────────────────────────────
+
+pub fn project_panel() {
+    if !fluxion::settings::get_show_project_settings() {
+        return;
+    }
+
+    let still_open = fluxion::ui::project_settings_window(820.0, 520.0);
+    if !still_open {
+        fluxion::settings::set_show_project_settings(false);
+    }
+}
+
+// ── Editor Preferences modal ──────────────────────────────────────────────────
+
+pub fn editor_panel() {
+    if !fluxion::settings::get_show_editor_prefs() {
+        return;
+    }
+
+    let still_open = fluxion::ui::editor_prefs_window(720.0, 460.0);
+    if !still_open {
+        fluxion::settings::set_show_editor_prefs(false);
+    }
+}
+
+} // pub mod settings

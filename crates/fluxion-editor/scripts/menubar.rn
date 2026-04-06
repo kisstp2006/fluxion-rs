@@ -40,6 +40,13 @@ pub fn panel() {
         let can_redo = fluxion::world::can_redo();
         fluxion::ui::menu_item(`Undo    Ctrl+Z  [${can_undo}]`);
         fluxion::ui::menu_item(`Redo    Ctrl+Y  [${can_redo}]`);
+        fluxion::ui::menu_separator();
+        if fluxion::ui::menu_item("Project Settings") {
+            fluxion::settings::set_show_project_settings(true);
+        }
+        if fluxion::ui::menu_item("Preferences        Ctrl+,") {
+            fluxion::settings::set_show_editor_prefs(true);
+        }
     }
     fluxion::ui::menu_end();
 

@@ -9,6 +9,101 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+// ── Project audio settings ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAudioSettings {
+    pub master_volume: f32,
+    pub music_volume:  f32,
+    pub sfx_volume:    f32,
+}
+
+impl Default for ProjectAudioSettings {
+    fn default() -> Self {
+        Self { master_volume: 1.0, music_volume: 1.0, sfx_volume: 1.0 }
+    }
+}
+
+// ── Project input settings ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectInputSettings {
+    pub mouse_sensitivity: f32,
+    pub gamepad_deadzone:  f32,
+}
+
+impl Default for ProjectInputSettings {
+    fn default() -> Self {
+        Self { mouse_sensitivity: 1.0, gamepad_deadzone: 0.15 }
+    }
+}
+
+// ── Project tags settings ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectTagSettings {
+    pub list: Vec<String>,
+}
+
+impl Default for ProjectTagSettings {
+    fn default() -> Self {
+        Self {
+            list: vec![
+                "Untagged".to_string(),
+                "Player".to_string(),
+                "Enemy".to_string(),
+                "Environment".to_string(),
+            ],
+        }
+    }
+}
+
+// ── Project build settings ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectBuildSettings {
+    pub target_platform: String,
+    pub window_title:    String,
+    pub window_width:    u32,
+    pub window_height:   u32,
+    pub vsync:           bool,
+    pub fullscreen:      bool,
+}
+
+impl Default for ProjectBuildSettings {
+    fn default() -> Self {
+        Self {
+            target_platform: "Windows".to_string(),
+            window_title:    String::new(),
+            window_width:    1920,
+            window_height:   1080,
+            vsync:           true,
+            fullscreen:      false,
+        }
+    }
+}
+
+impl ProjectBuildSettings {
+    /// Returns a list of human-readable validation errors.
+    pub fn validate(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.window_title.trim().is_empty() {
+            errors.push("Window title must not be empty.".to_string());
+        }
+        if self.window_width == 0 {
+            errors.push("Window width must be greater than 0.".to_string());
+        }
+        if self.window_height == 0 {
+            errors.push("Window height must be greater than 0.".to_string());
+        }
+        errors
+    }
+}
+
 // ── Project physics settings ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +170,14 @@ pub struct ProjectSettings {
     pub physics:  ProjectPhysicsSettings,
     pub render:   ProjectRenderSettings,
     pub editor:   ProjectEditorSettings,
+    #[serde(default)]
+    pub audio:    ProjectAudioSettings,
+    #[serde(default)]
+    pub input:    ProjectInputSettings,
+    #[serde(default)]
+    pub tags:     ProjectTagSettings,
+    #[serde(default)]
+    pub build:    ProjectBuildSettings,
 }
 
 // ── Main project config (.fluxproj) ──────────────────────────────────────────

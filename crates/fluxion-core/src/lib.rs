@@ -32,6 +32,7 @@ pub mod particles;
 pub mod color;
 pub mod debug_draw;
 pub mod project;
+pub mod editor_prefs;
 pub mod registry;
 pub mod reflect;
 
@@ -68,13 +69,17 @@ pub use components::{CsgShape, CsgOperation, CsgPrimitive, CsgSystem};
 pub use particles::step_particle_emitters;
 pub use color::Color;
 pub use project::{ProjectConfig, ProjectSettings, ProjectPhysicsSettings,
-    ProjectRenderSettings, ProjectEditorSettings, RecentProject};
+    ProjectRenderSettings, ProjectEditorSettings, RecentProject,
+    ProjectAudioSettings, ProjectInputSettings, ProjectTagSettings, ProjectBuildSettings};
 #[cfg(not(target_arch = "wasm32"))]
 pub use project::{
     load_project, save_project, create_project,
     load_recent_projects, push_recent_project, save_recent_projects,
     project_file_path, fluxion_config_dir,
 };
+pub use editor_prefs::EditorPrefs;
+#[cfg(not(target_arch = "wasm32"))]
+pub use editor_prefs::{load_editor_prefs, save_editor_prefs};
 pub use debug_draw::{DebugDraw, DebugLine, draw_line, draw_ray, draw_sphere,
     draw_aabb, draw_box_rotated, draw_capsule, draw_cross, draw_grid,
     draw_cone, draw_frustum, drain_debug_lines};
