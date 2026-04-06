@@ -163,6 +163,12 @@ thread_local! {
 
     // ── Console command bar ───────────────────────────────────────────────────
     static CONSOLE_CMD_BUF: RefCell<String> = RefCell::new(String::new());
+
+    // ── Asset browser navigation history ─────────────────────────────────────
+    /// Ordered list of visited directories (newest at highest index).
+    static ASSET_NAV_HISTORY: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    /// Current position in ASSET_NAV_HISTORY (index). -1 = uninitialized.
+    static ASSET_NAV_POS: Cell<i64> = Cell::new(-1);
 }
 
 /// A deferred field mutation queued by Rune, applied after the panel call.
@@ -401,6 +407,17 @@ fn entity_to_id(id: EntityId) -> i64 {
 fn id_to_entity(_world: &ECSWorld, id: i64) -> Option<EntityId> {
     let bits = id as u64;
     ENTITY_CACHE.with(|cache| cache.borrow().get(&bits).copied())
+}
+
+/// Public helper for ui_module: checks whether `ancestor_id` is an ancestor
+/// of `entity_id`. Used to show invalid-drop visual feedback during DnD hover.
+/// Returns `false` if either ID is unknown / the world is not set.
+pub fn check_is_ancestor(ancestor_id: i64, entity_id: i64) -> bool {
+    with_ctx(|world, _| {
+        let ancestor = id_to_entity(world, ancestor_id)?;
+        let entity   = id_to_entity(world, entity_id)?;
+        Some(world.is_ancestor_of(ancestor, entity))
+    }).flatten().unwrap_or(false)
 }
 
 /// Public helper for other modules (e.g. ui_module) to resolve an entity ID
@@ -976,7 +993,102 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         ASSET_ACTIVE_DIR.with(|d| d.borrow().clone())
     }).build()?;
     m.function("asset_set_active_dir", |dir: String| {
-        ASSET_ACTIVE_DIR.with(|d| *d.borrow_mut() = dir);
+        ASSET_ACTIVE_DIR.with(|d| *d.borrow_mut() = dir.clone());
+        // Push to nav history (truncate forward stack if navigating mid-history)
+        ASSET_NAV_HISTORY.with(|h| {
+            ASSET_NAV_POS.with(|p| {
+                let mut hist = h.borrow_mut();
+                let pos = p.get();
+                // Truncate anything after current position
+                let new_len = if pos >= 0 { (pos as usize + 1).min(hist.len()) } else { 0 };
+                hist.truncate(new_len);
+                hist.push(dir);
+                p.set((hist.len() as i64) - 1);
+            });
+        });
+    }).build()?;
+
+    // asset_can_nav_back() / asset_can_nav_fwd() — whether back/forward are available.
+    m.function("asset_can_nav_back", || -> bool {
+        ASSET_NAV_POS.with(|p| p.get() > 0)
+    }).build()?;
+    m.function("asset_can_nav_fwd", || -> bool {
+        ASSET_NAV_HISTORY.with(|h| {
+            ASSET_NAV_POS.with(|p| {
+                let pos = p.get();
+                pos >= 0 && (pos as usize) < h.borrow().len().saturating_sub(1)
+            })
+        })
+    }).build()?;
+
+    // asset_nav_back() → String  — navigate back, return new active dir.
+    m.function("asset_nav_back", || -> String {
+        ASSET_NAV_HISTORY.with(|h| {
+            ASSET_NAV_POS.with(|p| {
+                let pos = p.get();
+                if pos > 0 {
+                    let new_pos = pos - 1;
+                    p.set(new_pos);
+                    let dir = h.borrow().get(new_pos as usize).cloned().unwrap_or_default();
+                    ASSET_ACTIVE_DIR.with(|d| *d.borrow_mut() = dir.clone());
+                    dir
+                } else {
+                    ASSET_ACTIVE_DIR.with(|d| d.borrow().clone())
+                }
+            })
+        })
+    }).build()?;
+
+    // asset_nav_fwd() → String  — navigate forward, return new active dir.
+    m.function("asset_nav_fwd", || -> String {
+        ASSET_NAV_HISTORY.with(|h| {
+            ASSET_NAV_POS.with(|p| {
+                let pos = p.get();
+                let max = h.borrow().len().saturating_sub(1) as i64;
+                if pos < max {
+                    let new_pos = pos + 1;
+                    p.set(new_pos);
+                    let dir = h.borrow().get(new_pos as usize).cloned().unwrap_or_default();
+                    ASSET_ACTIVE_DIR.with(|d| *d.borrow_mut() = dir.clone());
+                    dir
+                } else {
+                    ASSET_ACTIVE_DIR.with(|d| d.borrow().clone())
+                }
+            })
+        })
+    }).build()?;
+
+    // asset_nav_up() → String  — navigate to parent dir, return new active dir.
+    m.function("asset_nav_up", || -> String {
+        let current = ASSET_ACTIVE_DIR.with(|d| d.borrow().clone());
+        let parent = current.rfind('/').map(|i| current[..i].to_string()).unwrap_or_default();
+        ASSET_ACTIVE_DIR.with(|d| *d.borrow_mut() = parent.clone());
+        // Also push to history
+        ASSET_NAV_HISTORY.with(|h| {
+            ASSET_NAV_POS.with(|p| {
+                let mut hist = h.borrow_mut();
+                let pos = p.get();
+                let new_len = if pos >= 0 { (pos as usize + 1).min(hist.len()) } else { 0 };
+                hist.truncate(new_len);
+                hist.push(parent.clone());
+                p.set((hist.len() as i64) - 1);
+            });
+        });
+        parent
+    }).build()?;
+
+    // asset_show_in_explorer(path) — opens the OS file manager at the given asset path.
+    m.function("asset_show_in_explorer", |path: Ref<str>| {
+        let abs = PROJECT_ROOT.with(|r| r.borrow().join(path.as_ref()));
+        let target = if abs.is_file() {
+            abs.parent().map(|p| p.to_path_buf()).unwrap_or(abs)
+        } else { abs };
+        #[cfg(target_os = "windows")]
+        { let _ = std::process::Command::new("explorer").arg(target).spawn(); }
+        #[cfg(target_os = "macos")]
+        { let _ = std::process::Command::new("open").arg(target).spawn(); }
+        #[cfg(target_os = "linux")]
+        { let _ = std::process::Command::new("xdg-open").arg(target).spawn(); }
     }).build()?;
 
     // asset_get_type_filter / asset_set_type_filter — "" = All.
@@ -2504,6 +2616,23 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                 }
             }
         });
+    }).build()?;
+
+    // parse_entity_id(s) → i64  — parses a decimal string entity id, or -1 on failure.
+    // Used by hierarchy.rn to decode the reparent: DnD action string.
+    m.function("parse_entity_id", |s: Ref<str>| -> i64 {
+        s.as_ref().parse::<i64>().unwrap_or(-1)
+    }).build()?;
+
+    // is_ancestor_of(ancestor_id, entity_id) → bool
+    // Returns true if ancestor_id is a direct or indirect parent of entity_id.
+    // Used by hierarchy.rn to prevent dropping an entity onto one of its own descendants.
+    m.function("is_ancestor_of", |ancestor_id: i64, entity_id: i64| -> bool {
+        with_ctx(|world, _| {
+            let ancestor = id_to_entity(world, ancestor_id)?;
+            let entity   = id_to_entity(world, entity_id)?;
+            Some(world.is_ancestor_of(ancestor, entity))
+        }).flatten().unwrap_or(false)
     }).build()?;
 
     m.function("mat_save", |path: String| {

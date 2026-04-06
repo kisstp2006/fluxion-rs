@@ -28,6 +28,7 @@ egui-winit  = { workspace = true }
 egui_dock   = { workspace = true }
 egui_extras = { workspace = true }
 rune                  = "0.14"
+egui_ltreeview        = "0.7"
 transform-gizmo-egui  = "0.9"
 notify                = "6"
 env_logger = "0.11"

@@ -2,7 +2,7 @@
 // theme.rs — Unity-like dark egui theme
 // ============================================================
 
-use egui::{Color32, Context, FontId, Rounding, Stroke, Visuals};
+use egui::{Color32, Context, CornerRadius, FontId, Stroke, Visuals};
 
 /// Apply the Unity-dark theme to the egui context.
 pub fn apply_theme(ctx: &Context) {
@@ -16,19 +16,19 @@ pub fn apply_theme(ctx: &Context) {
     // Widgets
     visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(40, 40, 46);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(180, 180, 190));
-    visuals.widgets.noninteractive.rounding  = Rounding::same(3.0);
+    visuals.widgets.noninteractive.corner_radius = CornerRadius::same(3);
 
     visuals.widgets.inactive.bg_fill   = Color32::from_rgb(50, 50, 58);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, Color32::from_rgb(200, 200, 210));
-    visuals.widgets.inactive.rounding  = Rounding::same(3.0);
+    visuals.widgets.inactive.corner_radius  = CornerRadius::same(3);
 
     visuals.widgets.hovered.bg_fill   = Color32::from_rgb(65, 65, 75);
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::from_rgb(220, 200, 100));
-    visuals.widgets.hovered.rounding  = Rounding::same(3.0);
+    visuals.widgets.hovered.corner_radius  = CornerRadius::same(3);
 
     visuals.widgets.active.bg_fill   = Color32::from_rgb(80, 75, 30);
     visuals.widgets.active.fg_stroke = Stroke::new(1.5, Color32::from_rgb(240, 200, 60));
-    visuals.widgets.active.rounding  = Rounding::same(3.0);
+    visuals.widgets.active.corner_radius  = CornerRadius::same(3);
 
     visuals.widgets.open.bg_fill   = Color32::from_rgb(55, 55, 65);
     visuals.widgets.open.fg_stroke = Stroke::new(1.0, Color32::from_rgb(200, 200, 210));

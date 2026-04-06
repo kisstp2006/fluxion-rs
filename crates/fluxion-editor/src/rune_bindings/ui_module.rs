@@ -26,6 +26,14 @@ struct TreeEntry {
     child: Box<egui::Ui>,
 }
 
+/// Unified drag-and-drop payload shared across all editor panels.
+/// Stored in egui's per-frame DragAndDrop context (egui 0.29).
+#[derive(Clone, Debug)]
+pub(crate) enum DndPayload {
+    Asset  { path: String, asset_type: String },
+    Entity { id: i64 },
+}
+
 thread_local! {
     static CURRENT_UI: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
     /// Stored response from the last `image_interactive` call.
@@ -677,6 +685,19 @@ fn render_prefs_content_v3(ui: &mut egui::Ui, tab: &str) {
     }
 }
 
+/// Build a depth-first ordered list of directory paths with their nesting depth.
+/// Used by asset_folder_tree_v2 to render a nested folder sidebar.
+fn dir_depth_first(dirs: &[String], parent: &str, depth: usize, out: &mut Vec<(String, usize)>) {
+    let mut children: Vec<&String> = dirs.iter()
+        .filter(|d| d.rfind('/').map(|i| &d[..i]).unwrap_or("") == parent)
+        .collect();
+    children.sort();
+    for child in children {
+        out.push((child.clone(), depth));
+        dir_depth_first(dirs, child.as_str(), depth + 1, out);
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 pub fn build_ui_module() -> anyhow::Result<Module> {
     let mut m = Module::with_crate_item("fluxion", ["ui"])?;
@@ -1077,9 +1098,16 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             // RefCell lets nested closures write the action string without
             // conflicting with the outer immutable borrows.
             let action: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+            // Stores the egui Response of the selectable_label for DnD drag-start.
+            let label_resp: std::cell::RefCell<Option<egui::Response>> = std::cell::RefCell::new(None);
 
-            // Helper: render icon + selectable label + context menu.
-            // Written as a macro-style inline block via a closure called immediately.
+            // Convention: id_suffix is "ent_<id>" for hierarchy rows.
+            let entity_id: i64 = id_suffix
+                .strip_prefix("ent_")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(-1);
+
+            // ── Render row ───────────────────────────────────────────────────
             let render_row = |ui: &mut egui::Ui| {
                 if !icon_name.is_empty() {
                     let tint = if is_selected {
@@ -1090,8 +1118,8 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     let _ = ui.add(crate::icons::img(icon_name, 13.0, tint));
                     ui.add_space(2.0);
                 }
-                let resp = ui.selectable_label(is_selected, display);
-                resp.context_menu(|ui| {
+                let label_r = ui.add(egui::SelectableLabel::new(is_selected, display));
+                label_r.context_menu(|ui| {
                     for item in &ctx_items {
                         if ui.button(item).clicked() {
                             *action.borrow_mut() = item.clone();
@@ -1099,27 +1127,87 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         }
                     }
                 });
-                if action.borrow().is_empty() && resp.clicked() {
+                if action.borrow().is_empty() && label_r.clicked() {
                     *action.borrow_mut() = "select".to_string();
                 }
+                // Extend the same rect with drag+hover sense for DnD (different id = no conflict).
+                let drag_id  = ui.make_persistent_id(("ent_dnd", id_suffix));
+                let drag_r   = ui.interact(label_r.rect, drag_id, egui::Sense::drag());
+                // Union the two responses so DnD methods see hover/release correctly.
+                let resp = label_r.union(drag_r);
+                *label_resp.borrow_mut() = Some(resp);
             };
 
-            let is_open: bool = if has_children {
-                // ── Parent node: use CollapsingState for native egui expand arrow ──
+            let is_open = if has_children {
+                // ── Parent node: CollapsingState for native expand arrow ──
                 let state_id = ui.make_persistent_id(id_suffix);
                 let state = egui::collapsing_header::CollapsingState::load_with_default_open(
                     ui.ctx(), state_id, false,
                 );
                 let _ = state.show_header(ui, render_row);
-                // Reload after show_header to get the (possibly toggled) logical state.
                 egui::collapsing_header::CollapsingState::load_with_default_open(
                     ui.ctx(), state_id, false,
                 ).is_open()
             } else {
-                // ── Leaf node: plain row with a spacer so text aligns with parents ──
+                // ── Leaf node ─────────────────────────────────────────────
                 ui.horizontal(|ui| render_row(ui));
                 false
             };
+
+            // ── DnD: use the label response for drag start ────────────────────
+            if let Some(resp) = label_resp.borrow().as_ref() {
+                if resp.drag_started() && entity_id >= 0 {
+                    egui::DragAndDrop::set_payload(ui.ctx(), DndPayload::Entity { id: entity_id });
+                }
+
+                // ── DnD: visual feedback + drop zone on this row ─────────────
+                if let Some(hover_payload) = resp.dnd_hover_payload::<DndPayload>() {
+                    let (stroke_color, fill_color) = match hover_payload.as_ref() {
+                        DndPayload::Entity { id: from_id } => {
+                            // Invalid if: dropping onto self, or dragging a parent onto its descendant
+                            let is_self = entity_id >= 0 && *from_id == entity_id;
+                            let is_cycle = entity_id >= 0 && !is_self
+                                && crate::rune_bindings::world_module::check_is_ancestor(*from_id, entity_id);
+                            if is_self || is_cycle {
+                                // Orange = invalid drop
+                                (egui::Color32::from_rgb(220, 130, 40),
+                                 egui::Color32::from_rgba_unmultiplied(220, 130, 40, 18))
+                            } else {
+                                // Green = valid reparent
+                                (egui::Color32::from_rgb(60, 200, 100),
+                                 egui::Color32::from_rgba_unmultiplied(60, 200, 100, 18))
+                            }
+                        }
+                        DndPayload::Asset { .. } => {
+                            // Blue = asset spawn
+                            (egui::Color32::from_rgb(80, 150, 255),
+                             egui::Color32::from_rgba_unmultiplied(80, 150, 255, 18))
+                        }
+                    };
+                    ui.painter().rect_filled(resp.rect, 2.0, fill_color);
+                    ui.painter().rect_stroke(resp.rect, 2.0, egui::Stroke::new(1.5, stroke_color), egui::StrokeKind::Outside);
+                }
+
+                if let Some(payload) = resp.dnd_release_payload::<DndPayload>() {
+                    if action.borrow().is_empty() {
+                        match payload.as_ref() {
+                            DndPayload::Entity { id: from_id }
+                                if entity_id >= 0 && *from_id != entity_id =>
+                            {
+                                // Format: "reparent:<target_id>:<from_id>"
+                                // Both IDs are embedded so hierarchy.rn always knows
+                                // which entity is the child and which is the new parent,
+                                // regardless of which tree row processes the action.
+                                *action.borrow_mut() = format!("reparent:{entity_id}:{from_id}");
+                            }
+                            DndPayload::Asset { path, .. } if entity_id >= 0 => {
+                                *action.borrow_mut() = format!("spawn_asset:{path}");
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
 
             // If the node is open, push an indented child UI onto the tree stack.
             if is_open {
@@ -1809,6 +1897,24 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     v = tmp;
                 }
 
+                // ── DnD drop zone: accept Asset payload ──────────────────────
+                let drop_id   = egui::Id::new((label.as_ref(), "asset_drop"));
+                let drop_resp = ui.interact(rect, drop_id, egui::Sense::hover());
+                if drop_resp.dnd_hover_payload::<DndPayload>().is_some() {
+                    ui.painter().rect_stroke(
+                        rect, 3.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 200, 80)), egui::StrokeKind::Outside);
+                }
+                if let Some(payload) = drop_resp.dnd_release_payload::<DndPayload>() {
+                    if let DndPayload::Asset { path: dropped, asset_type: dropped_t } = payload.as_ref() {
+                        let type_ok = type_flt.is_empty()
+                            || dropped_t == type_flt
+                            || (type_flt == "mesh" && dropped_t == "model");
+                        if type_ok {
+                            v = dropped.clone();
+                        }
+                    }
+                }
+
                 // clear button (×)
                 if !v.is_empty() {
                     if ui.add(
@@ -1850,6 +1956,19 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 ui.painter().text(rect.min + egui::vec2(4.0, 3.0),
                     egui::Align2::LEFT_TOP, &entity_name,
                     egui::FontId::proportional(11.0), name_color);
+
+                // ── DnD drop zone: accept Entity payload ─────────────────────
+                let ep_drop_id   = egui::Id::new((lbl.as_str(), "entity_drop"));
+                let ep_drop_resp = ui.interact(rect, ep_drop_id, egui::Sense::hover());
+                if ep_drop_resp.dnd_hover_payload::<DndPayload>().is_some() {
+                    ui.painter().rect_stroke(
+                        rect, 3.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 200, 80)), egui::StrokeKind::Outside);
+                }
+                if let Some(payload) = ep_drop_resp.dnd_release_payload::<DndPayload>() {
+                    if let DndPayload::Entity { id: dropped_id } = payload.as_ref() {
+                        result = *dropped_id;
+                    }
+                }
 
                 // clear / pick  — just clear for now
                 if entity_id >= 0 {
@@ -1977,7 +2096,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 egui::ImageButton::new(crate::icons::img(icon.as_ref(), 18.0, tint)).frame(false)
             );
             if active {
-                ui.painter().rect_stroke(resp.rect.expand(1.0), 2.0, egui::Stroke::new(1.0, tint));
+                ui.painter().rect_stroke(resp.rect.expand(1.0), 2.0, egui::Stroke::new(1.0, tint), egui::StrokeKind::Outside);
             }
             resp.clicked()
         }).unwrap_or(false)
@@ -2138,7 +2257,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 });
 
             if !clicked_item.is_empty() {
-                ui.memory_mut(|m| m.close_popup());
+                ui.memory_mut(|m| m.close_popup(popup_id));
             }
 
             // Close when clicking outside (but not the frame the popup just opened).
@@ -2153,7 +2272,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         _ => true,
                     };
                     if outside {
-                        ui.memory_mut(|m| m.close_popup());
+                        ui.memory_mut(|m| m.close_popup(popup_id));
                     }
                 }
             }
@@ -2441,7 +2560,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             // Dim overlay behind the modal
             let screen = ui.ctx().screen_rect();
             ui.ctx().layer_painter(egui::LayerId::new(
-                egui::Order::PanelResizeLine,
+                egui::Order::Tooltip,
                 egui::Id::new("modal_overlay"),
             )).rect_filled(screen, 0.0, egui::Color32::from_black_alpha(140));
 
@@ -2502,7 +2621,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         {
             let screen = ctx.screen_rect();
             ctx.layer_painter(egui::LayerId::new(
-                egui::Order::PanelResizeLine,
+                egui::Order::Tooltip,
                 egui::Id::new("proj_settings_v3_overlay"),
             )).rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
 
@@ -2541,8 +2660,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                 ui.add(crate::icons::img("search", 13.0, egui::Color32::from_gray(140)));
                                 ui.add(egui::TextEdit::singleline(&mut search)
                                     .hint_text("Search settings…")
-                                    .desired_width(ui.available_width())
-                                    .frame(false))
+                                    .desired_width(ui.available_width()))
                             }).inner;
                             if search_resp.changed() {
                                 sm::set_settings_search_query(search.clone());
@@ -2557,7 +2675,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                 .exact_width(160.0)
                                 .frame(egui::Frame::default()
                                     .fill(sc_sidebar())
-                                    .inner_margin(egui::Margin::same(4.0))
+                                    .inner_margin(egui::Margin::same(4))
                                 )
                                 .show_inside(ui, |ui| {
                                     let active = sm::project_tab();
@@ -2597,7 +2715,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         {
             let screen = ctx.screen_rect();
             ctx.layer_painter(egui::LayerId::new(
-                egui::Order::PanelResizeLine,
+                egui::Order::Tooltip,
                 egui::Id::new("editor_prefs_v3_overlay"),
             )).rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
 
@@ -2636,8 +2754,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                 ui.add(crate::icons::img("search", 13.0, egui::Color32::from_gray(140)));
                                 ui.add(egui::TextEdit::singleline(&mut search)
                                     .hint_text("Search preferences…")
-                                    .desired_width(ui.available_width())
-                                    .frame(false))
+                                    .desired_width(ui.available_width()))
                             }).inner;
                             if search_resp.changed() {
                                 sm::set_settings_search_query(search.clone());
@@ -2651,7 +2768,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                 .exact_width(140.0)
                                 .frame(egui::Frame::default()
                                     .fill(sc_sidebar())
-                                    .inner_margin(egui::Margin::same(4.0))
+                                    .inner_margin(egui::Margin::same(4))
                                 )
                                 .show_inside(ui, |ui| {
                                     let active = sm::prefs_tab();
@@ -2732,8 +2849,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 ui.add(
                     egui::TextEdit::singleline(&mut v)
                         .hint_text(hint)
-                        .desired_width(f32::INFINITY)
-                        .frame(false),
+                        .desired_width(f32::INFINITY),
                 ).changed()
             }).inner;
             let _ = changed;
@@ -3066,73 +3182,80 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                 let icon_bg   = egui::Color32::from_rgba_unmultiplied(ir, ig, ib, 28);
                                 let is_sel    = path == &sel;
 
-                                // Allocate tile area
+                                // ── Wrap tile in dnd_drag_source ─────────────
                                 let tile_total = egui::vec2(tile_sz, tile_sz + font_sz + 4.0);
-                                let (tile_rect, tile_resp) = ui.allocate_exact_size(
-                                    tile_total, egui::Sense::click());
+                                let drag_tile_id = egui::Id::new(("tile_dnd", path.as_str()));
+                                let dnd_inner = ui.dnd_drag_source(
+                                    drag_tile_id,
+                                    DndPayload::Asset { path: path.clone(), asset_type: t.to_string() },
+                                    |ui| {
+                                        let (tile_rect, tile_resp) = ui.allocate_exact_size(
+                                            tile_total, egui::Sense::click());
+                                        let painter = ui.painter_at(tile_rect);
 
-                                let painter = ui.painter_at(tile_rect);
+                                        // Background
+                                        let bg = if is_sel {
+                                            egui::Color32::from_rgb(50, 80, 120)
+                                        } else if tile_resp.hovered() {
+                                            egui::Color32::from_rgb(55, 55, 65)
+                                        } else {
+                                            egui::Color32::from_rgb(42, 42, 50)
+                                        };
+                                        painter.rect_filled(
+                                            egui::Rect::from_min_size(tile_rect.min, egui::vec2(tile_sz, tile_sz)),
+                                            4.0, bg);
 
-                                // Background
-                                let bg = if is_sel {
-                                    egui::Color32::from_rgb(50, 80, 120)
-                                } else if tile_resp.hovered() {
-                                    egui::Color32::from_rgb(55, 55, 65)
-                                } else {
-                                    egui::Color32::from_rgb(42, 42, 50)
-                                };
-                                painter.rect_filled(
-                                    egui::Rect::from_min_size(tile_rect.min, egui::vec2(tile_sz, tile_sz)),
-                                    4.0, bg);
+                                        // Icon background square (tinted)
+                                        let icon_margin = tile_sz * 0.15;
+                                        let icon_area = egui::Rect::from_min_size(
+                                            tile_rect.min + egui::vec2(icon_margin, icon_margin),
+                                            egui::vec2(tile_sz - icon_margin * 2.0, tile_sz - icon_margin * 2.0));
+                                        painter.rect_filled(icon_area, 3.0, icon_bg);
 
-                                // Icon background square (tinted)
-                                let icon_margin = tile_sz * 0.15;
-                                let icon_area = egui::Rect::from_min_size(
-                                    tile_rect.min + egui::vec2(icon_margin, icon_margin),
-                                    egui::vec2(tile_sz - icon_margin * 2.0, tile_sz - icon_margin * 2.0));
-                                painter.rect_filled(icon_area, 3.0, icon_bg);
+                                        // Selection / hover border
+                                        if is_sel {
+                                            painter.rect_stroke(
+                                                egui::Rect::from_min_size(tile_rect.min, egui::vec2(tile_sz, tile_sz)),
+                                                4.0,
+                                                egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 150, 255)), egui::StrokeKind::Outside);
+                                        }
 
-                                // Selection / hover border
-                                if is_sel {
-                                    painter.rect_stroke(
-                                        egui::Rect::from_min_size(tile_rect.min, egui::vec2(tile_sz, tile_sz)),
-                                        4.0,
-                                        egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 150, 255)));
-                                }
+                                        // SVG icon centered in icon_area
+                                        if let Some(bytes) = crate::icons::icon_bytes(icon_name) {
+                                            let uri = crate::icons::icon_uri(icon_name);
+                                            let inner_size = icon_area.size() * 0.55;
+                                            let inner_rect = egui::Rect::from_center_size(
+                                                icon_area.center(), inner_size);
+                                            let img = egui::Image::from_bytes(uri, bytes)
+                                                .fit_to_exact_size(inner_size)
+                                                .tint(icon_tint);
+                                            img.paint_at(ui, inner_rect);
+                                        }
 
-                                // SVG icon centered in icon_area
-                                if let Some(bytes) = crate::icons::icon_bytes(icon_name) {
-                                    let uri = crate::icons::icon_uri(icon_name);
-                                    let inner_size = icon_area.size() * 0.55;
-                                    let inner_rect = egui::Rect::from_center_size(
-                                        icon_area.center(), inner_size);
-                                    let img = egui::Image::from_bytes(uri, bytes)
-                                        .fit_to_exact_size(inner_size)
-                                        .tint(icon_tint);
-                                    img.paint_at(ui, inner_rect);
-                                }
+                                        // Filename text below tile
+                                        let label_rect = egui::Rect::from_min_size(
+                                            tile_rect.min + egui::vec2(0.0, tile_sz + 2.0),
+                                            egui::vec2(tile_sz, font_sz + 2.0));
+                                        let stem = filename.rfind('.').map(|i| &filename[..i]).unwrap_or(filename);
+                                        let display_name = if stem.len() > 12 {
+                                            format!("{}…", &stem[..11])
+                                        } else {
+                                            stem.to_string()
+                                        };
+                                        painter.text(
+                                            label_rect.center_top(),
+                                            egui::Align2::CENTER_TOP,
+                                            &display_name,
+                                            egui::FontId::proportional(font_sz),
+                                            if is_sel {
+                                                egui::Color32::from_rgb(180, 210, 255)
+                                            } else {
+                                                egui::Color32::from_rgb(190, 190, 200)
+                                            });
 
-                                // Filename text below tile
-                                let label_rect = egui::Rect::from_min_size(
-                                    tile_rect.min + egui::vec2(0.0, tile_sz + 2.0),
-                                    egui::vec2(tile_sz, font_sz + 2.0));
-                                // truncate to ~12 chars
-                                let stem = filename.rfind('.').map(|i| &filename[..i]).unwrap_or(filename);
-                                let display_name = if stem.len() > 12 {
-                                    format!("{}…", &stem[..11])
-                                } else {
-                                    stem.to_string()
-                                };
-                                painter.text(
-                                    label_rect.center_top() + egui::vec2(0.0, 0.0),
-                                    egui::Align2::CENTER_TOP,
-                                    &display_name,
-                                    egui::FontId::proportional(font_sz),
-                                    if is_sel {
-                                        egui::Color32::from_rgb(180, 210, 255)
-                                    } else {
-                                        egui::Color32::from_rgb(190, 190, 200)
+                                        tile_resp
                                     });
+                                let tile_resp = dnd_inner.inner;
 
                                 // Click / double-click
                                 if tile_resp.clicked() {
@@ -3176,6 +3299,493 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     );
                 });
         });
+    }).build()?;
+
+    // hierarchy_root_drop_zone() → i64
+    // Renders an invisible drop zone covering the remaining available area.
+    // Accepts Entity DnD payloads only. Returns the dropped entity's i64 ID,
+    // or -1 if nothing was dropped this frame. Shows a faint blue highlight
+    // while an entity is being dragged over it.
+    // Used by hierarchy.rn to implement "drag entity here to make it a root".
+    m.function("hierarchy_root_drop_zone", || -> i64 {
+        with_ui(|ui| {
+            let avail = ui.available_rect_before_wrap();
+            let drop_id = ui.make_persistent_id("hierarchy_root_drop");
+            let resp = ui.interact(avail, drop_id, egui::Sense::hover());
+
+            // Visual: show tinted background while an entity hovers over this zone
+            if let Some(payload) = resp.dnd_hover_payload::<DndPayload>() {
+                if matches!(payload.as_ref(), DndPayload::Entity { .. }) {
+                    ui.painter().rect_filled(
+                        avail,
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(80, 150, 255, 15),
+                    );
+                    ui.painter().rect_stroke(
+                        avail,
+                        0.0,
+                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 150, 255, 80)), egui::StrokeKind::Outside,
+                    );
+                }
+            }
+
+            // Return the dropped entity ID
+            if let Some(payload) = resp.dnd_release_payload::<DndPayload>() {
+                if let DndPayload::Entity { id } = payload.as_ref() {
+                    return *id;
+                }
+            }
+            -1_i64
+        }).unwrap_or(-1)
+    }).build()?;
+
+    // ── Phase A3: read-only DnD state queries ─────────────────────────────────
+
+    // dnd_is_dragging() → bool
+    m.function("dnd_is_dragging", || -> bool {
+        CURRENT_CTX.with(|c| {
+            c.borrow().as_ref()
+                .map(|ctx| egui::DragAndDrop::payload::<DndPayload>(ctx).is_some())
+                .unwrap_or(false)
+        })
+    }).build()?;
+
+    // dnd_drag_type() → "asset" | "entity" | ""
+    m.function("dnd_drag_type", || -> String {
+        CURRENT_CTX.with(|c| {
+            c.borrow().as_ref()
+                .and_then(|ctx| egui::DragAndDrop::payload::<DndPayload>(ctx))
+                .map(|p| match p.as_ref() {
+                    DndPayload::Asset  { .. } => "asset".to_string(),
+                    DndPayload::Entity { .. } => "entity".to_string(),
+                })
+                .unwrap_or_default()
+        })
+    }).build()?;
+
+    // dnd_drag_asset_path() → String (empty if not dragging an asset)
+    m.function("dnd_drag_asset_path", || -> String {
+        CURRENT_CTX.with(|c| {
+            c.borrow().as_ref()
+                .and_then(|ctx| egui::DragAndDrop::payload::<DndPayload>(ctx))
+                .and_then(|p| if let DndPayload::Asset { path, .. } = p.as_ref() { Some(path.clone()) } else { None })
+                .unwrap_or_default()
+        })
+    }).build()?;
+
+    // dnd_drag_asset_type() → String (empty if not dragging an asset)
+    m.function("dnd_drag_asset_type", || -> String {
+        CURRENT_CTX.with(|c| {
+            c.borrow().as_ref()
+                .and_then(|ctx| egui::DragAndDrop::payload::<DndPayload>(ctx))
+                .and_then(|p| if let DndPayload::Asset { asset_type, .. } = p.as_ref() { Some(asset_type.clone()) } else { None })
+                .unwrap_or_default()
+        })
+    }).build()?;
+
+    // dnd_drag_entity_id() → i64 (-1 if not dragging an entity)
+    m.function("dnd_drag_entity_id", || -> i64 {
+        CURRENT_CTX.with(|c| {
+            c.borrow().as_ref()
+                .and_then(|ctx| egui::DragAndDrop::payload::<DndPayload>(ctx))
+                .and_then(|p| if let DndPayload::Entity { id } = p.as_ref() { Some(*id) } else { None })
+                .unwrap_or(-1)
+        })
+    }).build()?;
+
+    // ── Phase B2: compound widgets ─────────────────────────────────────────────
+
+    // breadcrumb_bar(path, can_back, can_fwd) → String
+    // Renders [←][→][↑] nav buttons + clickable breadcrumb path.
+    // Returns "back" | "forward" | "up" | "dir:<path>" | "".
+    m.function("breadcrumb_bar", |path: Ref<str>, can_back: bool, can_fwd: bool| -> String {
+        with_ui(|ui| {
+            let path_str = path.as_ref().to_string();
+            let action: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+
+                let nav_tint = |active: bool| if active {
+                    egui::Color32::from_rgb(180, 180, 200)
+                } else {
+                    egui::Color32::from_rgb(70, 70, 82)
+                };
+
+                if ui.add(crate::icons::img("arrow-left",  14.0, nav_tint(can_back))
+                    .sense(egui::Sense::click())).on_hover_text("Back").clicked() && can_back
+                {
+                    *action.borrow_mut() = "back".to_string();
+                }
+                if ui.add(crate::icons::img("arrow-right", 14.0, nav_tint(can_fwd))
+                    .sense(egui::Sense::click())).on_hover_text("Forward").clicked() && can_fwd
+                {
+                    *action.borrow_mut() = "forward".to_string();
+                }
+                let up_ok = !path_str.is_empty();
+                if ui.add(crate::icons::img("arrow-up", 14.0, nav_tint(up_ok))
+                    .sense(egui::Sense::click())).on_hover_text("Go up one level").clicked() && up_ok
+                {
+                    *action.borrow_mut() = "up".to_string();
+                }
+
+                ui.add_space(6.0);
+
+                // Root "assets" link
+                let is_root   = path_str.is_empty();
+                let root_col  = if is_root { egui::Color32::from_rgb(100, 180, 255) }
+                                else       { egui::Color32::from_rgb(150, 150, 170) };
+                if ui.add(egui::Label::new(
+                    egui::RichText::new("assets").color(root_col).size(12.0))
+                    .sense(egui::Sense::click())).clicked()
+                    && action.borrow().is_empty()
+                {
+                    *action.borrow_mut() = "dir:".to_string();
+                }
+
+                // Segment links
+                let mut accumulated = String::new();
+                for seg in path_str.split('/').filter(|s| !s.is_empty()) {
+                    ui.label(egui::RichText::new("›").color(egui::Color32::from_rgb(90, 90, 105)).size(12.0));
+                    if !accumulated.is_empty() { accumulated.push('/'); }
+                    accumulated.push_str(seg);
+                    let seg_path = accumulated.clone();
+                    let is_last  = seg_path == path_str;
+                    let seg_col  = if is_last { egui::Color32::from_rgb(100, 180, 255) }
+                                   else       { egui::Color32::from_rgb(150, 150, 170) };
+                    if ui.add(egui::Label::new(
+                        egui::RichText::new(seg).color(seg_col).size(12.0))
+                        .sense(egui::Sense::click())).clicked()
+                        && action.borrow().is_empty()
+                    {
+                        *action.borrow_mut() = format!("dir:{seg_path}");
+                    }
+                }
+            });
+
+            action.into_inner()
+        }).unwrap_or_default()
+    }).build()?;
+
+    // asset_folder_tree_v2(dirs, active_dir) → String
+    // Nested folder sidebar using CollapsingState for hierarchy, DnD drop zones per folder.
+    // Returns the newly clicked dir path, or active_dir if nothing was clicked.
+    m.function("asset_folder_tree_v2", |dirs: Vec<String>, active_dir: Ref<str>| -> String {
+        with_ui(|ui| {
+            use std::cell::RefCell as LC;
+            let active = active_dir.as_ref().to_string();
+            let clicked: LC<String> = LC::new(active.clone());
+
+            let tint_n = egui::Color32::from_rgb(160, 160, 175);
+            let tint_a = egui::Color32::from_rgb(100, 180, 255);
+            let bg_a   = egui::Color32::from_rgba_unmultiplied(100, 180, 255, 30);
+
+            egui::ScrollArea::vertical()
+                .id_salt("asset_folder_tree_v2")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_min_width(130.0);
+
+                    // ── (root) entry ─────────────────────────────────────────
+                    {
+                        let is_active = active.is_empty();
+                        let row = ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let t = if is_active { tint_a } else { tint_n };
+                            if let Some(b) = crate::icons::icon_bytes("folder") {
+                                ui.add(egui::Image::from_bytes(crate::icons::icon_uri("folder"), b)
+                                    .fit_to_exact_size(egui::vec2(14.0, 14.0)).tint(t));
+                            }
+                            let lc = if is_active { egui::Color32::from_rgb(200, 230, 255) }
+                                     else         { egui::Color32::from_rgb(200, 200, 210) };
+                            ui.add(egui::Label::new(
+                                egui::RichText::new("(root)").color(lc).size(12.0))
+                                .sense(egui::Sense::click()))
+                        });
+                        if is_active {
+                            ui.painter().rect_filled(row.response.rect, 2.0, bg_a);
+                        }
+                        // DnD drop zone on root
+                        let drop_r = ui.interact(row.response.rect,
+                            egui::Id::new("folder_drop_root"), egui::Sense::hover());
+                        if drop_r.dnd_hover_payload::<DndPayload>().is_some() {
+                            ui.painter().rect_stroke(row.response.rect, 2.0,
+                                egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 200, 100)), egui::StrokeKind::Outside);
+                        }
+                        if let Some(p) = drop_r.dnd_release_payload::<DndPayload>() {
+                            if let DndPayload::Asset { path, .. } = p.as_ref() {
+                                *clicked.borrow_mut() = format!("drop_move::{path}");
+                            }
+                        }
+                        if row.response.interact(egui::Sense::click()).clicked() || row.inner.clicked() {
+                            *clicked.borrow_mut() = String::new();
+                        }
+                    }
+
+                    // ── Build depth-first ordered list ───────────────────────
+                    let mut ordered: Vec<(String, usize)> = Vec::new();
+                    dir_depth_first(&dirs, "", 0, &mut ordered);
+
+                    // ── Render each folder ────────────────────────────────────
+                    for (dir, depth) in &ordered {
+                        let has_children = dirs.iter().any(|d| {
+                            d.rfind('/').map(|i| &d[..i]).unwrap_or("") == dir.as_str()
+                        });
+                        let is_active = dir == &active;
+                        let indent = *depth as f32 * 14.0;
+                        let display = dir.rsplit('/').next().unwrap_or(dir.as_str());
+
+                        let tint = if is_active { tint_a } else { tint_n };
+
+                        let row = if has_children {
+                            let state_id = ui.make_persistent_id(("dir_tree", dir.as_str()));
+                            let _state = egui::collapsing_header::CollapsingState
+                                ::load_with_default_open(ui.ctx(), state_id, false);
+                            // Render as plain indent row; CollapsingState manages open/closed
+                            // via a small ► toggle implicitly in the allocate space.
+                            // For simplicity we use a plain selectable row + indent:
+                            ui.scope(|ui| {
+                                ui.add_space(indent);
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                let lc = if is_active { egui::Color32::from_rgb(200, 230, 255) }
+                                         else         { egui::Color32::from_rgb(200, 200, 210) };
+                                let icon = if has_children { "folder" } else { "folder" };
+                                let h_resp = ui.horizontal(|ui| {
+                                    if let Some(b) = crate::icons::icon_bytes(icon) {
+                                        ui.add(egui::Image::from_bytes(crate::icons::icon_uri(icon), b)
+                                            .fit_to_exact_size(egui::vec2(14.0, 14.0)).tint(tint));
+                                    }
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(display).color(lc).size(12.0))
+                                        .sense(egui::Sense::click()))
+                                });
+                                h_resp
+                            }).inner
+                        } else {
+                            ui.scope(|ui| {
+                                ui.add_space(indent);
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                let lc = if is_active { egui::Color32::from_rgb(200, 230, 255) }
+                                         else         { egui::Color32::from_rgb(200, 200, 210) };
+                                ui.horizontal(|ui| {
+                                    if let Some(b) = crate::icons::icon_bytes("folder") {
+                                        ui.add(egui::Image::from_bytes(crate::icons::icon_uri("folder"), b)
+                                            .fit_to_exact_size(egui::vec2(14.0, 14.0)).tint(tint));
+                                    }
+                                    ui.add(egui::Label::new(
+                                        egui::RichText::new(display).color(lc).size(12.0))
+                                        .sense(egui::Sense::click()))
+                                })
+                            }).inner
+                        };
+
+                        if is_active {
+                            ui.painter().rect_filled(row.response.rect, 2.0, bg_a);
+                        }
+
+                        // DnD drop zone
+                        let drop_id = egui::Id::new(("folder_drop", dir.as_str()));
+                        let drop_r  = ui.interact(row.response.rect, drop_id, egui::Sense::hover());
+                        if drop_r.dnd_hover_payload::<DndPayload>().is_some() {
+                            ui.painter().rect_stroke(row.response.rect, 2.0,
+                                egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 200, 100)), egui::StrokeKind::Outside);
+                        }
+                        if let Some(p) = drop_r.dnd_release_payload::<DndPayload>() {
+                            if let DndPayload::Asset { path, .. } = p.as_ref() {
+                                *clicked.borrow_mut() = format!("drop_move:{dir}:{path}");
+                            }
+                        }
+
+                        if row.response.interact(egui::Sense::click()).clicked() || row.inner.clicked() {
+                            *clicked.borrow_mut() = dir.clone();
+                        }
+                    }
+                });
+
+            clicked.into_inner()
+        }).unwrap_or_default()
+    }).build()?;
+
+    // asset_grid_v2(paths, selected_path, zoom) → Vec<String>
+    // Enhanced tile grid: DnD drag sources + richer context menu + keyboard shortcuts.
+    // Returns [action, path] same as asset_grid.
+    m.function("asset_grid_v2", |paths: Vec<String>, selected_path: Ref<str>, zoom: f64| -> Vec<String> {
+        with_ui(|ui| {
+            use std::cell::RefCell as LC;
+            let sel      = selected_path.as_ref().to_string();
+            let result: LC<Vec<String>> = LC::new(vec!["".to_string(), String::new()]);
+            let tile_sz  = (64.0 * zoom as f32).clamp(32.0, 128.0);
+            let font_sz  = (tile_sz * 0.165).clamp(9.0, 14.0);
+
+            let type_color = |t: &str| -> (&'static str, u8, u8, u8) {
+                match t {
+                    "texture"  => ("image",      160,  90, 210),
+                    "model"    => ("box",         180, 120,  60),
+                    "audio"    => ("music",        60, 180, 120),
+                    "script"   => ("code",         80, 150, 220),
+                    "shader"   => ("layers",       60, 190, 190),
+                    "scene"    => ("film",         200, 160,  50),
+                    "material" => ("droplet",      100, 160, 220),
+                    "prefab"   => ("package",      210, 130,  60),
+                    "json"     => ("file-text",    160, 160, 160),
+                    _          => ("file",         140, 140, 155),
+                }
+            };
+
+            let ctx_items = |t: &str| -> Vec<&'static str> {
+                match t {
+                    "scene"    => vec!["Open Scene", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    "script"   => vec!["Attach to Selected", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    "material" => vec!["Edit Material", "Assign to Selected", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    "prefab"   => vec!["Instantiate", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    _          => vec!["Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                }
+            };
+
+            // ── Keyboard shortcuts when a tile is selected ────────────────────
+            with_ui(|ui| {
+                let has_sel = !sel.is_empty();
+                if has_sel {
+                    let del = ui.input(|i| i.key_pressed(egui::Key::Delete));
+                    let f2  = ui.input(|i| i.key_pressed(egui::Key::F2));
+                    let ctrl_d = ui.input(|i| i.key_pressed(egui::Key::D) && i.modifiers.ctrl);
+                    let ctrl_c = ui.input(|i| i.key_pressed(egui::Key::C) && i.modifiers.ctrl);
+                    if del  { *result.borrow_mut() = vec!["ctx:Delete".to_string(),    sel.clone()]; }
+                    if f2   { *result.borrow_mut() = vec!["ctx:Rename".to_string(),    sel.clone()]; }
+                    if ctrl_d { *result.borrow_mut() = vec!["ctx:Duplicate".to_string(), sel.clone()]; }
+                    if ctrl_c { *result.borrow_mut() = vec!["ctx:Copy Path".to_string(), sel.clone()]; }
+                }
+            });
+
+            egui::ScrollArea::vertical()
+                .id_salt("asset_grid_v2_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let spacing = 8.0_f32;
+                    ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
+                    ui.with_layout(
+                        egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
+                        |ui| {
+                            for path in &paths {
+                                if !result.borrow()[0].is_empty() { break; }
+
+                                let filename = path.rsplit('/').next().unwrap_or(path.as_str());
+                                let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+                                let t = match ext.as_str() {
+                                    "png"|"jpg"|"jpeg"|"webp"|"bmp"|"tga"|"hdr"|"exr" => "texture",
+                                    "glb"|"gltf"|"obj"|"fbx" => "model",
+                                    "wav"|"ogg"|"mp3"|"flac" => "audio",
+                                    "rn"|"js"|"lua" => "script",
+                                    "wgsl"|"glsl"|"hlsl" => "shader",
+                                    "scene" => "scene",
+                                    "fluxmat" => "material",
+                                    "prefab"|"fluxprefab" => "prefab",
+                                    _ => "unknown",
+                                };
+                                let (icon_name, ir, ig, ib) = type_color(t);
+                                let icon_tint = egui::Color32::from_rgb(ir, ig, ib);
+                                let icon_bg   = egui::Color32::from_rgba_unmultiplied(ir, ig, ib, 28);
+                                let is_sel    = path == &sel;
+
+                                let tile_total = egui::vec2(tile_sz, tile_sz + font_sz + 4.0);
+                                let drag_id    = egui::Id::new(("v2_tile_dnd", path.as_str()));
+                                let dnd = ui.dnd_drag_source(
+                                    drag_id,
+                                    DndPayload::Asset { path: path.clone(), asset_type: t.to_string() },
+                                    |ui| {
+                                        let (tile_rect, tile_resp) = ui.allocate_exact_size(
+                                            tile_total, egui::Sense::click());
+                                        let painter = ui.painter_at(tile_rect);
+
+                                        let bg = if is_sel { egui::Color32::from_rgb(50, 80, 120) }
+                                                 else if tile_resp.hovered() { egui::Color32::from_rgb(55, 55, 65) }
+                                                 else { egui::Color32::from_rgb(42, 42, 50) };
+                                        painter.rect_filled(
+                                            egui::Rect::from_min_size(tile_rect.min, egui::vec2(tile_sz, tile_sz)),
+                                            4.0, bg);
+
+                                        let icon_margin = tile_sz * 0.15;
+                                        let icon_area = egui::Rect::from_min_size(
+                                            tile_rect.min + egui::vec2(icon_margin, icon_margin),
+                                            egui::vec2(tile_sz - icon_margin*2.0, tile_sz - icon_margin*2.0));
+                                        painter.rect_filled(icon_area, 3.0, icon_bg);
+
+                                        if is_sel {
+                                            painter.rect_stroke(
+                                                egui::Rect::from_min_size(tile_rect.min, egui::vec2(tile_sz, tile_sz)),
+                                                4.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 150, 255)), egui::StrokeKind::Outside);
+                                        }
+
+                                        if let Some(bytes) = crate::icons::icon_bytes(icon_name) {
+                                            let inner_sz = icon_area.size() * 0.55;
+                                            egui::Image::from_bytes(crate::icons::icon_uri(icon_name), bytes)
+                                                .fit_to_exact_size(inner_sz).tint(icon_tint)
+                                                .paint_at(ui, egui::Rect::from_center_size(icon_area.center(), inner_sz));
+                                        }
+
+                                        let stem = filename.rfind('.').map(|i| &filename[..i]).unwrap_or(filename);
+                                        let dname = if stem.len() > 12 { format!("{}…", &stem[..11]) } else { stem.to_string() };
+                                        painter.text(
+                                            tile_rect.min + egui::vec2(tile_sz / 2.0, tile_sz + 2.0),
+                                            egui::Align2::CENTER_TOP, &dname,
+                                            egui::FontId::proportional(font_sz),
+                                            if is_sel { egui::Color32::from_rgb(180,210,255) }
+                                            else { egui::Color32::from_rgb(190,190,200) });
+
+                                        tile_resp
+                                    });
+                                let tile_resp = dnd.inner;
+
+                                if tile_resp.clicked() {
+                                    *result.borrow_mut() = vec!["select".to_string(), path.clone()];
+                                }
+                                if tile_resp.double_clicked() {
+                                    *result.borrow_mut() = vec!["open".to_string(), path.clone()];
+                                }
+                                tile_resp.context_menu(|ui| {
+                                    for item in ctx_items(t) {
+                                        if ui.button(item).clicked() {
+                                            *result.borrow_mut() = vec![format!("ctx:{item}"), path.clone()];
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                });
+
+            result.into_inner()
+        }).unwrap_or_else(|| vec!["".to_string(), String::new()])
+    }).build()?;
+
+    // new_asset_menu_button(dir_prefix) → String
+    // Renders a "+" button. On click shows popup with: New Folder / New File / New Scene / New Script / New Material.
+    // Returns the chosen item name, or "".
+    m.function("new_asset_menu_button", |dir_prefix: Ref<str>| -> String {
+        with_ui(|ui| {
+            let prefix = dir_prefix.as_ref().to_string();
+            let result: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+            let popup_id = ui.make_persistent_id(("new_asset_popup", prefix.as_str()));
+
+            let btn = ui.add(egui::Button::new(
+                egui::RichText::new("+  New").size(12.0).color(egui::Color32::from_rgb(100, 200, 100)))
+                .frame(true));
+            if btn.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(popup_id));
+            }
+
+            egui::popup_below_widget(ui, popup_id, &btn, egui::PopupCloseBehavior::CloseOnClickOutside, |ui: &mut egui::Ui| {
+                ui.set_min_width(130.0);
+                for item in &["New Folder", "New Script", "New Scene", "New Material", "New File"] {
+                    if ui.selectable_label(false, *item).clicked() {
+                        *result.borrow_mut() = item.to_string();
+                        ui.memory_mut(|m: &mut egui::Memory| m.close_popup(popup_id));
+                    }
+                }
+            });
+
+            result.into_inner()
+        }).unwrap_or_default()
     }).build()?;
 
     Ok(m)

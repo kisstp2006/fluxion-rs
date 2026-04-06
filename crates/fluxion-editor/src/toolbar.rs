@@ -40,7 +40,7 @@ pub fn show_toolbar(
         .exact_height(32.0)
         .frame(egui::Frame::none()
             .fill(crate::theme::TOOLBAR_BG)
-            .inner_margin(egui::Margin::symmetric(6.0, 4.0)))
+            .inner_margin(egui::Margin::symmetric(6, 4)))
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // ── Transform tool selector ──────────────────────────────────
@@ -52,7 +52,7 @@ pub fn show_toolbar(
                     ).on_hover_text(tip);
                     if selected {
                         let rect = resp.rect;
-                        ui.painter().rect_stroke(rect.expand(2.0), 2.0, egui::Stroke::new(1.0, tint));
+                        ui.painter().rect_stroke(rect.expand(2.0), 2.0, egui::Stroke::new(1.0, tint), egui::StrokeKind::Outside);
                     }
                     resp
                 };

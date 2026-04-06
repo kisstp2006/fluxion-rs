@@ -105,15 +105,15 @@ impl BloomPass {
     fn fullscreen_pipeline(device: &wgpu::Device, frag_src: &str, frag_label: &str, bgl: &wgpu::BindGroupLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         let vert = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("bloom_vert"), source: wgpu::ShaderSource::Wgsl(shaders::FULLSCREEN_VERT.into()) });
         let frag = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(frag_label), source: wgpu::ShaderSource::Wgsl(frag_src.into()) });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[bgl], push_constant_ranges: &[] });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(bgl)], immediate_size: 0 });
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(frag_label), layout: Some(&layout),
-            vertex: wgpu::VertexState { module: &vert, entry_point: "vs_main", buffers: &[], compilation_options: Default::default() },
-            fragment: Some(wgpu::FragmentState { module: &frag, entry_point: "fs_main",
+            vertex: wgpu::VertexState { module: &vert, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState { module: &frag, entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                 compilation_options: Default::default() }),
             primitive: wgpu::PrimitiveState::default(), depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+            multisample: wgpu::MultisampleState::default(), multiview_mask: None, cache: None,
         })
     }
 
@@ -278,7 +278,7 @@ impl RenderPass for BloomPass {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target, resolve_target: None,
+                    view: target, resolve_target: None, depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None, ..Default::default()
@@ -306,8 +306,8 @@ impl RenderPass for BloomPass {
         blit_pass(ctx.encoder, comp_pl, comp_bg, &res.hdr_ping.view, "bloom_composite");
 
         ctx.encoder.copy_texture_to_texture(
-            wgpu::ImageCopyTexture { texture: &res.hdr_ping.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            wgpu::ImageCopyTexture { texture: &res.hdr_main.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture: &res.hdr_ping.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture: &res.hdr_main.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::Extent3d { width: res.hdr_main.width, height: res.hdr_main.height, depth_or_array_layers: 1 },
         );
     }

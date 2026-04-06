@@ -22,7 +22,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use wgpu::SurfaceError;
 use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, DeviceId, ElementState, WindowEvent},
@@ -212,7 +211,7 @@ impl ApplicationHandler for EditorApp {
                                 chooser.show(ctx);
                             })
                         });
-                        if let Err(SurfaceError::Lost | SurfaceError::Outdated) = result {
+                        if !result {
                             let s = win.inner_size();
                             renderer.resize(s.width, s.height);
                         }
@@ -598,7 +597,7 @@ impl EditorInner {
                 egui::TopBottomPanel::top("editor_menu")
                     .frame(egui::Frame::none()
                         .fill(crate::theme::MENU_BG)
-                        .inner_margin(egui::Margin::symmetric(4.0, 2.0)))
+                        .inner_margin(egui::Margin::symmetric(4, 2)))
                     .show(ctx, |ui| {
                         egui::menu::bar(ui, |ui| {
                             let _guard = crate::rune_bindings::set_current_ui(ui);
@@ -613,7 +612,7 @@ impl EditorInner {
                     .exact_height(32.0)
                     .frame(egui::Frame::none()
                         .fill(crate::theme::TOOLBAR_BG)
-                        .inner_margin(egui::Margin::symmetric(6.0, 4.0)))
+                        .inner_margin(egui::Margin::symmetric(6, 4)))
                     .show(ctx, |ui| {
                         ui.horizontal(|ui| {
                             let _guard = crate::rune_bindings::set_current_ui(ui);
@@ -997,13 +996,9 @@ impl EditorInner {
         // Clear physics context pointer after every frame.
         self.host.clear_rune_context();
 
-        match result {
-            Ok(()) => {}
-            Err(SurfaceError::Lost | SurfaceError::Outdated) => {
-                let size = self.window.inner_size();
-                self.renderer.resize(size.width, size.height);
-            }
-            Err(e) => log::error!("Render error: {e}"),
+        if !result {
+            let size = self.window.inner_size();
+            self.renderer.resize(size.width, size.height);
         }
     }
 

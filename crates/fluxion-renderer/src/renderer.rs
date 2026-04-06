@@ -22,7 +22,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use glam::{Mat4, Vec3};
 use winit::window::Window;
-use wgpu::SurfaceError;
+use wgpu::CurrentSurfaceTexture;
 
 use fluxion_core::{
     ECSWorld, EntityId,
@@ -134,8 +134,11 @@ impl FluxionRenderer {
         //   macOS:   Metal
         //   Web:     WebGPU > WebGL2
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
+            backends:                  wgpu::Backends::all(),
+            flags:                     wgpu::InstanceFlags::default(),
+            backend_options:           wgpu::BackendOptions::default(),
+            memory_budget_thresholds:  Default::default(),
+            display:                   Default::default(),
         });
 
         // Safety: the surface must not outlive the window.
@@ -158,12 +161,13 @@ impl FluxionRenderer {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    label:             Some("fluxion_device"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits:   wgpu::Limits::default(),
-                    memory_hints:      Default::default(),
+                    label:                Some("fluxion_device"),
+                    required_features:    wgpu::Features::empty(),
+                    required_limits:      wgpu::Limits::default(),
+                    memory_hints:         Default::default(),
+                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                    trace:                Default::default(),
                 },
-                None,
             )
             .await
             .context("Failed to create wgpu device")?;
@@ -1268,9 +1272,12 @@ impl FluxionRenderer {
     pub fn render_ui_only(
         &mut self,
         after: impl FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView) -> Vec<wgpu::CommandBuffer>,
-    ) -> Result<(), SurfaceError> {
-        let surface_texture = self.surface.get_current_texture()?;
-        let surface_view    = surface_texture.texture.create_view(&Default::default());
+    ) -> bool {
+        let surface_texture = match self.surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(t) | CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => return false,
+        };
+        let surface_view = surface_texture.texture.create_view(&Default::default());
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("ui_encoder"),
@@ -1281,6 +1288,7 @@ impl FluxionRenderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view:           &surface_view,
                     resolve_target: None,
+                    depth_slice:    None,
                     ops:            wgpu::Operations {
                         load:  wgpu::LoadOp::Clear(wgpu::Color { r: 0.07, g: 0.07, b: 0.07, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
@@ -1289,20 +1297,21 @@ impl FluxionRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes:         None,
                 occlusion_query_set:      None,
+                multiview_mask:           None,
             });
         }
 
         let user_bufs = after(&self.device, &self.queue, &mut encoder, &surface_view);
         self.queue.submit(user_bufs.into_iter().chain(std::iter::once(encoder.finish())));
         surface_texture.present();
-        Ok(())
+        true
     }
 
     /// Render one frame from the current ECS world state.
     ///
     /// Returns `Err(SurfaceError::Outdated)` if the window was resized between
     /// this call and the last `resize()` — just call `resize()` and retry.
-    pub fn render(&mut self, world: &ECSWorld, time: &Time) -> Result<(), SurfaceError> {
+    pub fn render(&mut self, world: &ECSWorld, time: &Time) -> bool {
         self.render_with(world, time, |_, _, _, _| Vec::new())
     }
 
@@ -1313,9 +1322,12 @@ impl FluxionRenderer {
         world: &ECSWorld,
         time: &Time,
         after: impl FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView) -> Vec<wgpu::CommandBuffer>,
-    ) -> Result<(), SurfaceError> {
-        let surface_texture = self.surface.get_current_texture()?;
-        let surface_view    = surface_texture.texture.create_view(&Default::default());
+    ) -> bool {
+        let surface_texture = match self.surface.get_current_texture() {
+            CurrentSurfaceTexture::Success(t) | CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => return false,
+        };
+        let surface_view = surface_texture.texture.create_view(&Default::default());
 
         let mut frame = self.extract_frame_data(world, time);
 
@@ -1404,7 +1416,7 @@ impl FluxionRenderer {
         self.queue
             .submit(user_bufs.into_iter().chain(std::iter::once(encoder.finish())));
         surface_texture.present();
-        Ok(())
+        true
     }
 
     // ── Private: ECS → FrameData ──────────────────────────────────────────────

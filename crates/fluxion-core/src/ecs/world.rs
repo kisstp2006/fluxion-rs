@@ -321,6 +321,12 @@ impl ECSWorld {
         self.hierarchy.parent_of(id.0).map(EntityId)
     }
 
+    /// Returns `true` if `ancestor` is a direct or indirect parent of `entity`.
+    /// Used by the editor to prevent drag-and-drop reparenting cycles.
+    pub fn is_ancestor_of(&self, ancestor: EntityId, entity: EntityId) -> bool {
+        self.hierarchy.is_ancestor_of(ancestor.0, entity.0)
+    }
+
     pub fn get_children(&self, id: EntityId) -> impl Iterator<Item = EntityId> + '_ {
         self.hierarchy.children_of(id.0).iter().copied().map(EntityId)
     }

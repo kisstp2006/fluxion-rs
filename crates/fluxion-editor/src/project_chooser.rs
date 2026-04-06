@@ -148,7 +148,7 @@ impl ProjectChooser {
     fn recent_row(&self, ui: &mut egui::Ui, entry: &RecentProject) -> bool {
         let frame = egui::Frame::none()
             .fill(Color32::from_rgb(40, 40, 50))
-            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+            .inner_margin(egui::Margin::symmetric(10, 6))
             .rounding(4.0);
 
         let mut clicked = false;

@@ -114,9 +114,9 @@ impl RenderPass for DebugLinePass {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                Some("debug_lines_pl"),
-            bind_group_layouts:   &[&bgl],
-            push_constant_ranges: &[],
+            label:              Some("debug_lines_layout"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size:     0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -124,7 +124,7 @@ impl RenderPass for DebugLinePass {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module:               &shader,
-                entry_point:          "vs_main",
+                entry_point: Some("vs_main"),
                 compilation_options:  Default::default(),
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<LineVertex>() as u64,
@@ -145,7 +145,7 @@ impl RenderPass for DebugLinePass {
             },
             fragment: Some(wgpu::FragmentState {
                 module:              &shader,
-                entry_point:         "fs_main",
+                entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format:     self.surface_format,
@@ -164,14 +164,14 @@ impl RenderPass for DebugLinePass {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format:              wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false, // read-only — do not overwrite scene depth
-                depth_compare:       wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(false), // read-only — do not overwrite scene depth
+                depth_compare:       Some(wgpu::CompareFunction::Less),
                 stencil:             wgpu::StencilState::default(),
                 bias:                wgpu::DepthBiasState::default(),
             }),
             multisample:   wgpu::MultisampleState::default(),
-            multiview:     None,
-            cache:         None,
+            multiview_mask: None,
+            cache:          None,
         });
 
         // Allocate initial vertex buffer
@@ -220,6 +220,7 @@ impl RenderPass for DebugLinePass {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view:           ctx.surface_view,
                 resolve_target: None,
+                depth_slice:    None,
                 ops: wgpu::Operations {
                     load:  wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,

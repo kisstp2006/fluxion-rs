@@ -172,22 +172,22 @@ impl RenderPass for GeometryPass {
             source: wgpu::ShaderSource::Wgsl(shaders::GEOMETRY_FRAG.into()),
         });
 
-        // ── Pipeline ─────────────────────────────────────────────────────────
+        // ── Pipeline ──────────────────────────────────────────────────────────
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("geometry_layout"),
-            bind_group_layouts:   &[&camera_bgl, &model_bgl, &material_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&camera_bgl), Some(&model_bgl), Some(&material_bgl)],
+            immediate_size:     0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label:  Some("geometry_pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &vert_module, entry_point: "vs_main",
+                module: &vert_module, entry_point: Some("vs_main"),
                 buffers: &[Vertex::layout()], compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &frag_module, entry_point: "fs_main",
+                module: &frag_module, entry_point: Some("fs_main"),
                 targets: &[
                     Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8UnormSrgb, blend: None, write_mask: wgpu::ColorWrites::ALL }),
                     Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm,     blend: None, write_mask: wgpu::ColorWrites::ALL }),
@@ -203,14 +203,14 @@ impl RenderPass for GeometryPass {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format:              wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare:       wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare:       Some(wgpu::CompareFunction::Less),
                 stencil:             Default::default(),
                 bias:                Default::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview:   None,
-            cache:       None,
+            multiview_mask: None,
+            cache:         None,
         });
 
         self.pipeline          = Some(pipeline);
@@ -265,13 +265,13 @@ impl RenderPass for GeometryPass {
         let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("geometry_pass"),
             color_attachments: &[
-                Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_albedo_ao.view, resolve_target: None,
+                Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_albedo_ao.view, resolve_target: None, depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store }}),
-                Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_normal.view, resolve_target: None,
+                Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_normal.view, resolve_target: None, depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.5, g: 0.5, b: 1.0, a: 0.0 }), store: wgpu::StoreOp::Store }}),
-                Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_orm.view, resolve_target: None,
+                Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_orm.view, resolve_target: None, depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store }}),
-                Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_emission.view, resolve_target: None,
+                Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_emission.view, resolve_target: None, depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store }}),
             ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {

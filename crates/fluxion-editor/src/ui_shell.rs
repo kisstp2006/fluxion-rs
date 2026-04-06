@@ -33,7 +33,7 @@ impl UiShell {
             None,
             Some(max_tex),
         );
-        let renderer = egui_wgpu::Renderer::new(device, surface_format, None, 1, false);
+        let renderer = egui_wgpu::Renderer::new(device, surface_format, egui_wgpu::RendererOptions::default());
         Self { state, renderer, viewport_texture: None }
     }
 
@@ -133,6 +133,7 @@ impl UiShell {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view:           surface_view,
                     resolve_target: None,
+                    depth_slice:    None,
                     ops:            wgpu::Operations {
                         load:  wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -141,6 +142,7 @@ impl UiShell {
                 depth_stencil_attachment: None,
                 timestamp_writes:         None,
                 occlusion_query_set:      None,
+                multiview_mask:           None,
             });
             self.renderer.render(&mut rpass.forget_lifetime(), &paint_jobs, &screen);
         }

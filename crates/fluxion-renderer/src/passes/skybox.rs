@@ -62,9 +62,9 @@ impl SkyboxPass {
             view_formats:    &[],
         });
         queue.write_texture(
-            wgpu::ImageCopyTexture { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             data,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * width), rows_per_image: Some(height) },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * width), rows_per_image: Some(height) },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
         let view = tex.create_view(&Default::default());
@@ -166,22 +166,22 @@ impl RenderPass for SkyboxPass {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None, bind_group_layouts: &[&bgl], push_constant_ranges: &[],
+            label: None, bind_group_layouts: &[Some(&bgl)], immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sky_pipeline"), layout: Some(&layout),
             vertex: wgpu::VertexState {
-                module: &vert, entry_point: "vs_main", buffers: &[],
+                module: &vert, entry_point: Some("vs_main"), buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &frag, entry_point: "fs_main",
+                module: &frag, entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba16Float,
                     blend: None, write_mask: wgpu::ColorWrites::ALL,
@@ -191,8 +191,8 @@ impl RenderPass for SkyboxPass {
             primitive:    wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample:  wgpu::MultisampleState::default(),
-            multiview:    None,
-            cache:        None,
+            multiview_mask: None,
+            cache:          None,
         });
 
         self.bgl             = Some(bgl);
@@ -258,7 +258,7 @@ impl RenderPass for SkyboxPass {
         let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("skybox_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &ctx.resources.hdr_main.view, resolve_target: None,
+                view: &ctx.resources.hdr_main.view, resolve_target: None, depth_slice: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: None, ..Default::default()

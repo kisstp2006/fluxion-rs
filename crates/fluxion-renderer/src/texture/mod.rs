@@ -51,14 +51,14 @@ impl GpuTexture {
         });
 
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture:   &texture,
                 mip_level: 0,
                 origin:    wgpu::Origin3d::ZERO,
                 aspect:    wgpu::TextureAspect::All,
             },
             data,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset:         0,
                 bytes_per_row:  Some(4 * width),
                 rows_per_image: Some(height),
@@ -74,7 +74,7 @@ impl GpuTexture {
             address_mode_w:   wgpu::AddressMode::Repeat,
             mag_filter:       wgpu::FilterMode::Linear,
             min_filter:       wgpu::FilterMode::Linear,
-            mipmap_filter:    wgpu::FilterMode::Linear,
+            mipmap_filter:    wgpu::MipmapFilterMode::Linear,
             anisotropy_clamp: 16,
             ..Default::default()
         });
@@ -108,7 +108,7 @@ impl GpuTexture {
             label:         Some(&format!("{label}_sampler")),
             mag_filter:    wgpu::FilterMode::Linear,
             min_filter:    wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         Self { texture, view, sampler, width, height, format }

@@ -487,7 +487,7 @@ pub fn draw_box_and_interact(
                             Color32::from_rgba_premultiplied(base.r(), base.g(), base.b(), 80)));
                         let r = egui::Rect::from_center_size(sp, egui::vec2(14.0, 14.0));
                         painter.rect_filled(r, 2.0, color);
-                        painter.rect_stroke(r, 2.0, Stroke::new(1.5, Color32::WHITE));
+                        painter.rect_stroke(r, 2.0, Stroke::new(1.5, Color32::WHITE), egui::StrokeKind::Outside);
                     }
                 }
                 painter.circle_filled(cs, 3.5, Color32::WHITE);

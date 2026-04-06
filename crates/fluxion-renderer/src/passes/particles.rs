@@ -94,9 +94,9 @@ impl RenderPass for ParticleOverlayPass {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("particles_pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            label:              Some("particles_pl"),
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size:     0,
         });
 
         let blend = wgpu::BlendState::ALPHA_BLENDING;
@@ -105,7 +105,7 @@ impl RenderPass for ParticleOverlayPass {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<ParticleInstance>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
@@ -119,7 +119,7 @@ impl RenderPass for ParticleOverlayPass {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: self.surface_format,
                     blend: Some(blend),
@@ -133,7 +133,7 @@ impl RenderPass for ParticleOverlayPass {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -170,6 +170,7 @@ impl RenderPass for ParticleOverlayPass {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: ctx.surface_view,
                 resolve_target: None,
+                depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,

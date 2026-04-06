@@ -208,7 +208,7 @@ impl RenderPass for SsaoPass {
             address_mode_w:   wgpu::AddressMode::Repeat,
             mag_filter:       wgpu::FilterMode::Nearest,
             min_filter:       wgpu::FilterMode::Nearest,
-            mipmap_filter:    wgpu::FilterMode::Nearest,
+            mipmap_filter:    wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -283,33 +283,33 @@ impl RenderPass for SsaoPass {
 
         let ssao_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ssao_layout"),
-            bind_group_layouts: &[&ssao_params_bgl, &ssao_camera_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&ssao_params_bgl), Some(&ssao_camera_bgl)],
+            immediate_size: 0,
         });
         let blur_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ssao_blur_layout"),
-            bind_group_layouts: &[&blur_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&blur_bgl)],
+            immediate_size: 0,
         });
 
         let ssao_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ssao_pipeline"), layout: Some(&ssao_layout),
-            vertex: wgpu::VertexState { module: &vert, entry_point: "vs_main", buffers: &[], compilation_options: Default::default() },
-            fragment: Some(wgpu::FragmentState { module: &ssao_frag, entry_point: "fs_main",
+            vertex: wgpu::VertexState { module: &vert, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState { module: &ssao_frag, entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                 compilation_options: Default::default() }),
             primitive: wgpu::PrimitiveState::default(), depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+            multisample: wgpu::MultisampleState::default(), multiview_mask: None, cache: None,
         });
 
         let blur_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ssao_blur_pipeline"), layout: Some(&blur_layout),
-            vertex: wgpu::VertexState { module: &vert, entry_point: "vs_main", buffers: &[], compilation_options: Default::default() },
-            fragment: Some(wgpu::FragmentState { module: &blur_frag, entry_point: "fs_main",
+            vertex: wgpu::VertexState { module: &vert, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState { module: &blur_frag, entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::Rgba8Unorm, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                 compilation_options: Default::default() }),
             primitive: wgpu::PrimitiveState::default(), depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+            multisample: wgpu::MultisampleState::default(), multiview_mask: None, cache: None,
         });
 
         self.ssao_pipeline    = Some(ssao_pipeline);
@@ -354,9 +354,9 @@ impl RenderPass for SsaoPass {
                     data[i * 4 + 3] = 255;
                 }
                 ctx.queue.write_texture(
-                    wgpu::ImageCopyTexture { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                     &data,
-                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(NOISE_SIZE * 4), rows_per_image: None },
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(NOISE_SIZE * 4), rows_per_image: None },
                     wgpu::Extent3d { width: NOISE_SIZE, height: NOISE_SIZE, depth_or_array_layers: 1 },
                 );
                 self.noise_uploaded = true;
@@ -399,7 +399,7 @@ impl RenderPass for SsaoPass {
             let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ssao_raw_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &ctx.resources.ssao_raw.view, resolve_target: None,
+                    view: &ctx.resources.ssao_raw.view, resolve_target: None, depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None, ..Default::default()
@@ -415,7 +415,7 @@ impl RenderPass for SsaoPass {
             let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("ssao_blur_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &ctx.resources.ssao_blur.view, resolve_target: None,
+                    view: &ctx.resources.ssao_blur.view, resolve_target: None, depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None, ..Default::default()

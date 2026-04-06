@@ -140,9 +140,9 @@ impl RenderPass for ShadowPass {
 
         // ── Pipeline (depth-only, no color attachments) ───────────────────────
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("shadow_pipeline_layout"),
-            bind_group_layouts:   &[&cam_bgl, &model_bgl],
-            push_constant_ranges: &[],
+            label:              Some("shadow_pipeline_layout"),
+            bind_group_layouts: &[Some(&cam_bgl), Some(&model_bgl)],
+            immediate_size:     0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -150,7 +150,7 @@ impl RenderPass for ShadowPass {
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module:      &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers:     &[Vertex::layout()],
                 compilation_options: Default::default(),
             },
@@ -162,8 +162,8 @@ impl RenderPass for ShadowPass {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format:              wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare:       wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare:       Some(wgpu::CompareFunction::Less),
                 stencil:             Default::default(),
                 bias:                wgpu::DepthBiasState {
                     constant:   2,
@@ -172,8 +172,8 @@ impl RenderPass for ShadowPass {
                 },
             }),
             multisample: wgpu::MultisampleState::default(),
-            multiview:   None,
-            cache:       None,
+            multiview_mask: None,
+            cache:         None,
         });
 
         self.pipeline     = Some(pipeline);

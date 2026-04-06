@@ -99,16 +99,16 @@ impl RenderPass for TonemapPass {
         });
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("tonemap_layout"), bind_group_layouts: &[&bgl], push_constant_ranges: &[] });
+            label: Some("tonemap_layout"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("tonemap_pipeline"), layout: Some(&layout),
-            vertex: wgpu::VertexState { module: &vert, entry_point: "vs_main", buffers: &[], compilation_options: Default::default() },
-            fragment: Some(wgpu::FragmentState { module: &frag, entry_point: "fs_main",
+            vertex: wgpu::VertexState { module: &vert, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState { module: &frag, entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState { format: self.surface_format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                 compilation_options: Default::default() }),
             primitive: wgpu::PrimitiveState::default(), depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+            multisample: wgpu::MultisampleState::default(), multiview_mask: None, cache: None,
         });
 
         self.bgl        = Some(bgl);
@@ -138,7 +138,7 @@ impl RenderPass for TonemapPass {
         let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("tonemap_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: ctx.surface_view, resolve_target: None,
+                view: ctx.surface_view, resolve_target: None, depth_slice: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: None,
