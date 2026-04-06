@@ -12,7 +12,7 @@
 // Only `scan()` and sidecar I/O are gated on `not(wasm32)`.
 // ============================================================
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, BTreeMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -91,6 +91,8 @@ pub struct AssetRecord {
     pub imported_at: String,
     /// User-assigned tags (stored in `.fluxmeta`).
     pub tags: Vec<String>,
+    /// Per-type import settings (stored in `.fluxmeta` under `"import"`).
+    pub import_settings: BTreeMap<String, String>,
 }
 
 impl AssetRecord {
@@ -256,7 +258,7 @@ impl AssetDatabase {
         let file_size  = std::fs::metadata(abs_path).map(|m| m.len()).unwrap_or(0);
 
         let meta_path = PathBuf::from(format!("{}.fluxmeta", abs_path.display()));
-        let (guid, imported_at, tags) = Self::load_or_create_meta(&meta_path);
+        let (guid, imported_at, tags, import_settings) = Self::load_or_create_meta(&meta_path);
 
         Some(AssetRecord {
             guid,
@@ -267,12 +269,13 @@ impl AssetDatabase {
             file_size,
             imported_at,
             tags,
+            import_settings,
         })
     }
 
     /// Read an existing `.fluxmeta`; write a fresh one if absent or corrupt.
     #[cfg(not(target_arch = "wasm32"))]
-    fn load_or_create_meta(meta_path: &Path) -> (String, String, Vec<String>) {
+    fn load_or_create_meta(meta_path: &Path) -> (String, String, Vec<String>, BTreeMap<String, String>) {
         if meta_path.is_file() {
             if let Ok(raw) = std::fs::read_to_string(meta_path) {
                 if let Some(parsed) = parse_meta_json(&raw) {
@@ -283,11 +286,12 @@ impl AssetDatabase {
         let guid        = new_guid();
         let imported_at = iso_now();
         let tags        = Vec::<String>::new();
-        let json        = write_meta_json(&guid, &imported_at, &tags);
+        let import      = BTreeMap::new();
+        let json        = write_meta_json(&guid, &imported_at, &tags, &import);
         if let Err(e) = std::fs::write(meta_path, &json) {
             log::warn!("[AssetDatabase] could not write .fluxmeta {:?}: {e}", meta_path);
         }
-        (guid, imported_at, tags)
+        (guid, imported_at, tags, import)
     }
 
     // ── Query API (all platforms) ─────────────────────────────────────────────
@@ -302,6 +306,36 @@ impl AssetDatabase {
     pub fn get_by_guid(&self, guid: &str) -> Option<&AssetRecord> {
         let path = self.guid_index.get(guid)?;
         self.get_by_path(path)
+    }
+
+    /// Like `list_dir` but filtered by asset type string ("" = all).
+    pub fn list_dir_typed<'a>(&'a self, subdir: &str, type_filter: &str) -> Vec<&'a AssetRecord> {
+        let all = self.list_dir(subdir);
+        if type_filter.is_empty() {
+            return all;
+        }
+        all.into_iter().filter(|r| r.asset_type.as_str() == type_filter).collect()
+    }
+
+    /// Read one import setting value for a given path + key.
+    pub fn get_import_setting(&self, path: &str, key: &str) -> Option<String> {
+        self.get_by_path(path).and_then(|r| r.import_settings.get(key).cloned())
+    }
+
+    /// Write an import setting to the `.fluxmeta` sidecar and update the in-memory record.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_import_setting(&mut self, path: &str, key: &str, value: &str, root: &std::path::Path) {
+        let norm = norm_path(path);
+        let idx = match self.path_index.get(&norm).copied() {
+            Some(i) => i,
+            None => return,
+        };
+        self.records[idx].import_settings.insert(key.to_string(), value.to_string());
+        let rec = &self.records[idx];
+        let meta_path = root.join("assets").join(&rec.path);
+        let meta_path = std::path::PathBuf::from(format!("{}.fluxmeta", meta_path.display()));
+        let json = write_meta_json(&rec.guid, &rec.imported_at, &rec.tags, &rec.import_settings);
+        let _ = std::fs::write(&meta_path, json);
     }
 
     /// All records whose path starts with `subdir/` (non-recursive — direct
@@ -430,22 +464,34 @@ fn days_to_ymd(mut days: u64) -> (u32, u32, u32) {
 
 // ── .fluxmeta JSON (minimal, no serde dep in core) ───────────────────────────
 
-/// Parse `{ "guid": "…", "imported_at": "…", "tags": […] }`.
-fn parse_meta_json(raw: &str) -> Option<(String, String, Vec<String>)> {
+/// Parse `{ "guid": "…", "imported_at": "…", "tags": […], "import": { … } }`.
+fn parse_meta_json(raw: &str) -> Option<(String, String, Vec<String>, BTreeMap<String, String>)> {
     let guid        = json_str(raw, "guid")?;
     let imported_at = json_str(raw, "imported_at").unwrap_or_else(iso_now);
     let tags        = json_str_array(raw, "tags").unwrap_or_default();
-    Some((guid, imported_at, tags))
+    let import      = json_str_object(raw, "import").unwrap_or_default();
+    Some((guid, imported_at, tags, import))
 }
 
-fn write_meta_json(guid: &str, imported_at: &str, tags: &[String]) -> String {
+fn write_meta_json(guid: &str, imported_at: &str, tags: &[String], import: &BTreeMap<String, String>) -> String {
     let tags_json = tags
         .iter()
         .map(|t| format!("\"{}\"", t.replace('"', "\\\"")))
         .collect::<Vec<_>>()
         .join(", ");
+    let import_json = import
+        .iter()
+        .map(|(k, v)| format!("    \"{}\": \"{}\"",
+            k.replace('"', "\\\""), v.replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let import_block = if import_json.is_empty() {
+        "  \"import\": {}".to_string()
+    } else {
+        format!("  \"import\": {{\n{}\n  }}", import_json)
+    };
     format!(
-        "{{\n  \"guid\": \"{guid}\",\n  \"imported_at\": \"{imported_at}\",\n  \"tags\": [{tags_json}]\n}}\n"
+        "{{\n  \"guid\": \"{guid}\",\n  \"imported_at\": \"{imported_at}\",\n  \"tags\": [{tags_json}],\n{import_block}\n}}\n"
     )
 }
 
@@ -477,6 +523,37 @@ fn json_str_array(raw: &str, key: &str) -> Option<Vec<String>> {
         }
     }).collect();
     Some(items)
+}
+
+/// Extract a flat `{ "key": "value", … }` object for `key` from a JSON document.
+/// Only parses string values; non-string values are skipped.
+fn json_str_object(raw: &str, key: &str) -> Option<BTreeMap<String, String>> {
+    let needle = format!("\"{key}\"");
+    let start  = raw.find(&needle)?;
+    let after  = raw[start + needle.len()..].trim_start_matches(|c: char| c == ':' || c.is_whitespace());
+    if !after.starts_with('{') { return None; }
+    let end = after.find('}')?;
+    let inner = &after[1..end];
+    let mut map = BTreeMap::new();
+    let mut rest = inner;
+    while let Some(ks) = rest.find('"') {
+        rest = &rest[ks + 1..];
+        let ke = rest.find('"')?;
+        let k  = rest[..ke].to_string();
+        rest   = &rest[ke + 1..];
+        let colon = rest.find(':')?;
+        rest = rest[colon + 1..].trim_start_matches(|c: char| c.is_whitespace());
+        if rest.starts_with('"') {
+            rest = &rest[1..];
+            let ve = rest.find('"')?;
+            let v  = rest[..ve].to_string();
+            rest   = &rest[ve + 1..];
+            map.insert(k, v);
+        } else {
+            break;
+        }
+    }
+    Some(map)
 }
 
 /// Normalise a path to forward-slash, no leading slash.

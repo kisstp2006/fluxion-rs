@@ -305,10 +305,15 @@ fn draw_asset_inspector(path) {
         draw_texture_inspector(path.clone());
         fluxion::ui::separator();
         draw_generic_asset_inspector(path.clone(), t.clone());
+        draw_import_settings(path.clone());
     } else if t == "model" {
         draw_model_inspector(path.clone());
         fluxion::ui::separator();
         draw_generic_asset_inspector(path.clone(), t.clone());
+        draw_import_settings(path.clone());
+    } else if t == "audio" {
+        draw_generic_asset_inspector(path.clone(), t.clone());
+        draw_import_settings(path.clone());
     } else {
         draw_generic_asset_inspector(path.clone(), t.clone());
     }
@@ -374,6 +379,10 @@ fn draw_generic_asset_inspector(path, t) {
 // ── Texture Asset Inspector ───────────────────────────────────────────────────
 
 fn draw_texture_inspector(path) {
+    // ── Texture preview ───────────────────────────────────────────────────────
+    fluxion::ui::texture_preview(path.clone(), 200.0);
+    fluxion::ui::separator();
+
     let info = fluxion::world::texture_info(path.clone());
     let w    = info[0].clone();
     let h    = info[1].clone();
@@ -537,6 +546,68 @@ fn draw_material_inspector(path) {
 //
 // Renders each ScriptEntry as its own named collapsible panel, mirroring
 // the Unity MonoBehaviour look: every script is a first-class component.
+
+// ── Import Settings inspector ─────────────────────────────────────────────────
+// Renders a collapsible "Import Settings" section for asset types that have them.
+// Calls asset_get_import(path) → [[key, val, itype], …]
+// Dispatches: bool→checkbox, f32→drag_float, i32→drag_float(step=1), enum:…→enum_combo.
+// Persists changes via asset_set_import(path, key, val).
+
+fn draw_import_settings(path) {
+    let settings = fluxion::world::asset_get_import(path.clone());
+    if settings.is_empty() { return; }
+
+    fluxion::ui::separator();
+    if fluxion::ui::collapsing_begin(`Import Settings##imp_${path}`) {
+        let si = 0;
+        while si < settings.len() {
+            let row   = settings[si].clone();
+            let key   = row[0].clone();
+            let val   = row[1].clone();
+            let itype = row[2].clone();
+            let fid   = `##imp_${si}`;
+
+            if itype == "bool" {
+                let cur = val == "true";
+                let nv  = fluxion::ui::checkbox(`${key}${fid}`, cur);
+                if nv != cur {
+                    let new_str = if nv { "true" } else { "false" };
+                    fluxion::world::asset_set_import(path.clone(), key.clone(), new_str);
+                }
+            } else if itype == "f32" {
+                let parsed = fluxion::world::parse_f64(val.clone());
+                let cur = if parsed[0] == 1.0 { parsed[1] } else { 0.0 };
+                let nv  = fluxion::ui::drag_float(`${key}${fid}`, cur, 0.01, 0.0, 0.0);
+                if nv != cur {
+                    fluxion::world::asset_set_import(path.clone(), key.clone(), `${nv}`);
+                }
+            } else if itype == "i32" {
+                let parsed = fluxion::world::parse_f64(val.clone());
+                let cur = if parsed[0] == 1.0 { parsed[1] } else { 0.0 };
+                let nv  = fluxion::ui::drag_float(`${key}${fid}`, cur, 1.0, 0.0, 0.0);
+                if nv != cur {
+                    let as_int = nv as i64;
+                    fluxion::world::asset_set_import(path.clone(), key.clone(), `${as_int}`);
+                }
+            } else {
+                // "enum:Linear|Nearest|..." — enum_combo_pipe strips the "enum:" prefix
+                let nv = fluxion::ui::enum_combo_pipe(`${key}${fid}`, itype.clone(), val.clone());
+                if nv != val {
+                    fluxion::world::asset_set_import(path.clone(), key.clone(), nv.clone());
+                }
+            }
+
+            si += 1;
+        }
+
+        fluxion::ui::separator();
+        if fluxion::ui::button("Apply##imp_apply") {
+            // Triggers reimport when import pipeline is implemented (Phase 5+).
+        }
+
+        fluxion::ui::collapsing_end();
+    }
+}
 
 fn draw_script_bundle(sel) {
     // ── Compile summary badge ─────────────────────────────────────────────────

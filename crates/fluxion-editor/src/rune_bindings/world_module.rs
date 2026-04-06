@@ -98,6 +98,12 @@ thread_local! {
     static LOG_GENERATION: Cell<u64> = Cell::new(0);
     /// Project root directory path — set once at editor startup.
     static PROJECT_ROOT: RefCell<PathBuf> = RefCell::new(PathBuf::new());
+    /// Active directory in the asset browser right panel.
+    static ASSET_ACTIVE_DIR: RefCell<String> = RefCell::new(String::new());
+    /// Type filter active in asset browser ("" = All).
+    static ASSET_TYPE_FILTER: RefCell<String> = RefCell::new(String::new());
+    /// Tile zoom level for the asset grid (1.0 = 64 px).
+    static ASSET_ZOOM: Cell<f64> = Cell::new(1.0);
     /// (can_undo, can_redo) — pushed each frame by EditorHost.
     static UNDO_STATE: Cell<(bool, bool)> = Cell::new((false, false));
     /// Last frame delta time in milliseconds.
@@ -268,6 +274,11 @@ pub fn set_project_root(root: &std::path::Path) {
     PROJECT_ROOT.with(|p| *p.borrow_mut() = root.to_path_buf());
 }
 
+/// Get the current project root (used by ui_module for texture preview loading).
+pub fn get_project_root() -> std::path::PathBuf {
+    PROJECT_ROOT.with(|p| p.borrow().clone())
+}
+
 /// Update undo/redo state so Rune scripts can query it.
 pub fn set_undo_state(can_undo: bool, can_redo: bool) {
     UNDO_STATE.with(|c| c.set((can_undo, can_redo)));
@@ -370,6 +381,10 @@ pub fn take_editor_cam_dirty() -> bool {
 
 fn with_adb<R>(f: impl FnOnce(&AssetDatabase) -> R) -> Option<R> {
     ASSET_DB_PTR.with(|c| c.get().map(|ptr| unsafe { f(ptr.as_ref()) }))
+}
+
+fn with_adb_mut<R>(f: impl FnOnce(&mut AssetDatabase) -> R) -> Option<R> {
+    ASSET_DB_PTR.with(|c| c.get().map(|mut ptr| unsafe { f(ptr.as_mut()) }))
 }
 
 fn with_ctx<R>(f: impl FnOnce(&ECSWorld, &ComponentRegistry) -> R) -> Option<R> {
@@ -945,6 +960,41 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         with_adb(|db| db.list_dirs()).unwrap_or_default()
     }).build()?;
 
+    // asset_list_typed(subdir, type_filter) — like asset_list but filtered by type string.
+    // Pass "" as type_filter for all types.
+    m.function("asset_list_typed", |subdir: Ref<str>, type_filter: Ref<str>| -> Vec<String> {
+        with_adb(|db| {
+            db.list_dir_typed(subdir.as_ref(), type_filter.as_ref())
+              .into_iter()
+              .map(|r| r.path.clone())
+              .collect()
+        }).unwrap_or_default()
+    }).build()?;
+
+    // asset_get_active_dir / asset_set_active_dir — tracks which folder is open in right panel.
+    m.function("asset_get_active_dir", || -> String {
+        ASSET_ACTIVE_DIR.with(|d| d.borrow().clone())
+    }).build()?;
+    m.function("asset_set_active_dir", |dir: String| {
+        ASSET_ACTIVE_DIR.with(|d| *d.borrow_mut() = dir);
+    }).build()?;
+
+    // asset_get_type_filter / asset_set_type_filter — "" = All.
+    m.function("asset_get_type_filter", || -> String {
+        ASSET_TYPE_FILTER.with(|f| f.borrow().clone())
+    }).build()?;
+    m.function("asset_set_type_filter", |filter: String| {
+        ASSET_TYPE_FILTER.with(|f| *f.borrow_mut() = filter);
+    }).build()?;
+
+    // asset_get_zoom / asset_set_zoom — tile size multiplier (0.5 – 2.0).
+    m.function("asset_get_zoom", || -> f64 {
+        ASSET_ZOOM.with(|z| z.get())
+    }).build()?;
+    m.function("asset_set_zoom", |z: f64| {
+        ASSET_ZOOM.with(|zoom| zoom.set(z.clamp(0.5, 2.0)));
+    }).build()?;
+
     // asset_guid(path) — stable GUID from .fluxmeta sidecar.
     m.function("asset_guid", |path: Ref<str>| -> String {
         with_adb(|db| {
@@ -978,6 +1028,51 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         with_adb(|db| {
             db.get_by_path(path.as_ref()).map(|r| r.tags.clone())
         }).flatten().unwrap_or_default()
+    }).build()?;
+
+    // asset_get_import(path) → [[key, value, input_type], …]
+    // Returns import settings for an asset, merged with per-type defaults.
+    // input_type is "bool", "f32", "i32", or "enum:a|b|c".
+    m.function("asset_get_import", |path: Ref<str>| -> Vec<Vec<String>> {
+        let t = with_adb(|db| {
+            db.get_by_path(path.as_ref()).map(|r| r.type_str().to_string())
+        }).flatten().unwrap_or_default();
+
+        let defaults: &[(&str, &str, &str)] = match t.as_str() {
+            "texture" => &[
+                ("srgb",         "true",    "bool"),
+                ("gen_mipmaps",  "true",    "bool"),
+                ("max_size",     "2048",    "i32"),
+                ("filter",       "Linear",  "enum:Linear|Nearest|Trilinear"),
+                ("compression",  "BC3",     "enum:None|BC1|BC3|BC7"),
+            ],
+            "model" => &[
+                ("scale",              "1.0",  "f32"),
+                ("import_normals",     "true", "bool"),
+                ("import_tangents",    "true", "bool"),
+                ("import_animations",  "true", "bool"),
+                ("merge_meshes",       "false","bool"),
+            ],
+            "audio" => &[
+                ("mono",       "false", "bool"),
+                ("normalize",  "false", "bool"),
+                ("streaming",  "false", "bool"),
+            ],
+            _ => &[],
+        };
+
+        defaults.iter().map(|(key, default_val, input_type)| {
+            let stored = with_adb(|db| db.get_import_setting(path.as_ref(), key))
+                .flatten();
+            let value = stored.unwrap_or_else(|| default_val.to_string());
+            vec![key.to_string(), value, input_type.to_string()]
+        }).collect()
+    }).build()?;
+
+    // asset_set_import(path, key, value) — persist one import setting to .fluxmeta.
+    m.function("asset_set_import", |path: String, key: String, value: String| {
+        let root = PROJECT_ROOT.with(|r| r.borrow().clone());
+        with_adb_mut(|db| db.set_import_setting(&path, &key, &value, &root));
     }).build()?;
 
     // asset_search(query) — name search or "type:texture" / "name:sky" syntax.

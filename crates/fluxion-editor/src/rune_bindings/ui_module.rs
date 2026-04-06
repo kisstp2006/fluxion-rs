@@ -18,6 +18,14 @@ enum MenuEntry {
     Separator,
 }
 
+/// One level on the tree node stack created by tree_node_begin / tree_node_end.
+struct TreeEntry {
+    /// Where CURRENT_UI should be restored after tree_node_end().
+    parent_ptr: Option<NonNull<egui::Ui>>,
+    /// The indented child UI kept alive until tree_node_end().
+    child: Box<egui::Ui>,
+}
+
 thread_local! {
     static CURRENT_UI: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
     /// Stored response from the last `image_interactive` call.
@@ -56,6 +64,29 @@ thread_local! {
     /// Cached egui Context for the current frame — set once per frame from main.rs.
     /// Lets settings window bindings work without needing a live CURRENT_UI pointer.
     static CURRENT_CTX: RefCell<Option<egui::Context>> = RefCell::new(None);
+
+    // ── Texture preview cache ───────────────────────────────────────────────────────────
+    /// Maps asset-path → loaded egui TextureHandle so we don't re-upload every frame.
+    static TEXTURE_CACHE: RefCell<std::collections::HashMap<String, egui::TextureHandle>>
+        = RefCell::new(std::collections::HashMap::new());
+
+    // ── Horizontal layout state ──────────────────────────────────────────────────────────
+    /// Saved parent UI pointer while inside a horizontal_begin/end block.
+    static HORIZ_PARENT: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
+    /// Owned child UI for horizontal layout.
+    static HORIZ_CHILD:  RefCell<Option<Box<egui::Ui>>> = RefCell::new(None);
+
+    // ── Tree node stack ──────────────────────────────────────────────────────────────────
+    /// Stack of open tree nodes created by tree_node_begin (popped by tree_node_end).
+    static TREE_STACK: RefCell<Vec<TreeEntry>> = RefCell::new(Vec::new());
+
+    // ── Two-column layout state ─────────────────────────────────────────────────────────
+    /// Saved parent UI pointer while inside a columns layout.
+    static COLS_PARENT: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
+    /// Owned left child UI (heap-allocated so pointer is stable).
+    static LEFT_CHILD:  RefCell<Option<Box<egui::Ui>>> = RefCell::new(None);
+    /// Owned right child UI.
+    static RIGHT_CHILD: RefCell<Option<Box<egui::Ui>>> = RefCell::new(None);
 
     // ── Floating input dialog ────────────────────────────────────────────────────────────
     /// True when the dialog window is currently shown.
@@ -735,8 +766,9 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
                 let lbl_color = egui::Color32::from_rgb(180, 180, 190);
+                let display_lbl = label.as_ref().split("##").next().unwrap_or(label.as_ref());
                 ui.add_sized([lbl_w, 16.0],
-                    egui::Label::new(egui::RichText::new(label.as_ref()).color(lbl_color).size(11.5)));
+                    egui::Label::new(egui::RichText::new(display_lbl).color(lbl_color).size(11.5)));
                 let avail = (ui.available_width() - rw).max(40.0);
                 let mut sl = egui::Slider::new(&mut v, min as f32..=max as f32)
                     .show_value(true)
@@ -1007,6 +1039,129 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("collapsing_end", || {}).build()?;
 
+    // ── Tree node begin/end ────────────────────────────────────────────────────
+    //
+    // tree_node_begin(id_label, icon, is_selected, has_children, ctx_items)
+    //   → Vec<String> = [open_state, action]
+    //
+    // Renders one row of a tree:
+    //   • ▶/▼ expand arrow  (only when has_children=true)
+    //   • SVG icon (pass "" to skip)
+    //   • Selectable label (highlighted when is_selected)
+    //   • Right-click context menu from ctx_items
+    //
+    // open_state: "open" | "closed"
+    // action    : "" | "select" | one of ctx_items
+    //
+    // If open_state == "open": a child UI indented by 14 px is pushed onto the
+    // TREE_STACK and CURRENT_UI is switched to it.  The caller MUST call
+    // tree_node_end() after rendering all children.
+    //
+    // id_label supports "Display##unique_id" convention.
+    m.function("tree_node_begin",
+        |label: Ref<str>, icon: Ref<str>, is_selected: bool,
+         has_children: bool, ctx_items: Vec<String>| -> Vec<String>
+    {
+        // Capture parent ptr BEFORE entering with_ui (Cell::get doesn't borrow).
+        let parent_ptr = CURRENT_UI.with(|c| c.get());
+
+        with_ui(|ui| {
+            let raw = label.as_ref();
+            let (display, id_suffix) = if let Some(p) = raw.find("##") {
+                (&raw[..p], &raw[p+2..])
+            } else {
+                (raw, raw)
+            };
+            let icon_name = icon.as_ref();
+
+            // RefCell lets nested closures write the action string without
+            // conflicting with the outer immutable borrows.
+            let action: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+
+            // Helper: render icon + selectable label + context menu.
+            // Written as a macro-style inline block via a closure called immediately.
+            let render_row = |ui: &mut egui::Ui| {
+                if !icon_name.is_empty() {
+                    let tint = if is_selected {
+                        egui::Color32::from_rgb(200, 220, 255)
+                    } else {
+                        egui::Color32::from_rgb(160, 165, 185)
+                    };
+                    let _ = ui.add(crate::icons::img(icon_name, 13.0, tint));
+                    ui.add_space(2.0);
+                }
+                let resp = ui.selectable_label(is_selected, display);
+                resp.context_menu(|ui| {
+                    for item in &ctx_items {
+                        if ui.button(item).clicked() {
+                            *action.borrow_mut() = item.clone();
+                            ui.close_menu();
+                        }
+                    }
+                });
+                if action.borrow().is_empty() && resp.clicked() {
+                    *action.borrow_mut() = "select".to_string();
+                }
+            };
+
+            let is_open: bool = if has_children {
+                // ── Parent node: use CollapsingState for native egui expand arrow ──
+                let state_id = ui.make_persistent_id(id_suffix);
+                let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(), state_id, false,
+                );
+                let _ = state.show_header(ui, render_row);
+                // Reload after show_header to get the (possibly toggled) logical state.
+                egui::collapsing_header::CollapsingState::load_with_default_open(
+                    ui.ctx(), state_id, false,
+                ).is_open()
+            } else {
+                // ── Leaf node: plain row with a spacer so text aligns with parents ──
+                ui.horizontal(|ui| render_row(ui));
+                false
+            };
+
+            // If the node is open, push an indented child UI onto the tree stack.
+            if is_open {
+                let indent  = ui.spacing().indent;
+                let cursor  = ui.cursor().min;
+                let avail_h = ui.available_height();
+                let avail_w = (ui.available_width() - indent).max(10.0);
+                let rect    = egui::Rect::from_min_size(
+                    cursor + egui::vec2(indent, 0.0),
+                    egui::vec2(avail_w, avail_h),
+                );
+                let child = Box::new(ui.child_ui(
+                    rect,
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    None,
+                ));
+                let child_ptr = NonNull::from(child.as_ref());
+                TREE_STACK.with(|s| s.borrow_mut().push(TreeEntry { parent_ptr, child }));
+                CURRENT_UI.with(|c| c.set(Some(child_ptr)));
+            }
+
+            vec![
+                if is_open { "open".to_string() } else { "closed".to_string() },
+                action.into_inner(),
+            ]
+        }).unwrap_or_else(|| vec!["closed".to_string(), String::new()])
+    }).build()?;
+
+    // tree_node_end() — pop the innermost tree indent level, restore parent UI.
+    // MUST be called once for every tree_node_begin that returned "open".
+    m.function("tree_node_end", || {
+        let entry = TREE_STACK.with(|s| s.borrow_mut().pop());
+        if let Some(entry) = entry {
+            let child_rect = entry.child.min_rect();
+            CURRENT_UI.with(|c| c.set(entry.parent_ptr));
+            if let Some(mut ptr) = entry.parent_ptr {
+                unsafe { ptr.as_mut() }.allocate_rect(child_rect, egui::Sense::hover());
+            }
+            // entry.child dropped here — frees the child egui::Ui
+        }
+    }).build()?;
+
     // icon_collapsing_begin(icon, label) → bool
     // Same as collapsing_begin but prepends a 14px SVG icon on the left.
     // icon: Lucide icon name without path/extension (e.g. "box", "camera").
@@ -1046,10 +1201,106 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             is_open
         }).unwrap_or(false)
     }).build()?;
-    m.function("horizontal_begin", || {}).build()?;
-    m.function("horizontal_end", || {}).build()?;
+
+    // horizontal_begin / horizontal_end — lay out widgets left-to-right (wrapping)
+    // by creating a child UI with left-to-right wrapping layout.
+    m.function("horizontal_begin", || {
+        let parent_ptr = CURRENT_UI.with(|c| c.get());
+        HORIZ_PARENT.with(|p| p.set(parent_ptr));
+        let Some(mut ptr) = parent_ptr else { return };
+        let child = unsafe {
+            let ui      = ptr.as_mut();
+            let avail_w = ui.available_width();
+            // Use a compact height so items are not vertically centered in the
+            // full remaining panel height (which would create huge empty gaps).
+            let avail_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 2.0;
+            let cursor  = ui.cursor().min;
+            let rect    = egui::Rect::from_min_size(cursor, egui::vec2(avail_w, avail_h));
+            Box::new(ui.child_ui(
+                rect,
+                egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
+                None,
+            ))
+        };
+        HORIZ_CHILD.with(|c| *c.borrow_mut() = Some(child));
+        let child_ptr = HORIZ_CHILD.with(|c| {
+            c.borrow().as_ref().map(|b| NonNull::from(b.as_ref()))
+        });
+        CURRENT_UI.with(|c| c.set(child_ptr));
+    }).build()?;
+
+    m.function("horizontal_end", || {
+        let child_rect = HORIZ_CHILD.with(|c| c.borrow().as_ref().map(|u| u.min_rect()));
+        let parent_ptr = HORIZ_PARENT.with(|p| p.get());
+        CURRENT_UI.with(|c| c.set(parent_ptr));
+        if let Some(mut ptr) = parent_ptr {
+            if let Some(cr) = child_rect {
+                unsafe { ptr.as_mut() }.allocate_rect(cr, egui::Sense::hover());
+            }
+        }
+        HORIZ_CHILD .with(|c| *c.borrow_mut() = None);
+        HORIZ_PARENT.with(|p| p.set(None));
+    }).build()?;
+
     m.function("scroll_begin", || {}).build()?;
     m.function("scroll_end",   || {}).build()?;
+
+    // ── Two-column layout ──────────────────────────────────────────────────────
+    // columns_begin(left_width) — start a 2-column layout. Left column gets
+    // `left_width` px; right gets the remainder. CURRENT_UI is switched to the
+    // left child. Call columns_next() then columns_end() to finish.
+    m.function("columns_begin", |left_w: f64| {
+        let parent_ptr = CURRENT_UI.with(|c| c.get());
+        COLS_PARENT.with(|p| p.set(parent_ptr));
+        let Some(mut ptr) = parent_ptr else { return };
+        let (left, right) = unsafe {
+            let ui      = ptr.as_mut();
+            let spacing = ui.spacing().item_spacing.x;
+            let lw      = left_w as f32;
+            let rw      = (ui.available_width() - lw - spacing).max(10.0);
+            let avail_h = ui.available_height();
+            let cursor  = ui.cursor().min;
+            let lr = egui::Rect::from_min_size(cursor, egui::vec2(lw, avail_h));
+            let rr = egui::Rect::from_min_size(
+                cursor + egui::vec2(lw + spacing, 0.0),
+                egui::vec2(rw, avail_h));
+            let l = Box::new(ui.child_ui(lr, egui::Layout::top_down(egui::Align::LEFT), None));
+            let r = Box::new(ui.child_ui(rr, egui::Layout::top_down(egui::Align::LEFT), None));
+            (l, r)
+        };
+        LEFT_CHILD.with(|l| *l.borrow_mut()  = Some(left));
+        RIGHT_CHILD.with(|r| *r.borrow_mut() = Some(right));
+        // Point CURRENT_UI at the left child (Box keeps heap addr stable).
+        let left_ptr = LEFT_CHILD.with(|l| {
+            l.borrow().as_ref().map(|b| NonNull::from(b.as_ref()))
+        });
+        CURRENT_UI.with(|c| c.set(left_ptr));
+    }).build()?;
+
+    // columns_next() — switch CURRENT_UI to the right column.
+    m.function("columns_next", || {
+        let right_ptr = RIGHT_CHILD.with(|r| {
+            r.borrow().as_ref().map(|b| NonNull::from(b.as_ref()))
+        });
+        CURRENT_UI.with(|c| c.set(right_ptr));
+    }).build()?;
+
+    // columns_end() — restore parent UI and advance its cursor past both children.
+    m.function("columns_end", || {
+        let left_rect  = LEFT_CHILD .with(|l| l.borrow().as_ref().map(|u| u.min_rect()));
+        let right_rect = RIGHT_CHILD.with(|r| r.borrow().as_ref().map(|u| u.min_rect()));
+        let parent_ptr = COLS_PARENT.with(|p| p.get());
+        CURRENT_UI.with(|c| c.set(parent_ptr));
+        if let Some(mut ptr) = parent_ptr {
+            if let (Some(lr), Some(rr)) = (left_rect, right_rect) {
+                let union_rect = lr.union(rr);
+                unsafe { ptr.as_mut() }.allocate_rect(union_rect, egui::Sense::hover());
+            }
+        }
+        LEFT_CHILD .with(|l| *l.borrow_mut() = None);
+        RIGHT_CHILD.with(|r| *r.borrow_mut() = None);
+        COLS_PARENT.with(|p| p.set(None));
+    }).build()?;
 
     m.function("indent_push", || {
         with_ui(|ui| { ui.add_space(0.0); });
@@ -1133,6 +1384,28 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 });
             chosen
         }).unwrap_or_default()
+    }).build()?;
+
+    // enum_combo_pipe(label, options_pipe, current) → String
+    // Like enum_combo but takes a "|"-separated options string instead of Vec<String>.
+    // Also accepts the raw "enum:a|b|c" format returned by asset_get_import.
+    m.function("enum_combo_pipe", |label: Ref<str>, options_pipe: Ref<str>, current: Ref<str>| -> String {
+        with_ui(|ui| {
+            let raw  = options_pipe.as_ref();
+            let pipe = raw.strip_prefix("enum:").unwrap_or(raw);
+            let opts: Vec<&str> = pipe.split('|').collect();
+            let mut selected = current.as_ref().to_string();
+            egui::ComboBox::from_label(label.as_ref())
+                .selected_text(selected.clone())
+                .show_ui(ui, |ui| {
+                    for opt in &opts {
+                        if ui.selectable_label(*opt == selected.as_str(), *opt).clicked() {
+                            selected = opt.to_string();
+                        }
+                    }
+                });
+            selected
+        }).unwrap_or_else(|| current.as_ref().to_string())
     }).build()?;
 
     // ── Size query ────────────────────────────────────────────────────────────
@@ -2575,6 +2848,315 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 });
             clicked
         }).unwrap_or(-1)
+    }).build()?;
+
+    // ── Texture preview widget (Phase 5) ──────────────────────────────────────
+    //
+    // texture_preview(path, display_size) — loads the image at `path` (relative
+    // to project root, under assets/), caches the egui TextureHandle, and renders
+    // a centred image at `display_size` × `display_size` pixels.
+    // Silently no-ops for unknown / unloadable files.
+    m.function("texture_preview", |path: Ref<str>, display_size: f64| {
+        let path_s = path.as_ref().to_string();
+        // Resolve absolute path via world_module::get_project_root.
+        let abs_path = {
+            let root = crate::rune_bindings::world_module::get_project_root();
+            root.join("assets").join(&path_s)
+        };
+
+        with_ui(|ui| {
+            // Get or load the TextureHandle.
+            let has_cached = TEXTURE_CACHE.with(|c| c.borrow().contains_key(&path_s));
+            if !has_cached {
+                if let Ok(img) = image::open(&abs_path) {
+                    let rgba   = img.to_rgba8();
+                    let size   = [rgba.width() as usize, rgba.height() as usize];
+                    let pixels = rgba.into_raw();
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                    let handle = ui.ctx().load_texture(
+                        path_s.clone(),
+                        color_image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    TEXTURE_CACHE.with(|c| { c.borrow_mut().insert(path_s.clone(), handle); });
+                }
+            }
+
+            TEXTURE_CACHE.with(|c| {
+                if let Some(handle) = c.borrow().get(&path_s) {
+                    let sz = display_size as f32;
+                    // Centred image in available width.
+                    let avail_w = ui.available_width();
+                    if avail_w > sz {
+                        ui.add_space((avail_w - sz) * 0.5);
+                    }
+                    ui.add(
+                        egui::Image::new(handle)
+                            .fit_to_exact_size(egui::vec2(sz, sz))
+                            .rounding(4.0),
+                    );
+                }
+            });
+        });
+    }).build()?;
+
+    // asset_preview_ready(path) → bool — true once the texture has been loaded.
+    // Call this from Rune to avoid showing a flash of missing content.
+    m.function("asset_preview_ready", |path: Ref<str>| -> bool {
+        TEXTURE_CACHE.with(|c| c.borrow().contains_key(path.as_ref()))
+    }).build()?;
+
+    // ── Asset browser compound widgets (Phase 2) ──────────────────────────────
+
+    // asset_folder_tree(dirs, active_dir) → String
+    // Renders a left-panel folder tree. Each entry shows a folder icon + name.
+    // The active_dir row is highlighted. Returns the dir name that was clicked,
+    // or "" if nothing was clicked. Special "(root)" entry is always first.
+    m.function("asset_folder_tree", |dirs: Vec<String>, active_dir: Ref<str>| -> String {
+        with_ui(|ui| {
+            use std::cell::RefCell as LC;
+            let active = active_dir.as_ref().to_string();
+            // Seed with active so that "no click" returns active_dir unchanged
+            // (prevents the caller's `if clicked != active_dir` from falsely
+            // resetting to root every frame).
+            let clicked: LC<String> = LC::new(active.clone());
+            let tint_normal = egui::Color32::from_rgb(160, 160, 175);
+            let tint_active = egui::Color32::from_rgb(100, 180, 255);
+            let bg_active   = egui::Color32::from_rgba_unmultiplied(100, 180, 255, 30);
+
+            egui::ScrollArea::vertical()
+                .id_salt("asset_folder_tree")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_min_width(130.0);
+
+                    // "(root)" entry
+                    {
+                        let is_active = active.is_empty() || active == "(root)";
+                        let row_resp  = ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let tint = if is_active { tint_active } else { tint_normal };
+                            if let Some(bytes) = crate::icons::icon_bytes("folder") {
+                                let uri = crate::icons::icon_uri("folder");
+                                ui.add(egui::Image::from_bytes(uri, bytes)
+                                    .fit_to_exact_size(egui::vec2(14.0, 14.0)).tint(tint));
+                            }
+                            let label_color = if is_active {
+                                egui::Color32::from_rgb(200, 230, 255)
+                            } else {
+                                egui::Color32::from_rgb(200, 200, 210)
+                            };
+                            ui.add(egui::Label::new(
+                                egui::RichText::new("(root)").color(label_color).size(12.0)
+                            ).sense(egui::Sense::click()))
+                        });
+                        if is_active {
+                            ui.painter().rect_filled(
+                                row_resp.response.rect, 2.0, bg_active);
+                        }
+                        if row_resp.response.interact(egui::Sense::click()).clicked()
+                            || row_resp.inner.clicked()
+                        {
+                            *clicked.borrow_mut() = String::new();
+                        }
+                    }
+
+                    // Subdirectory entries
+                    for dir in &dirs {
+                        let is_active = dir == &active;
+                        let row_resp = ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let tint = if is_active { tint_active } else { tint_normal };
+                            if let Some(bytes) = crate::icons::icon_bytes("folder") {
+                                let uri = crate::icons::icon_uri("folder");
+                                ui.add(egui::Image::from_bytes(uri, bytes)
+                                    .fit_to_exact_size(egui::vec2(14.0, 14.0)).tint(tint));
+                            }
+                            let label_color = if is_active {
+                                egui::Color32::from_rgb(200, 230, 255)
+                            } else {
+                                egui::Color32::from_rgb(200, 200, 210)
+                            };
+                            // Show only last segment for nested dirs
+                            let display = dir.rsplit('/').next().unwrap_or(dir.as_str());
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(display).color(label_color).size(12.0)
+                            ).sense(egui::Sense::click()))
+                        });
+                        if is_active {
+                            ui.painter().rect_filled(
+                                row_resp.response.rect, 2.0, bg_active);
+                        }
+                        if row_resp.response.interact(egui::Sense::click()).clicked()
+                            || row_resp.inner.clicked()
+                        {
+                            *clicked.borrow_mut() = dir.clone();
+                        }
+                    }
+                });
+            clicked.into_inner()
+        }).unwrap_or_default()
+    }).build()?;
+
+    // asset_grid(paths, selected_path, zoom) → Vec<String>
+    // Renders a tile grid (wrapping) of asset tiles.
+    // Each tile: type-colored icon square + truncated filename.
+    // Returns [action, path] where action = "select" | "open" | "ctx:<item>" | "".
+    m.function("asset_grid", |paths: Vec<String>, selected_path: Ref<str>, zoom: f64| -> Vec<String> {
+        with_ui(|ui| {
+            use std::cell::RefCell as LC;
+            let sel     = selected_path.as_ref().to_string();
+            let result: LC<Vec<String>> = LC::new(vec!["".to_string(), String::new()]);
+            let tile_sz = (64.0 * zoom as f32).clamp(32.0, 128.0);
+            let font_sz = (tile_sz * 0.165).clamp(9.0, 14.0);
+
+            // Type → (icon_name, r, g, b)
+            let type_color = |t: &str| -> (&'static str, u8, u8, u8) {
+                match t {
+                    "texture"  => ("image",     160,  90, 210),
+                    "model"    => ("box",        180, 120,  60),
+                    "audio"    => ("music",       60, 180, 120),
+                    "script"   => ("code",        80, 150, 220),
+                    "shader"   => ("layers",      60, 190, 190),
+                    "scene"    => ("film",        200, 160,  50),
+                    "material" => ("droplet",     100, 160, 220),
+                    "prefab"   => ("package",     210, 130,  60),
+                    "json"     => ("file-text",   160, 160, 160),
+                    _          => ("file",        140, 140, 155),
+                }
+            };
+
+            // Context menu items per type
+            let ctx_items = |t: &str| -> Vec<&'static str> {
+                match t {
+                    "scene"    => vec!["Open Scene", "Rename", "Duplicate", "Copy Path", "Delete"],
+                    "script"   => vec!["Attach to Selected", "Rename", "Duplicate", "Copy Path", "Delete"],
+                    "material" => vec!["Edit Material", "Assign to Selected", "Rename", "Duplicate", "Copy Path", "Delete"],
+                    _          => vec!["Rename", "Duplicate", "Copy Path", "Delete"],
+                }
+            };
+
+            egui::ScrollArea::vertical()
+                .id_salt("asset_grid_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let spacing = 8.0_f32;
+                    ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
+                    ui.with_layout(
+                        egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
+                        |ui| {
+                            for path in &paths {
+                                // determine type info
+                                let filename = path.rsplit('/').next().unwrap_or(path.as_str());
+                                let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+                                let t = match ext.as_str() {
+                                    "png"|"jpg"|"jpeg"|"webp"|"bmp"|"tga"|"hdr"|"exr"|"ktx"|"dds" => "texture",
+                                    "glb"|"gltf"|"obj"|"fbx" => "model",
+                                    "wav"|"ogg"|"mp3"|"flac"|"aac" => "audio",
+                                    "rn"|"js"|"lua"|"py" => "script",
+                                    "wgsl"|"vert"|"frag"|"glsl"|"hlsl" => "shader",
+                                    "scene" => "scene",
+                                    "fluxmat" => "material",
+                                    "prefab"|"fluxprefab" => "prefab",
+                                    "json" => "json",
+                                    _ => "unknown",
+                                };
+                                let (icon_name, ir, ig, ib) = type_color(t);
+                                let icon_tint = egui::Color32::from_rgb(ir, ig, ib);
+                                let icon_bg   = egui::Color32::from_rgba_unmultiplied(ir, ig, ib, 28);
+                                let is_sel    = path == &sel;
+
+                                // Allocate tile area
+                                let tile_total = egui::vec2(tile_sz, tile_sz + font_sz + 4.0);
+                                let (tile_rect, tile_resp) = ui.allocate_exact_size(
+                                    tile_total, egui::Sense::click());
+
+                                let painter = ui.painter_at(tile_rect);
+
+                                // Background
+                                let bg = if is_sel {
+                                    egui::Color32::from_rgb(50, 80, 120)
+                                } else if tile_resp.hovered() {
+                                    egui::Color32::from_rgb(55, 55, 65)
+                                } else {
+                                    egui::Color32::from_rgb(42, 42, 50)
+                                };
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(tile_rect.min, egui::vec2(tile_sz, tile_sz)),
+                                    4.0, bg);
+
+                                // Icon background square (tinted)
+                                let icon_margin = tile_sz * 0.15;
+                                let icon_area = egui::Rect::from_min_size(
+                                    tile_rect.min + egui::vec2(icon_margin, icon_margin),
+                                    egui::vec2(tile_sz - icon_margin * 2.0, tile_sz - icon_margin * 2.0));
+                                painter.rect_filled(icon_area, 3.0, icon_bg);
+
+                                // Selection / hover border
+                                if is_sel {
+                                    painter.rect_stroke(
+                                        egui::Rect::from_min_size(tile_rect.min, egui::vec2(tile_sz, tile_sz)),
+                                        4.0,
+                                        egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 150, 255)));
+                                }
+
+                                // SVG icon centered in icon_area
+                                if let Some(bytes) = crate::icons::icon_bytes(icon_name) {
+                                    let uri = crate::icons::icon_uri(icon_name);
+                                    let inner_size = icon_area.size() * 0.55;
+                                    let inner_rect = egui::Rect::from_center_size(
+                                        icon_area.center(), inner_size);
+                                    let img = egui::Image::from_bytes(uri, bytes)
+                                        .fit_to_exact_size(inner_size)
+                                        .tint(icon_tint);
+                                    img.paint_at(ui, inner_rect);
+                                }
+
+                                // Filename text below tile
+                                let label_rect = egui::Rect::from_min_size(
+                                    tile_rect.min + egui::vec2(0.0, tile_sz + 2.0),
+                                    egui::vec2(tile_sz, font_sz + 2.0));
+                                // truncate to ~12 chars
+                                let stem = filename.rfind('.').map(|i| &filename[..i]).unwrap_or(filename);
+                                let display_name = if stem.len() > 12 {
+                                    format!("{}…", &stem[..11])
+                                } else {
+                                    stem.to_string()
+                                };
+                                painter.text(
+                                    label_rect.center_top() + egui::vec2(0.0, 0.0),
+                                    egui::Align2::CENTER_TOP,
+                                    &display_name,
+                                    egui::FontId::proportional(font_sz),
+                                    if is_sel {
+                                        egui::Color32::from_rgb(180, 210, 255)
+                                    } else {
+                                        egui::Color32::from_rgb(190, 190, 200)
+                                    });
+
+                                // Click / double-click
+                                if tile_resp.clicked() {
+                                    *result.borrow_mut() = vec!["select".to_string(), path.clone()];
+                                }
+                                if tile_resp.double_clicked() {
+                                    *result.borrow_mut() = vec!["open".to_string(), path.clone()];
+                                }
+
+                                // Context menu
+                                tile_resp.context_menu(|ui| {
+                                    for item in ctx_items(t) {
+                                        if ui.button(item).clicked() {
+                                            *result.borrow_mut() = vec![
+                                                format!("ctx:{item}"), path.clone()];
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                });
+            result.into_inner()
+        }).unwrap_or_else(|| vec!["".to_string(), String::new()])
     }).build()?;
 
     // Readonly multiline text area for the console detail panel.

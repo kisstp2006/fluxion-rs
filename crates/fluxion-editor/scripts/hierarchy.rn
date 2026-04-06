@@ -11,32 +11,35 @@ pub mod hierarchy {
 fn entity_icon(id) {
     let comps = fluxion::world::component_types(id);
     for c in comps {
-        // Clone before each comparison — Rune snapshots Strings on == use.
-        if c.clone() == "Camera"          { return "[CAM]"; }
-        if c.clone() == "Light"           { return "[LGT]"; }
-        if c.clone() == "MeshRenderer"    { return "[MSH]"; }
-        if c.clone() == "ParticleEmitter" { return "[FX] "; }
-        if c.clone() == "RigidBody"       { return "[RB] "; }
+        if c.clone() == "Camera"          { return "camera"; }
+        if c.clone() == "Light"           { return "sun"; }
+        if c.clone() == "MeshRenderer"    { return "box"; }
+        if c.clone() == "ParticleEmitter" { return "wind"; }
+        if c.clone() == "RigidBody"       { return "activity"; }
     }
-    "[   ]"
+    "circle"
 }
 
-fn draw_entity_row(id, depth, sel) {
-    let name        = fluxion::world::entity_name(id);
-    let icon        = entity_icon(id);
-    let indent      = depth * 14;
+fn draw_entity_row(id, sel) {
+    let name     = fluxion::world::entity_name(id);
+    let children = fluxion::world::entity_children(id);
+    let icon     = entity_icon(id);
     let is_primary  = sel == id;
     let is_multi    = fluxion::world::is_multi_selected(id);
     let is_selected = is_primary || is_multi;
-    let prefix      = if is_primary { "▶ " } else if is_multi { "◈ " } else { "  " };
-    let label       = `${prefix}${icon} ${name}`;
+    let has_ch   = children.len() > 0;
 
-    fluxion::ui::space(indent);
+    let ret     = fluxion::ui::tree_node_begin(
+        `${name}##ent_${id}`,
+        icon,
+        is_selected,
+        has_ch,
+        ["Rename", "Duplicate", "Create Prefab", "Delete", "Unparent"]
+    );
+    let is_open = ret[0] == "open";
+    let action  = ret[1].clone();
 
-    let action = fluxion::ui::selectable_with_menu(label, is_selected, ["Rename", "Duplicate", "Create Prefab", "Delete", "Unparent"]);
-
-    // Clone before each comparison — Rune snapshots Strings on == use.
-    if action.clone() == "select" {
+    if action == "select" {
         let ctrl = fluxion::input::key_down("ControlLeft") || fluxion::input::key_down("ControlRight");
         if ctrl {
             if is_multi {
@@ -49,26 +52,27 @@ fn draw_entity_row(id, depth, sel) {
             fluxion::world::set_selected(id);
             fluxion::world::clear_selected_asset();
         }
-    } else if action.clone() == "Delete" {
+    } else if action == "Delete" {
         fluxion::world::despawn(id);
-    } else if action.clone() == "Duplicate" {
+    } else if action == "Duplicate" {
         fluxion::world::duplicate_entity(id);
-    } else if action.clone() == "Create Prefab" {
+    } else if action == "Create Prefab" {
         fluxion::world::set_selected(id);
         let name_val = fluxion::world::entity_name(id);
         fluxion::ui::input_dialog_open("Save Prefab As", `assets/prefabs/${name_val}.scene`);
         fluxion::world::set_prefab_pending(id);
-    } else if action.clone() == "Rename" {
+    } else if action == "Rename" {
         fluxion::world::set_selected(id);
         fluxion::world::clear_selected_asset();
-    } else if action.clone() == "Unparent" {
+    } else if action == "Unparent" {
         fluxion::world::set_parent(id, -1);
     }
 
-    // Recurse into children
-    let children = fluxion::world::entity_children(id);
-    for child in children {
-        draw_entity_row(child, depth + 1, sel);
+    if is_open {
+        for child in children {
+            draw_entity_row(child, sel);
+        }
+        fluxion::ui::tree_node_end();
     }
 }
 
@@ -91,7 +95,7 @@ pub fn panel() {
         fluxion::ui::small("(empty scene)");
     } else {
         for id in roots {
-            draw_entity_row(id, 0, sel);
+            draw_entity_row(id, sel);
         }
     }
 
