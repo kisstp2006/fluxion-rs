@@ -1277,96 +1277,80 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or(false)
     }).build()?;
 
-    m.function("menu_item", |label: Ref<str>| -> bool {
-        // Just queue the label; rendering happens in menu_end.
+    m.function("menu_item", |label: Ref<str>| {
+        // Just queue the label; rendering and click detection happen in menu_end.
         MENU_ITEMS.with(|c| c.borrow_mut().push(MenuEntry::Item(label.as_ref().to_string())));
-        // Consume the click if it matches this item's label (scoped to current menu).
-        let menu = MENU_LABEL.with(|c| c.borrow().clone());
-        MENU_CLICKED.with(|map| {
-            let mut m = map.borrow_mut();
-            if m.get(&menu).map(|s| s.as_str()) == Some(label.as_ref()) {
-                m.remove(&menu);
-                true
-            } else {
-                false
-            }
-        })
     }).build()?;
 
     m.function("menu_separator", || {
         MENU_ITEMS.with(|c| c.borrow_mut().push(MenuEntry::Separator));
     }).build()?;
 
-    m.function("menu_end", || {
+    // menu_end() → String
+    // Renders the popup (if the menu is open) and returns the label of the
+    // item clicked this frame, or "" if nothing was clicked.
+    // Must always be called after every menu_begin/menu_item block.
+    m.function("menu_end", || -> String {
         let label_str = MENU_LABEL.with(|c| c.borrow().clone());
         let items: Vec<MenuEntry> = MENU_ITEMS.with(|c| c.borrow().clone());
 
-        with_ui(|ui| {
+        let clicked = with_ui(|ui| {
             let popup_id = egui::Id::new(&label_str).with("__mnupop__");
-            if ui.memory(|m| m.is_popup_open(popup_id)) {
-                // Find the button rect so we can anchor the popup below it.
-                // egui stores the last allocated rect; we recreate the id:
-                let btn_id = ui.id().with(&label_str);
-                let btn_rect = ui.ctx().memory(|m| m.area_rect(btn_id));
+            if !ui.memory(|m| m.is_popup_open(popup_id)) {
+                return String::new();
+            }
 
-                // Use a fixed pos area — place below the menu bar.
-                let bar_bottom = ui.min_rect().bottom();
-                // Anchor left-aligned under the button using the stored rect.
-                let stored_btn = MENU_BTN_RECT.with(|c| c.get());
-                let x = if stored_btn != egui::Rect::NOTHING { stored_btn.left() }
-                        else { btn_rect.map(|r| r.left()).unwrap_or(0.0) };
-                let pos = egui::pos2(x, bar_bottom);
+            let stored_btn = MENU_BTN_RECT.with(|c| c.get());
+            let bar_bottom = ui.min_rect().bottom();
+            let x = if stored_btn != egui::Rect::NOTHING { stored_btn.left() } else { 0.0 };
+            let pos = egui::pos2(x, bar_bottom);
 
-                let mut clicked_item: Option<String> = None;
-                egui::Area::new(popup_id)
-                    .order(egui::Order::Foreground)
-                    .fixed_pos(pos)
-                    .show(ui.ctx(), |popup_ui| {
-                        egui::Frame::popup(popup_ui.style()).show(popup_ui, |inner| {
-                            inner.set_min_width(160.0);
-                            for entry in &items {
-                                match entry {
-                                    MenuEntry::Item(lbl) => {
-                                        if inner.button(lbl).clicked() {
-                                            clicked_item = Some(lbl.clone());
-                                        }
+            let mut clicked_item = String::new();
+            egui::Area::new(popup_id)
+                .order(egui::Order::Foreground)
+                .fixed_pos(pos)
+                .show(ui.ctx(), |popup_ui| {
+                    egui::Frame::popup(popup_ui.style()).show(popup_ui, |inner| {
+                        inner.set_min_width(160.0);
+                        for entry in &items {
+                            match entry {
+                                MenuEntry::Item(lbl) => {
+                                    if inner.button(lbl).clicked() {
+                                        clicked_item = lbl.clone();
                                     }
-                                    MenuEntry::Separator => { inner.separator(); }
                                 }
+                                MenuEntry::Separator => { inner.separator(); }
                             }
-                        });
-                    });
-
-                if let Some(ref item) = clicked_item {
-                    MENU_CLICKED.with(|map| {
-                        map.borrow_mut().insert(label_str.clone(), item.clone());
-                    });
-                    ui.memory_mut(|m| m.close_popup());
-                }
-
-                // Close when clicking outside — but not on the same frame
-                // the popup was opened (that click IS the button click).
-                let just_opened = MENU_JUST_OPENED.with(|c| c.get());
-                if !just_opened {
-                    let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-                    let popup_rect  = ui.ctx().memory(|m| m.area_rect(popup_id));
-                    let btn_rect    = MENU_BTN_RECT.with(|c| c.get());
-                    if ui.input(|i| i.pointer.any_click()) {
-                        let outside = match (pointer_pos, popup_rect) {
-                            (Some(p), Some(r)) => {
-                                !r.contains(p) && !btn_rect.contains(p)
-                            }
-                            _ => true,
-                        };
-                        if outside {
-                            ui.memory_mut(|m| m.close_popup());
                         }
+                    });
+                });
+
+            if !clicked_item.is_empty() {
+                ui.memory_mut(|m| m.close_popup());
+            }
+
+            // Close when clicking outside (but not the frame the popup just opened).
+            let just_opened = MENU_JUST_OPENED.with(|c| c.get());
+            if !just_opened && clicked_item.is_empty() {
+                let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+                let popup_rect  = ui.ctx().memory(|m| m.area_rect(popup_id));
+                let btn_rect    = MENU_BTN_RECT.with(|c| c.get());
+                if ui.input(|i| i.pointer.any_click()) {
+                    let outside = match (pointer_pos, popup_rect) {
+                        (Some(p), Some(r)) => !r.contains(p) && !btn_rect.contains(p),
+                        _ => true,
+                    };
+                    if outside {
+                        ui.memory_mut(|m| m.close_popup());
                     }
                 }
             }
-        });
+
+            clicked_item
+        }).unwrap_or_default();
 
         MENU_ITEMS.with(|c| c.borrow_mut().clear());
+        clicked
     }).build()?;
 
     m.function("badge_right", |text: Ref<str>, r: f64, g: f64, b: f64| {

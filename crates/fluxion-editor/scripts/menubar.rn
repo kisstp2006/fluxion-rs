@@ -9,46 +9,39 @@
 pub mod menubar {
 
 pub fn panel() {
-    // menu_begin renders the top-bar button and returns true when the popup
-    // is open. menu_item queues items for rendering AND returns true if that
-    // item was clicked on the previous frame (one-frame lag). menu_end
-    // renders the popup contents and handles close-on-click.
-    // menu_end must ALWAYS be called after menu_begin.
+    // menu_begin returns true when the popup is open (items should be queued).
+    // menu_item only queues a label — it no longer returns a bool.
+    // menu_end renders the popup and returns the clicked label ("" if none).
+    // Actions are executed immediately based on menu_end's return value.
 
     let file_open = fluxion::ui::menu_begin("File");
     if file_open {
-        if fluxion::ui::menu_item("New Scene          Ctrl+N") {
-            fluxion::world::do_new_scene();
-        }
-        if fluxion::ui::menu_item("Open Scene...") {
-            fluxion::world::do_open_scene();
-        }
+        fluxion::ui::menu_item("New Scene          Ctrl+N");
+        fluxion::ui::menu_item("Open Scene...");
         fluxion::ui::menu_separator();
-        if fluxion::ui::menu_item("Save Scene         Ctrl+S") {
-            fluxion::world::do_save_scene();
-        }
+        fluxion::ui::menu_item("Save Scene         Ctrl+S");
         fluxion::ui::menu_separator();
-        if fluxion::ui::menu_item("Exit") {
-            fluxion::world::exit_app();
-        }
+        fluxion::ui::menu_item("Exit");
     }
-    fluxion::ui::menu_end();
+    let file_clicked = fluxion::ui::menu_end();
+    if file_clicked == "New Scene          Ctrl+N" { fluxion::world::do_new_scene(); }
+    if file_clicked == "Open Scene..."             { fluxion::world::do_open_scene(); }
+    if file_clicked == "Save Scene         Ctrl+S" { fluxion::world::do_save_scene(); }
+    if file_clicked == "Exit"                      { fluxion::world::exit_app(); }
 
+    let can_undo = fluxion::world::can_undo();
+    let can_redo = fluxion::world::can_redo();
     let edit_open = fluxion::ui::menu_begin("Edit");
     if edit_open {
-        let can_undo = fluxion::world::can_undo();
-        let can_redo = fluxion::world::can_redo();
         fluxion::ui::menu_item(`Undo    Ctrl+Z  [${can_undo}]`);
         fluxion::ui::menu_item(`Redo    Ctrl+Y  [${can_redo}]`);
         fluxion::ui::menu_separator();
-        if fluxion::ui::menu_item("Project Settings") {
-            fluxion::settings::set_show_project_settings(true);
-        }
-        if fluxion::ui::menu_item("Preferences        Ctrl+,") {
-            fluxion::settings::set_show_editor_prefs(true);
-        }
+        fluxion::ui::menu_item("Project Settings");
+        fluxion::ui::menu_item("Preferences        Ctrl+,");
     }
-    fluxion::ui::menu_end();
+    let edit_clicked = fluxion::ui::menu_end();
+    if edit_clicked == "Project Settings"          { fluxion::settings::set_show_project_settings(true); }
+    if edit_clicked == "Preferences        Ctrl+," { fluxion::settings::set_show_editor_prefs(true); }
 
     let view_open = fluxion::ui::menu_begin("View");
     if view_open {
