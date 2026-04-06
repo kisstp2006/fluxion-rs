@@ -314,6 +314,9 @@ impl ComponentRegistry {
                     FT::Texture                             => "string | undefined",
                     FT::I32                                 => "number",
                     FT::Vec2                                => "[number, number]",
+                    FT::Material | FT::Mesh | FT::Scene     => "string | undefined",
+                    FT::Audio                               => "string",
+                    FT::EntityRef                           => "number",
                 };
                 let readonly = if f.read_only { "readonly " } else { "" };
                 out.push_str(&format!("  /** {} */\n", f.display_name));
@@ -393,6 +396,7 @@ impl ComponentRegistry {
                 mesh_handle:           None,
                 material_handle:       None,
                 scene_inline_material: inline,
+                material_slots:        Vec::new(),
             });
             Ok(())
         });

@@ -25,6 +25,21 @@ pub struct FieldAttrs {
     pub category: Option<String>,
     /// Known enum variant names (for combo-box). Auto-detected if empty.
     pub variants: Vec<String>,
+    /// Show a visible range slider instead of a drag widget.
+    /// Unity equivalent: `[Range(min, max)]` on a float field.
+    pub slider: bool,
+    /// Vec3 with a uniform scale lock button.
+    pub uniform_scale: bool,
+    /// Override the asset type for `String`/`Option<String>` fields.
+    /// Values: `"material"`, `"mesh"`, `"audio"`, `"scene"`, `"texture"`.
+    pub asset_type: Option<String>,
+    /// Mark a field as an entity reference (i64).
+    /// Unity equivalent: `public GameObject go;`
+    pub entity_ref: bool,
+    /// [Header("...")] — bold label shown ABOVE this field (Unity-style).
+    pub header: Option<String>,
+    /// [Tooltip("...")] — hover description (Unity-style).
+    pub tooltip: Option<String>,
 }
 
 impl FieldAttrs {
@@ -64,6 +79,28 @@ impl FieldAttrs {
                         }
                         Ok(())
                     })?;
+                } else if meta.path.is_ident("slider") {
+                    out.slider = true;
+                } else if meta.path.is_ident("uniform_scale") {
+                    out.uniform_scale = true;
+                } else if meta.path.is_ident("entity_ref") {
+                    out.entity_ref = true;
+                } else if meta.path.is_ident("asset_type") {
+                    let value = meta.value()?;
+                    let s: syn::LitStr = value.parse()?;
+                    out.asset_type = Some(s.value());
+                } else if meta.path.is_ident("header") {
+                    let value = meta.value()?;
+                    let s: syn::LitStr = value.parse()?;
+                    out.header = Some(s.value());
+                } else if meta.path.is_ident("tooltip") {
+                    let value = meta.value()?;
+                    let s: syn::LitStr = value.parse()?;
+                    out.tooltip = Some(s.value());
+                } else if meta.path.is_ident("label") {
+                    let value = meta.value()?;
+                    let s: syn::LitStr = value.parse()?;
+                    out.display_name = Some(s.value());
                 } else if meta.path.is_ident("variants") {
                     // `#[reflect(variants("A", "B", "C"))]`
                     // parse_nested_meta can't handle bare string literals,

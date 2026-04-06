@@ -24,6 +24,29 @@ pub enum PrimitiveType {
     Capsule,
 }
 
+/// One material slot for multi-submesh meshes (e.g. glTF with multiple primitives).
+///
+/// Mirrors FluxionJS V3's `FluxMeshMaterialSlot` — each sub-mesh of a `.glb`
+/// can be assigned an independent `.fluxmat` file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaterialSlot {
+    /// Zero-based index matching the submesh order in the mesh file.
+    pub slot_index: u8,
+    /// Human-readable slot name extracted from the glTF material name (e.g. "Body", "Eyes").
+    pub name: String,
+    /// Project-relative path to the `.fluxmat` file assigned to this slot.
+    pub material_path: Option<String>,
+    /// GPU material handle — filled by the renderer at load time, not serialized.
+    #[serde(skip)]
+    pub material_handle: Option<u32>,
+}
+
+impl MaterialSlot {
+    pub fn new(slot_index: u8, name: impl Into<String>) -> Self {
+        Self { slot_index, name: name.into(), material_path: None, material_handle: None }
+    }
+}
+
 /// MeshRenderer component.
 ///
 /// Attach to any entity with a `Transform` to render a 3D mesh.
@@ -42,11 +65,21 @@ pub struct MeshRenderer {
 
     /// Path to a mesh file (.glb, .gltf, .fluxmesh).
     /// If `None`, use `primitive` instead.
+    #[reflect(asset_type = "mesh", header = "Mesh", tooltip = "The 3D mesh asset to render.")]
     pub mesh_path: Option<String>,
 
-    /// Path to a material file (.fluxmat).
+    /// Path to a material file (.fluxmat) for single-material meshes.
     /// If `None`, the default PBR material is used.
+    /// When `material_slots` is non-empty this field is ignored.
+    #[reflect(asset_type = "material", header = "Material", tooltip = "Override material for single-material meshes.")]
     pub material_path: Option<String>,
+
+    /// Per-submesh material overrides for multi-primitive meshes.
+    /// Each slot corresponds to one glTF primitive / submesh by index.
+    /// If empty, falls back to `material_path` (single-material mode).
+    #[serde(default)]
+    #[reflect(skip)]
+    pub material_slots: Vec<MaterialSlot>,
 
     /// Use a built-in primitive shape. Ignored if `mesh_path` is set.
     #[reflect(skip)]
@@ -55,6 +88,7 @@ pub struct MeshRenderer {
     // ── Rendering options (serialized) ────────────────────────────────────────
 
     /// Whether this mesh casts shadows. Default: true.
+    #[reflect(header = "Rendering")]
     pub cast_shadow: bool,
 
     /// Whether this mesh receives shadows from other objects. Default: true.
@@ -100,6 +134,7 @@ impl Default for MeshRenderer {
         MeshRenderer {
             mesh_path:       None,
             material_path:   None,
+            material_slots:  Vec::new(),
             primitive:       Some(PrimitiveType::Cube), // default: a cube
             cast_shadow:     true,
             receive_shadow:  true,
@@ -118,5 +153,8 @@ impl Component for MeshRenderer {
         self.mesh_handle     = None;
         self.material_handle = None;
         self.scene_inline_material = None;
+        for slot in &mut self.material_slots {
+            slot.material_handle = None;
+        }
     }
 }

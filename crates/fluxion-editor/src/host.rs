@@ -37,6 +37,7 @@ use crate::rune_bindings::{
     set_environment_world, clear_environment_world, drain_environment_edits, EnvEditValue,
     set_asset_db_context, clear_asset_db_context,
     set_self_entity, clear_self_entity,
+    set_self_script, clear_self_script,
     set_script_error, clear_script_error,
     drain_pending_destroys, drain_pending_spawns,
     build_gameplay_modules,
@@ -73,6 +74,14 @@ pub struct EditorHost {
 
     /// Cache of loaded `.physmat` assets keyed by their asset path.
     pub physmat_cache: HashMap<String, PhysicsMaterial>,
+
+    /// Paths of `.fluxmat` files that need GPU hot-reload this frame.
+    /// Drained by main.rs after tick, which owns the renderer.
+    pub pending_material_reloads: Vec<String>,
+
+    /// Set to true when a new asset file was created/written this frame.
+    /// main.rs drains this flag and calls asset_db.scan().
+    pub needs_asset_rescan: bool,
 }
 
 impl EditorHost {
@@ -134,9 +143,11 @@ impl EditorHost {
             undo:        UndoStack::new(),
             asset_db:    AssetDatabase::new(),
             scripts_dir,
-            gameplay_scripts: HashMap::new(),
-            project_root:     PathBuf::new(),
-            physmat_cache:    HashMap::new(),
+            gameplay_scripts:          HashMap::new(),
+            project_root:              PathBuf::new(),
+            physmat_cache:             HashMap::new(),
+            pending_material_reloads:  Vec::new(),
+            needs_asset_rescan:        false,
         })
     }
 
@@ -234,6 +245,7 @@ impl EditorHost {
         let keys: Vec<(fluxion_core::EntityId, String)> = self.gameplay_scripts.keys().cloned().collect();
         for (entity_id, script_name) in keys {
             set_self_entity(entity_id.to_bits() as i64);
+            set_self_script(&script_name);
             // Inject current field values from ScriptEntry into the thread-local.
             let current_fields: Vec<(String, serde_json::Value)> = self.world
                 .get_component::<fluxion_core::ScriptBundle>(entity_id)
@@ -264,6 +276,7 @@ impl EditorHost {
                     }
                 }
             }
+            clear_self_script();
             // Drain updated fields back into ScriptEntry.
             let updated = drain_script_fields();
             if !updated.is_empty() {
@@ -677,6 +690,69 @@ impl EditorHost {
                     if edit.entity.is_valid() {
                         if let Some(mut rb) = self.world.get_component_mut::<RigidBody>(edit.entity) {
                             rb.physics_material_path = edit.field.clone();
+                        }
+                    }
+                }
+                "__write_material__" => {
+                    let path = edit.field.clone();
+                    let json = if let fluxion_core::reflect::ReflectValue::Str(s) = edit.value.clone() { s } else { String::new() };
+                    let full_path = self.project_root.join(&path);
+                    if let Err(e) = std::fs::write(&full_path, json.as_bytes()) {
+                        log::warn!("write_material: failed to write {path}: {e}");
+                    } else {
+                        self.pending_material_reloads.push(path);
+                        self.needs_asset_rescan = true;
+                    }
+                }
+                "__create_material__" => {
+                    let path = edit.field.clone();
+                    let full_path = self.project_root.join(&path);
+                    if !full_path.exists() {
+                        if let Some(parent) = full_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let default_asset = fluxion_renderer::material::MaterialAsset::default();
+                        match serde_json::to_vec_pretty(&default_asset) {
+                            Ok(bytes) => {
+                                if let Err(e) = std::fs::write(&full_path, &bytes) {
+                                    log::warn!("create_material: failed to write {path}: {e}");
+                                } else {
+                                    self.needs_asset_rescan = true;
+                                }
+                            }
+                            Err(e) => log::warn!("create_material: serialize failed: {e}"),
+                        }
+                    }
+                }
+                "__set_material_slot__" => {
+                    if edit.entity.is_valid() {
+                        if let Ok(idx) = edit.field.parse::<usize>() {
+                            let new_path = if let fluxion_core::reflect::ReflectValue::Str(s) = edit.value.clone() {
+                                if s.is_empty() { None } else { Some(s) }
+                            } else { None };
+                            if let Some(mut mr) = self.world.get_component_mut::<fluxion_core::MeshRenderer>(edit.entity) {
+                                if let Some(slot) = mr.material_slots.get_mut(idx) {
+                                    slot.material_path = new_path.clone();
+                                    slot.material_handle = None;
+                                }
+                            }
+                            // Signal for re-hydration by main.rs on the next frame.
+                            if let Some(new_path_str) = new_path {
+                                self.pending_material_reloads.push(new_path_str);
+                            }
+                        }
+                    }
+                }
+                "__set_material_path__" => {
+                    if edit.entity.is_valid() {
+                        let path = edit.field.clone();
+                        let new_path = if path.is_empty() { None } else { Some(path.clone()) };
+                        if let Some(mut mr) = self.world.get_component_mut::<fluxion_core::MeshRenderer>(edit.entity) {
+                            mr.material_path = new_path.clone();
+                            mr.material_handle = None;
+                        }
+                        if let Some(new_path_str) = new_path {
+                            self.pending_material_reloads.push(new_path_str);
                         }
                     }
                 }

@@ -57,6 +57,7 @@ pub use reflect::{Reflect, ReflectValue, FieldDescriptor, ReflectFieldType, Rang
 pub use reflect::{ParameterDescriptor, MethodDescriptor, MethodType, MethodVisibility, ReflectMethods};
 #[doc(hidden)]
 pub use fluxion_reflect_derive::Reflect as DeriveReflect;
+pub use components::{MeshRenderer, MaterialSlot, PrimitiveType};
 pub use components::{RigidBody, PhysicsShape, BodyType};
 pub use components::{Camera, ProjectionMode, ClearFlags};
 pub use components::{Animator, AnimationClip, Skeleton, JointDef, JointChannel, MAX_JOINTS};

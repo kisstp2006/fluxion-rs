@@ -30,6 +30,8 @@ thread_local! {
     /// Entity ID (as i64) of the gameplay script currently being ticked.
     /// Set by host.rs before each `RuneBehaviour::tick()`, cleared after.
     static SELF_ENTITY_ID: Cell<i64> = Cell::new(-1);
+    /// Name of the script currently being ticked (e.g. "Spinner").
+    static SELF_SCRIPT_NAME: RefCell<String> = RefCell::new(String::new());
 }
 
 /// Called by host.rs before ticking a gameplay script.
@@ -40,6 +42,16 @@ pub fn set_self_entity(id: i64) {
 /// Called by host.rs after ticking a gameplay script.
 pub fn clear_self_entity() {
     SELF_ENTITY_ID.with(|c| c.set(-1));
+}
+
+/// Called by host.rs before ticking, to set the active script name.
+pub fn set_self_script(name: &str) {
+    SELF_SCRIPT_NAME.with(|c| *c.borrow_mut() = name.to_string());
+}
+
+/// Called by host.rs after ticking.
+pub fn clear_self_script() {
+    SELF_SCRIPT_NAME.with(|c| c.borrow_mut().clear());
 }
 
 // ── Script error store ────────────────────────────────────────────────────────
@@ -100,6 +112,39 @@ pub fn drain_pending_destroys() -> Vec<u64> {
 /// Drain entity names queued for spawning by gameplay scripts.
 pub fn drain_pending_spawns() -> Vec<String> {
     PENDING_SPAWNS.with(|v| std::mem::take(&mut *v.borrow_mut()))
+}
+
+// ── Field declarations (declare_field API) ───────────────────────────────────
+//
+// Gameplay scripts call `fluxion::script::declare_field(name, type, hint, min, max)`
+// during tick() to tell the inspector how to render each field.  Declarations are
+// stored per script name in a global map and are persistent across frames.
+
+static FIELD_DECL_STORE: std::sync::OnceLock<Mutex<HashMap<String, Vec<Vec<String>>>>> = std::sync::OnceLock::new();
+
+fn field_decl_store() -> &'static Mutex<HashMap<String, Vec<Vec<String>>>> {
+    FIELD_DECL_STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Called by the `declare_field` Rune binding to register field metadata.
+fn store_field_decl(script_name: &str, decl: Vec<String>) {
+    if let Ok(mut map) = field_decl_store().lock() {
+        let entry = map.entry(script_name.to_string()).or_default();
+        // Replace existing declaration with the same field name, or append.
+        if let Some(existing) = entry.iter_mut().find(|d| d.first().map(|n| n == &decl[0]).unwrap_or(false)) {
+            *existing = decl;
+        } else {
+            entry.push(decl);
+        }
+    }
+}
+
+/// Returns declared field metadata for a script by name.
+/// Each inner Vec is [name, type_str, hint, min_str, max_str].
+pub fn get_field_decls(script_name: &str) -> Vec<Vec<String>> {
+    field_decl_store().lock()
+        .map(|map| map.get(script_name).cloned().unwrap_or_default())
+        .unwrap_or_default()
 }
 
 // ── Script fields (injected around each tick) ────────────────────────────────
@@ -218,6 +263,25 @@ pub fn build_script_module() -> anyhow::Result<Module> {
                 fields.push((name, json_val));
             }
         });
+    }).build()?;
+
+    // declare_field(name, type_str, hint, min, max)
+    // Registers inspector metadata for a script field.
+    // type_str: "f32"|"bool"|"str"|"material"|"mesh"|"audio"|"scene"|"entity_ref"
+    // hint:     ""|"slider"|"uniform_scale"
+    // min/max:  numeric range (0,0 = no range)
+    // Example:  fluxion::script::declare_field("speed", "f32", "slider", 0.0, 100.0)
+    m.function("declare_field", |name: String, type_str: String, hint: String, min: f64, max: f64| {
+        let script_name = SELF_SCRIPT_NAME.with(|s| s.borrow().clone());
+        if !script_name.is_empty() {
+            store_field_decl(&script_name, vec![
+                name,
+                type_str,
+                hint,
+                min.to_string(),
+                max.to_string(),
+            ]);
+        }
     }).build()?;
 
     Ok(m)

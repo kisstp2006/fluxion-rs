@@ -35,3 +35,4 @@ pollster   = "0.3"
 dirs-next  = { workspace = true }
 rfd        = { workspace = true }
 chrono     = { workspace = true }
+image      = { workspace = true }

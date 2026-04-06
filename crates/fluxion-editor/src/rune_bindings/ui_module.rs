@@ -685,7 +685,8 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("checkbox", |label: Ref<str>, value: bool| -> bool {
         with_ui(|ui| {
             let mut v = value;
-            ui.checkbox(&mut v, label.as_ref());
+            let resp = ui.checkbox(&mut v, label.as_ref());
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
             v
         }).unwrap_or(value)
     }).build()?;
@@ -693,12 +694,13 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("drag_float", |label: Ref<str>, value: f64, speed: f64, min: f64, max: f64| -> f64 {
         with_ui(|ui| {
             let mut v = value as f32;
-            ui.add(
+            let resp = ui.add(
                 egui::DragValue::new(&mut v)
                     .speed(speed as f32)
                     .range(min as f32..=max as f32)
                     .prefix(format!("{}: ", label.as_ref())),
             );
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
             v as f64
         }).unwrap_or(value)
     }).build()?;
@@ -722,13 +724,62 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or(value)
     }).build()?;
 
+    // slider(label, value, min, max, step) → f64
+    // Unity [Range(min,max)] style — shows a visible slider bar.
+    // `step` controls drag sensitivity (0.0 = auto).
+    m.function("slider", |label: Ref<str>, value: f64, min: f64, max: f64, step: f64| -> f64 {
+        with_ui(|ui| {
+            let mut v = value as f32;
+            let lbl_w = 100.0_f32;
+            let rw     = if (v - min as f32).abs() > 1e-5 { 20.0_f32 } else { 0.0_f32 };
+            let hresp = ui.horizontal(|ui| {
+                ui.set_min_height(18.0);
+                let lbl_color = egui::Color32::from_rgb(180, 180, 190);
+                ui.add_sized([lbl_w, 16.0],
+                    egui::Label::new(egui::RichText::new(label.as_ref()).color(lbl_color).size(11.5)));
+                let avail = (ui.available_width() - rw).max(40.0);
+                let mut sl = egui::Slider::new(&mut v, min as f32..=max as f32)
+                    .show_value(true)
+                    .clamping(egui::SliderClamping::Always);
+                if step > 0.0 { sl = sl.step_by(step); }
+                if ui.add_sized([avail, 16.0], sl).changed() {}
+                if rw > 0.0 {
+                    if ui.add(crate::icons::img("rotate-ccw", 12.0,
+                        egui::Color32::from_rgb(200, 160, 60)).sense(egui::Sense::click()))
+                        .on_hover_text("Reset").clicked() { v = min as f32; }
+                }
+            }).response;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
+            v as f64
+        }).unwrap_or(value)
+    }).build()?;
+
+    // header_label(text) — Unity [Header("...")] style: bold section separator.
+    m.function("header_label", |text: Ref<str>| {
+        with_ui(|ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(text.as_ref())
+                            .strong()
+                            .color(egui::Color32::from_rgb(160, 160, 175))
+                            .size(10.5)
+                    )
+                );
+                ui.separator();
+            });
+        });
+    }).build()?;
+
     m.function("input_text", |label: Ref<str>, value: Ref<str>| -> String {
         with_ui(|ui| {
             let mut v = value.as_ref().to_string();
-            ui.horizontal(|ui| {
+            let hresp = ui.horizontal(|ui| {
                 ui.label(label.as_ref());
                 ui.text_edit_singleline(&mut v);
-            });
+            }).response;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             v
         }).unwrap_or_else(|| value.as_ref().to_string())
     }).build()?;
@@ -1363,6 +1414,18 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         action
     }).build()?;
 
+    // prop_tooltip(text) — show tooltip on hover over the last widget.
+    // Call immediately after a property widget (before prop_context_menu).
+    // Works because all property widgets store their response in LAST_WIDGET_RESP.
+    m.function("prop_tooltip", |text: String| {
+        if text.is_empty() { return; }
+        LAST_WIDGET_RESP.with(|resp_ref| {
+            if let Some(resp) = resp_ref.borrow().as_ref() {
+                resp.clone().on_hover_text(&text);
+            }
+        });
+    }).build()?;
+
     m.function("copy_to_clipboard", |text: Ref<str>| {
         with_ui(|ui| {
             ui.ctx().copy_text(text.as_ref().to_string());
@@ -1404,17 +1467,208 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     // ── Asset path picker ─────────────────────────────────────────────────────
 
-    m.function("asset_path_picker", |label: Ref<str>, path: Ref<str>| -> String {
+    // asset_path_picker(label, path, type_filter) → String
+    // type_filter: "material" | "mesh" | "audio" | "scene" | "texture" | ""
+    // Renders a compact asset row: [type-icon] [filename-monospace] [clear-btn]
+    m.function("asset_path_picker", |label: Ref<str>, path: Ref<str>, type_filter: Ref<str>| -> String {
         with_ui(|ui| {
             let mut v = path.as_ref().to_string();
-            ui.horizontal(|ui| {
-                ui.label(label.as_ref());
-                let resp = ui.text_edit_singleline(&mut v);
-                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
-                ui.small("…");
-            });
+            let type_flt = type_filter.as_ref();
+
+            // icon + tint per asset type
+            let (icon_name, tint) = match type_flt {
+                "material" => ("layers",   egui::Color32::from_rgb(100, 160, 220)),
+                "mesh"     => ("box",      egui::Color32::from_rgb(180, 130,  80)),
+                "audio"    => ("volume-2", egui::Color32::from_rgb( 80, 190, 140)),
+                "scene"    => ("film",     egui::Color32::from_rgb(200, 160,  60)),
+                "texture"  => ("image",    egui::Color32::from_rgb(160, 100, 210)),
+                _          => ("file",     egui::Color32::from_rgb(160, 160, 175)),
+            };
+
+            let label_color = egui::Color32::from_rgb(180, 180, 190);
+            let lbl_w = 100.0_f32;
+
+            let hresp = ui.horizontal(|ui| {
+                ui.set_min_height(20.0);
+                ui.add_sized([lbl_w, 16.0],
+                    egui::Label::new(egui::RichText::new(label.as_ref()).color(label_color).size(11.5)));
+
+                // dark background box for the asset path
+                let avail = ui.available_width() - 18.0;
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(avail, 20.0), egui::Sense::click());
+                ui.painter().rect_filled(
+                    rect, 3.0, egui::Color32::from_rgb(40, 40, 48));
+
+                // type icon inside the box
+                let icon_rect = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(2.0, 2.0),
+                    egui::vec2(16.0, 16.0));
+                ui.put(icon_rect, crate::icons::img(icon_name, 14.0, tint));
+
+                // filename text
+                let fname: String = if v.is_empty() {
+                    format!("None ({})", if type_flt.is_empty() { "Asset" } else { type_flt })
+                } else {
+                    v.split(['/', '\\']).last().unwrap_or(&v).to_string()
+                };
+                let fname_color = if v.is_empty() {
+                    egui::Color32::from_rgb(120, 120, 130)
+                } else {
+                    egui::Color32::from_rgb(200, 200, 210)
+                };
+                let text_rect = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(20.0, 2.0),
+                    egui::vec2(avail - 24.0, 16.0));
+                ui.painter().text(
+                    text_rect.min,
+                    egui::Align2::LEFT_TOP,
+                    &fname,
+                    egui::FontId::monospace(10.5),
+                    fname_color,
+                );
+
+                // edit popup on click — for now use a text edit fallback
+                if ui.interact(rect, egui::Id::new((label.as_ref(), "asset_click")),
+                    egui::Sense::click()).double_clicked() {
+                    let mut tmp = v.clone();
+                    ui.text_edit_singleline(&mut tmp);
+                    v = tmp;
+                }
+
+                // clear button (×)
+                if !v.is_empty() {
+                    if ui.add(
+                        crate::icons::img("x", 12.0, egui::Color32::from_rgb(180, 80, 80))
+                            .sense(egui::Sense::click())
+                    ).on_hover_text("Clear").clicked() {
+                        v.clear();
+                    }
+                }
+            }).response;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             v
         }).unwrap_or_else(|| path.as_ref().to_string())
+    }).build()?;
+
+    // entity_picker(label, entity_id) → i64
+    // Shows entity name + "Pick" button. Returns the (possibly changed) entity ID.
+    m.function("entity_picker", |label: Ref<str>, entity_id: i64| -> i64 {
+        let lbl = label.as_ref().to_string();
+        with_ui(|ui| {
+            let lbl_w = 100.0_f32;
+            let label_color = egui::Color32::from_rgb(180, 180, 190);
+            let mut result = entity_id;
+            let hresp = ui.horizontal(|ui| {
+                ui.set_min_height(20.0);
+                ui.add_sized([lbl_w, 16.0],
+                    egui::Label::new(egui::RichText::new(lbl.as_str()).color(label_color).size(11.5)));
+
+                let entity_name = crate::rune_bindings::world_module::entity_name_for_id(entity_id);
+
+                let avail = ui.available_width() - 40.0;
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(avail, 20.0), egui::Sense::click());
+                ui.painter().rect_filled(rect, 3.0, egui::Color32::from_rgb(40, 40, 48));
+                let name_color = if entity_id < 0 {
+                    egui::Color32::from_rgb(120, 120, 130)
+                } else {
+                    egui::Color32::from_rgb(200, 200, 210)
+                };
+                ui.painter().text(rect.min + egui::vec2(4.0, 3.0),
+                    egui::Align2::LEFT_TOP, &entity_name,
+                    egui::FontId::proportional(11.0), name_color);
+
+                // clear / pick  — just clear for now
+                if entity_id >= 0 {
+                    if ui.small_button("×").on_hover_text("Clear").clicked() {
+                        result = -1;
+                    }
+                }
+            }).response;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
+            result
+        }).unwrap_or(entity_id)
+    }).build()?;
+
+    // vec3_uniform_scale(label, x, y, z) → Vec<f64>
+    // XYZ drag fields with a proportional-lock toggle button.
+    // Returns [x, y, z, lock_state] where lock_state is 0.0 or 1.0.
+    m.function("vec3_uniform_scale", |label: Ref<str>, x: f64, y: f64, z: f64| -> Vec<f64> {
+        with_ui(|ui| {
+            let lbl = label.as_ref().to_string();
+            let lbl_id = egui::Id::new((lbl.clone(), "scale_lock"));
+            let locked: bool = ui.data_mut(|d| *d.get_temp_mut_or(lbl_id, false));
+
+            let lbl_w   = 100.0_f32;
+            let col_w   = 18.0_f32;
+            let lbl_color = egui::Color32::from_rgb(180, 180, 190);
+
+            let mut vx = x as f32;
+            let mut vy = y as f32;
+            let mut vz = z as f32;
+            let old_x = vx; let old_y = vy; let old_z = vz;
+
+            let lock_tint = if locked {
+                egui::Color32::from_rgb(220, 180, 60)
+            } else {
+                egui::Color32::from_rgb(120, 120, 140)
+            };
+
+            ui.horizontal(|ui| {
+                ui.set_min_height(20.0);
+                ui.add_sized([lbl_w, 16.0],
+                    egui::Label::new(egui::RichText::new(lbl.as_str()).color(lbl_color).size(11.5)));
+
+                let field_w = ((ui.available_width() - col_w - 4.0) / 3.0).max(30.0);
+
+                // X (red badge)
+                let xc = egui::Color32::from_rgb(210, 80, 80);
+                ui.add_sized([8.0, 16.0],
+                    egui::Label::new(egui::RichText::new("X").color(xc).strong().size(10.0)));
+                ui.add_sized([field_w, 16.0], egui::DragValue::new(&mut vx).speed(0.01).max_decimals(3));
+
+                // Y (green badge)
+                let yc = egui::Color32::from_rgb(80, 200, 80);
+                ui.add_sized([8.0, 16.0],
+                    egui::Label::new(egui::RichText::new("Y").color(yc).strong().size(10.0)));
+                ui.add_sized([field_w, 16.0], egui::DragValue::new(&mut vy).speed(0.01).max_decimals(3));
+
+                // Z (blue badge)
+                let zc = egui::Color32::from_rgb(80, 120, 220);
+                ui.add_sized([8.0, 16.0],
+                    egui::Label::new(egui::RichText::new("Z").color(zc).strong().size(10.0)));
+                ui.add_sized([field_w, 16.0], egui::DragValue::new(&mut vz).speed(0.01).max_decimals(3));
+
+                // lock button
+                let lock_icon = if locked { "lock" } else { "unlock" };
+                if ui.add(
+                    crate::icons::img(lock_icon, 13.0, lock_tint).sense(egui::Sense::click())
+                ).on_hover_text(if locked { "Unlock proportional scale" } else { "Lock proportional scale" })
+                 .clicked() {
+                    let new_lock = !locked;
+                    ui.data_mut(|d| d.insert_temp(lbl_id, new_lock));
+                }
+            });
+
+            // apply uniform scaling if locked
+            if locked {
+                if (vx - old_x).abs() > 1e-6 && old_x.abs() > 1e-6 {
+                    let ratio = vx / old_x;
+                    vy = old_y * ratio;
+                    vz = old_z * ratio;
+                } else if (vy - old_y).abs() > 1e-6 && old_y.abs() > 1e-6 {
+                    let ratio = vy / old_y;
+                    vx = old_x * ratio;
+                    vz = old_z * ratio;
+                } else if (vz - old_z).abs() > 1e-6 && old_z.abs() > 1e-6 {
+                    let ratio = vz / old_z;
+                    vx = old_x * ratio;
+                    vy = old_y * ratio;
+                }
+            }
+
+            vec![vx as f64, vy as f64, vz as f64, if locked { 1.0 } else { 0.0 }]
+        }).unwrap_or_else(|| vec![x, y, z, 0.0])
     }).build()?;
 
     // ── Toolbar bindings (for toolbar.rn) ─────────────────────────────────────

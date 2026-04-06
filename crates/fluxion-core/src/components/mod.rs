@@ -28,7 +28,7 @@ pub mod script_behaviour;
 pub mod physics_material;
 pub mod audio_source;
 
-pub use mesh_renderer::MeshRenderer;
+pub use mesh_renderer::{MeshRenderer, MaterialSlot, PrimitiveType};
 pub use camera::{Camera, ProjectionMode, ClearFlags};
 pub use light::{Light, LightType};
 pub use particle_emitter::{Particle, ParticleEmitter};

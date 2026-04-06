@@ -87,6 +87,29 @@ pub struct MaterialAsset {
     pub ao_map:        Option<String>,
     pub emissive_map:  Option<String>,
 
+    // ── Extended PBR (WickedEngine-style) ────────────────────────────────────
+    /// Clearcoat layer strength (0 = disabled, 1 = full).
+    #[serde(default)]
+    pub clearcoat: f32,
+    /// Clearcoat layer roughness.
+    #[serde(default = "default_clearcoat_roughness")]
+    pub clearcoat_roughness: f32,
+    /// Sheen (fabric/velvet) color tint. Black = disabled.
+    #[serde(default)]
+    pub sheen_color: [f32; 3],
+    /// Sheen lobe roughness.
+    #[serde(default = "default_sheen_roughness")]
+    pub sheen_roughness: f32,
+    /// Anisotropy strength (-1..1). 0 = isotropic.
+    #[serde(default)]
+    pub anisotropy: f32,
+    /// Subsurface scattering weight (0 = disabled, 1 = full SSS).
+    #[serde(default)]
+    pub subsurface: f32,
+    /// Subsurface scattering color (diffuse color inside the surface).
+    #[serde(default = "default_subsurface_color")]
+    pub subsurface_color: [f32; 3],
+
     // ── UV transforms (keyed by slot name: "albedo", "normal", etc.) ─────────
     #[serde(default)]
     pub uv_transforms: HashMap<String, UvTransform>,
@@ -100,6 +123,10 @@ pub struct MaterialAsset {
     #[serde(default)]
     pub custom_params: HashMap<String, ShaderParamValue>,
 }
+
+fn default_clearcoat_roughness() -> f32 { 0.0 }
+fn default_sheen_roughness()     -> f32 { 0.5 }
+fn default_subsurface_color()    -> [f32; 3] { [1.0, 1.0, 1.0] }
 
 impl Default for MaterialAsset {
     fn default() -> Self {
@@ -121,6 +148,13 @@ impl Default for MaterialAsset {
             metalness_map:     None,
             ao_map:            None,
             emissive_map:      None,
+            clearcoat:          0.0,
+            clearcoat_roughness: 0.0,
+            sheen_color:        [0.0, 0.0, 0.0],
+            sheen_roughness:    0.5,
+            anisotropy:         0.0,
+            subsurface:         0.0,
+            subsurface_color:   [1.0, 1.0, 1.0],
             uv_transforms:     HashMap::new(),
             custom_shader:     None,
             custom_params:     HashMap::new(),

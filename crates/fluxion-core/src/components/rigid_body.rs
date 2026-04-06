@@ -102,28 +102,30 @@ impl BodyType {
 #[serde(rename_all = "camelCase")]
 pub struct RigidBody {
     /// Collider shape.
+    #[reflect(header = "Collision", tooltip = "The collider shape used for physics.")]
     pub shape: PhysicsShape,
     /// Simulation mode.
+    #[reflect(tooltip = "Dynamic = simulated, Kinematic = script-driven, Static = immovable.")]
     pub body_type: BodyType,
     /// Mass in kilograms. Ignored for Static bodies.
-    #[reflect(range(min = 0.001, max = 1000.0))]
+    #[reflect(range(min = 0.001, max = 1000.0), header = "Body", tooltip = "Mass in kg (Dynamic/Kinematic only).")]
     pub mass: f32,
     /// Linear velocity damping coefficient (air resistance). Range: [0, ∞).
-    #[reflect(range(min = 0.0, max = 10.0))]
+    #[reflect(range(min = 0.0, max = 10.0), slider, tooltip = "Linear drag (air resistance).")]
     pub linear_damping: f32,
     /// Angular velocity damping coefficient. Range: [0, ∞).
-    #[reflect(range(min = 0.0, max = 10.0))]
+    #[reflect(range(min = 0.0, max = 10.0), slider, tooltip = "Angular drag (rotational resistance).")]
     pub angular_damping: f32,
     /// Gravity multiplier. 0 = zero gravity, 1 = normal, negative = anti-gravity.
-    #[reflect(range(min = -2.0, max = 2.0))]
+    #[reflect(range(min = -2.0, max = 2.0), slider, tooltip = "Gravity scale (0 = no gravity, negative = float).")]
     pub gravity_scale: f32,
     /// Whether the body may sleep when at rest (reduces CPU load).
     pub can_sleep: bool,
     /// Bounciness coefficient. Range: [0, 1].
-    #[reflect(range(min = 0.0, max = 1.0))]
+    #[reflect(range(min = 0.0, max = 1.0), slider, header = "Material", tooltip = "Bounciness (0 = no bounce, 1 = perfect bounce).")]
     pub restitution: f32,
     /// Friction coefficient. Range: [0, ∞); typically [0, 1].
-    #[reflect(range(min = 0.0, max = 2.0))]
+    #[reflect(range(min = 0.0, max = 2.0), slider, tooltip = "Surface friction.")]
     pub friction: f32,
     /// Collision layer bitmask: which layer(s) this body belongs to (default = 1 = "Default").
     #[serde(default = "collision_layer_default")]

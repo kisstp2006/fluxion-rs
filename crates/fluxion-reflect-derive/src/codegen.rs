@@ -29,6 +29,16 @@ enum ReflectKind {
     Str,
     OptionStr,
     Enum,    // serde round-trip
+    /// `Option<String>` typed as Material path
+    Material,
+    /// `Option<String>` typed as Mesh path
+    Mesh,
+    /// `String` typed as Audio clip path
+    Audio,
+    /// `Option<String>` typed as Scene path
+    Scene,
+    /// `i64` entity ID reference (-1 = none)
+    EntityRef,
 }
 
 impl ReflectKind {
@@ -49,6 +59,11 @@ impl ReflectKind {
             Self::I32      => quote!(#core::reflect::ReflectFieldType::I32),
             Self::Vec2     => quote!(#core::reflect::ReflectFieldType::Vec2),
             Self::Enum     => quote!(#core::reflect::ReflectFieldType::Enum),
+            Self::Material  => quote!(#core::reflect::ReflectFieldType::Material),
+            Self::Mesh      => quote!(#core::reflect::ReflectFieldType::Mesh),
+            Self::Audio     => quote!(#core::reflect::ReflectFieldType::Audio),
+            Self::Scene     => quote!(#core::reflect::ReflectFieldType::Scene),
+            Self::EntityRef => quote!(#core::reflect::ReflectFieldType::EntityRef),
         }
     }
 
@@ -74,6 +89,10 @@ impl ReflectKind {
                     .trim_matches('"')
                     .to_string()
             ))),
+            Self::Material | Self::Scene => quote!(Some(#core::reflect::ReflectValue::OptionStr(#field_expr.clone()))),
+            Self::Audio    => quote!(Some(#core::reflect::ReflectValue::Str(#field_expr.clone()))),
+            Self::Mesh     => quote!(Some(#core::reflect::ReflectValue::OptionStr(#field_expr.clone()))),
+            Self::EntityRef => quote!(Some(#core::reflect::ReflectValue::I32(#field_expr as i32))),
         }
     }
 
@@ -130,18 +149,44 @@ impl ReflectKind {
             },
             Self::Enum => quote! {
                 (#name_str, #core::reflect::ReflectValue::Enum(s)) => {
-                    #field_ident = ::serde_json::from_str(&::std::format!("\"{}\"", s))
+                    #field_ident = ::serde_json::from_str(&::std::format!("\"{}\"" , s))
                         .map_err(|_| ::std::format!(
                             "Unknown variant '{}' for field '{}'", s, #name_str
                         ))?;
                 }
+            },
+            Self::Material | Self::Scene | Self::Mesh => quote! {
+                (#name_str, #core::reflect::ReflectValue::OptionStr(v)) => { #field_ident = v; }
+            },
+            Self::Audio => quote! {
+                (#name_str, #core::reflect::ReflectValue::Str(v)) => { #field_ident = v; }
+            },
+            Self::EntityRef => quote! {
+                (#name_str, #core::reflect::ReflectValue::I32(v)) => { #field_ident = v as i64; }
             },
         }
     }
 }
 
 /// Detect the reflect kind from a Rust type + field attributes.
-fn detect_kind(ty: &Type, _attrs: &FieldAttrs) -> ReflectKind {
+fn detect_kind(ty: &Type, attrs: &FieldAttrs) -> ReflectKind {
+    // Attribute overrides take priority over type inference
+    if attrs.entity_ref {
+        return ReflectKind::EntityRef;
+    }
+    if let Some(ref atype) = attrs.asset_type {
+        return match atype.as_str() {
+            "material" => ReflectKind::Material,
+            "mesh"     => ReflectKind::Mesh,
+            "audio"    => ReflectKind::Audio,
+            "scene"    => ReflectKind::Scene,
+            _          => ReflectKind::Str,
+        };
+    }
+    detect_kind_inner(ty, attrs)
+}
+
+fn detect_kind_inner(ty: &Type, _attrs: &FieldAttrs) -> ReflectKind {
     match ty {
         Type::Path(tp) => {
             let segs: Vec<_> = tp.path.segments.iter().collect();
@@ -266,13 +311,34 @@ pub fn derive_reflect_impl(input: DeriveInput) -> TokenStream {
             quote! { .with_variants(&[ #(#vs),* ]) }
         };
 
+        // render_hint: slider > uniform_scale > default
+        let hint_tokens = if fi.attrs.slider {
+            quote! { .with_render_hint(#core::reflect::RenderHint::Slider) }
+        } else if fi.attrs.uniform_scale {
+            quote! { .with_render_hint(#core::reflect::RenderHint::UniformScale) }
+        } else {
+            quote!()
+        };
+
+        let header_tokens = match &fi.attrs.header {
+            Some(h) => { let hs = h.as_str(); quote! { .with_header(#hs) } }
+            None    => quote!(),
+        };
+
+        let tooltip_tokens = match &fi.attrs.tooltip {
+            Some(t) => { let ts = t.as_str(); quote! { .with_tooltip(#ts) } }
+            None    => quote!(),
+        };
+
         if read_only {
             quote! {
-                #core::reflect::FieldDescriptor::read_only(#name_lit, #disp_lit, #ft) #range_tokens #variants_tokens
+                #core::reflect::FieldDescriptor::read_only(#name_lit, #disp_lit, #ft)
+                    #range_tokens #variants_tokens #hint_tokens #header_tokens #tooltip_tokens
             }
         } else {
             quote! {
-                #core::reflect::FieldDescriptor::new(#name_lit, #disp_lit, #ft) #range_tokens #variants_tokens
+                #core::reflect::FieldDescriptor::new(#name_lit, #disp_lit, #ft)
+                    #range_tokens #variants_tokens #hint_tokens #header_tokens #tooltip_tokens
             }
         }
     }).collect();

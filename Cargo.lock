@@ -1567,6 +1567,7 @@ dependencies = [
  "fluxion-renderer",
  "fluxion-rune-scripting",
  "glam 0.28.0",
+ "image",
  "log",
  "notify",
  "pollster 0.3.0",

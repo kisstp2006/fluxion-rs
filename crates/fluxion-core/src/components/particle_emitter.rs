@@ -24,18 +24,21 @@ pub struct Particle {
 /// Spawns and holds particles for one emitter entity. Attach with [`Transform`].
 #[derive(Debug, Clone, Reflect)]
 pub struct ParticleEmitter {
+    #[reflect(header = "Emission", tooltip = "Maximum concurrent particles.")]
     pub max_particles:    usize,
-    #[reflect(range(min = 0.0, max = 1000.0))]
+    #[reflect(range(min = 0.0, max = 1000.0), slider, tooltip = "Particles spawned per second.")]
     pub spawn_per_second: f32,
-    #[reflect(range(min = 0.01, max = 30.0))]
+    #[reflect(range(min = 0.01, max = 30.0), slider, tooltip = "Particle lifetime in seconds.")]
     pub lifetime:         f32,
-    #[reflect(range(min = 0.0, max = 50.0))]
+    #[reflect(range(min = 0.0, max = 50.0), slider, header = "Physics", tooltip = "Initial speed of each particle.")]
     pub start_speed:      f32,
+    #[reflect(tooltip = "Gravity direction and strength.")]
     pub gravity:          Vec3,
+    #[reflect(header = "Appearance", tooltip = "Start color (RGBA).")]
     pub color:            [f32; 4],
-    #[reflect(range(min = 0.001, max = 5.0))]
+    #[reflect(range(min = 0.001, max = 5.0), slider, tooltip = "Size of each billboard particle.")]
     pub size:             f32,
-    #[reflect(range(min = 0.0, max = 180.0))]
+    #[reflect(range(min = 0.0, max = 180.0), slider, tooltip = "Cone spread angle in degrees.")]
     pub spread_degrees:   f32,
     #[reflect(skip)]
     pub(crate) accumulator: f32,

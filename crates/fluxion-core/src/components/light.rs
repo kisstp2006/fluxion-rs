@@ -47,36 +47,38 @@ pub enum LightType {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 pub struct Light {
-    #[reflect(variants("Directional", "Point", "Spot"))]
+    #[reflect(variants("Directional", "Point", "Spot"), header = "Light", tooltip = "The type of light source.")]
     pub light_type: LightType,
 
     /// Linear RGB color. Values > 1.0 are valid for HDR rendering.
+    #[reflect(tooltip = "Light color. Values > 1 produce HDR bloom.")]
     pub color: [f32; 3],
 
     /// Intensity multiplier. Units depend on light type:
     ///   - Directional: lux (lm/m²), typical sunlight ≈ 100 000 lux
     ///   - Point/Spot:  luminous power (lm), typical bulb ≈ 800 lm
     /// For game purposes, just tune until it looks right. Default: 1.0.
-    #[reflect(range(min = 0.0, max = 200.0))]
+    #[reflect(range(min = 0.0, max = 200.0), slider, tooltip = "Brightness multiplier.")]
     pub intensity: f32,
 
     /// Maximum influence range in meters. Point/Spot only.
     /// Objects beyond this distance receive no light.
-    #[reflect(range(min = 0.0, max = 1000.0))]
+    #[reflect(range(min = 0.0, max = 1000.0), tooltip = "Max influence radius (Point/Spot only).")]
     pub range: f32,
 
     /// Outer half-angle of the spotlight cone in degrees. Spot only.
     /// Default: 30 degrees.
-    #[reflect(range(min = 1.0, max = 89.0))]
+    #[reflect(range(min = 1.0, max = 89.0), slider, header = "Spot", tooltip = "Outer half-angle of the spotlight cone.")]
     pub spot_angle: f32,
 
     /// Fraction of the cone that fades from full to zero brightness.
     /// 0.0 = hard edge, 1.0 = soft fully blended edge. Default: 0.15.
-    #[reflect(range(min = 0.0, max = 1.0))]
+    #[reflect(range(min = 0.0, max = 1.0), slider, tooltip = "0 = hard edge, 1 = fully soft edge.")]
     pub spot_penumbra: f32,
 
     /// Whether this light casts real-time shadows. Shadow casting is
     /// expensive — use sparingly, or only for the primary directional light.
+    #[reflect(header = "Shadows")]
     pub cast_shadow: bool,
 
     /// Shadow map resolution (width = height). Must be a power of 2.

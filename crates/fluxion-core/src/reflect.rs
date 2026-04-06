@@ -85,6 +85,37 @@ pub enum ReflectFieldType {
     I32,
     /// 2D vector [x, y] — shown as two drag-float fields in the editor.
     Vec2,
+    /// Project-relative path to a `.fluxmat` material asset.
+    /// Unity equivalent: `public Material mat;`
+    Material,
+    /// Project-relative path to a mesh file (.glb, .gltf, .fluxmesh).
+    /// Unity equivalent: `public Mesh mesh;`
+    Mesh,
+    /// Project-relative path to an audio clip asset.
+    /// Unity equivalent: `public AudioClip clip;`
+    Audio,
+    /// Project-relative path to a scene file (.scene).
+    /// Unity equivalent: scene string reference.
+    Scene,
+    /// Reference to another entity by ID (stored as i64, -1 = none).
+    /// Unity equivalent: `public GameObject go;`
+    EntityRef,
+}
+
+/// How the editor should render a numeric or Vec3 field.
+///
+/// - `Default`      — standard drag widget (DragFloat / DragInt / XYZ inline)
+/// - `Slider`        — visible range bar (Unity `[Range]` slider)
+/// - `UniformScale`  — Vec3 with a uniform scale lock button
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderHint {
+    #[default]
+    Default,
+    /// Show a visual range slider instead of a drag widget.
+    /// Requires `range.min` and `range.max` to be set.
+    Slider,
+    /// For Vec3 fields: adds a lock button that keeps X/Y/Z proportional.
+    UniformScale,
 }
 
 /// Optional numeric range hint for editor sliders / drag fields.
@@ -118,6 +149,9 @@ pub struct FieldDescriptor {
     pub field_type: ReflectFieldType,
     /// Optional hint for numeric fields (shown as slider or drag widget).
     pub range: RangeHint,
+    /// How the editor should render this field.
+    /// Unity equivalent: `[Range]` on float → `Slider`; scale Vec3 → `UniformScale`.
+    pub render_hint: RenderHint,
     /// Whether the field is read-only in the editor (e.g. world-space cache).
     pub read_only: bool,
     /// For `Enum` fields: the list of valid variant name strings.
@@ -132,6 +166,12 @@ pub struct FieldDescriptor {
     /// to read sibling values. Returns `true` when the field should be shown.
     /// `None` means always visible.
     pub visible_if: Option<fn(&dyn Reflect) -> bool>,
+    /// [Header("Section Name")] — bold non-collapsible section label shown ABOVE this field.
+    /// Unity equivalent: `[Header("My Section")]`.
+    pub header: Option<&'static str>,
+    /// [Tooltip("...")] — hover tooltip shown as a small ⓘ label next to the field.
+    /// Unity equivalent: `[Tooltip("description")]`.
+    pub tooltip: Option<&'static str>,
 }
 
 impl std::fmt::Debug for FieldDescriptor {
@@ -154,10 +194,13 @@ impl FieldDescriptor {
             display_name,
             field_type,
             range: RangeHint::none(),
+            render_hint: RenderHint::Default,
             read_only: false,
             enum_variants: None,
             group: None,
             visible_if: None,
+            header: None,
+            tooltip: None,
         }
     }
     /// Same as `new` but marks the field as read-only.
@@ -167,10 +210,13 @@ impl FieldDescriptor {
             display_name,
             field_type,
             range: RangeHint::none(),
+            render_hint: RenderHint::Default,
             read_only: true,
             enum_variants: None,
             group: None,
             visible_if: None,
+            header: None,
+            tooltip: None,
         }
     }
     pub const fn with_range(mut self, range: RangeHint) -> Self {
@@ -190,6 +236,24 @@ impl FieldDescriptor {
     /// Set a visibility predicate. The field is hidden when the predicate returns `false`.
     pub const fn with_visible_if(mut self, f: fn(&dyn Reflect) -> bool) -> Self {
         self.visible_if = Some(f);
+        self
+    }
+    /// Set the render hint (slider, uniform_scale, etc.).
+    /// Unity equivalent: `[Range]` on float → `RenderHint::Slider`.
+    pub const fn with_render_hint(mut self, hint: RenderHint) -> Self {
+        self.render_hint = hint;
+        self
+    }
+    /// Set a [Header("...")] label shown above this field in the inspector.
+    /// Unity equivalent: `[Header("Section Name")]`.
+    pub const fn with_header(mut self, header: &'static str) -> Self {
+        self.header = Some(header);
+        self
+    }
+    /// Set a [Tooltip("...")] hover text for this field.
+    /// Unity equivalent: `[Tooltip("description")]`.
+    pub const fn with_tooltip(mut self, tooltip: &'static str) -> Self {
+        self.tooltip = Some(tooltip);
         self
     }
     /// Evaluate whether this field is currently visible given the component's state.
@@ -263,6 +327,32 @@ pub fn reflect_value_to_json(v: &ReflectValue) -> Value {
         ReflectValue::Vec2(a)       => Value::Array(a.iter().map(|&x| Value::from(x)).collect()),
         ReflectValue::Enum(s)       => Value::String(s.clone()),
         ReflectValue::AssetPath(o)  => o.as_ref().map(|s| Value::String(s.clone())).unwrap_or(Value::Null),
+    }
+}
+
+/// Map a `ReflectFieldType` to the string tag used by the Rune inspector.
+pub fn field_type_str(ft: ReflectFieldType) -> &'static str {
+    match ft {
+        ReflectFieldType::F32      => "f32",
+        ReflectFieldType::Vec3     => "vec3",
+        ReflectFieldType::Quat     => "quat",
+        ReflectFieldType::Color3   => "color3",
+        ReflectFieldType::Color4   => "color4",
+        ReflectFieldType::Bool     => "bool",
+        ReflectFieldType::U32      => "u32",
+        ReflectFieldType::U8       => "u8",
+        ReflectFieldType::USize    => "usize",
+        ReflectFieldType::Str      => "str",
+        ReflectFieldType::OptionStr => "option_str",
+        ReflectFieldType::Enum     => "enum",
+        ReflectFieldType::Texture  => "texture",
+        ReflectFieldType::I32      => "i32",
+        ReflectFieldType::Vec2     => "vec2",
+        ReflectFieldType::Material => "material",
+        ReflectFieldType::Mesh     => "mesh",
+        ReflectFieldType::Audio    => "audio",
+        ReflectFieldType::Scene    => "scene",
+        ReflectFieldType::EntityRef => "entity_ref",
     }
 }
 

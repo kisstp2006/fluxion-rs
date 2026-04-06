@@ -38,6 +38,7 @@ pub use fluxion_audio::{set_audio_context, clear_audio_context};
 pub use input_module::{set_input_context, clear_input_context, set_action_map};
 pub use gameplay_module::{
     set_self_entity, clear_self_entity,
+    set_self_script, clear_self_script,
     set_script_error, clear_script_error,
     drain_pending_destroys, drain_pending_spawns,
     build_gameplay_modules,

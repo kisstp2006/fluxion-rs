@@ -388,6 +388,18 @@ fn id_to_entity(_world: &ECSWorld, id: i64) -> Option<EntityId> {
     ENTITY_CACHE.with(|cache| cache.borrow().get(&bits).copied())
 }
 
+/// Public helper for other modules (e.g. ui_module) to resolve an entity ID
+/// to its display name without needing access to the private `with_ctx`.
+pub fn entity_name_for_id(id: i64) -> String {
+    if id < 0 {
+        return "None".to_string();
+    }
+    with_ctx(|world, _| {
+        let entity = id_to_entity(world, id)?;
+        Some(world.get_name(entity).to_string())
+    }).flatten().unwrap_or_else(|| format!("Entity #{}", id))
+}
+
 fn get_descriptor<'a>(
     registry: &'a ComponentRegistry,
     component: &str,
@@ -477,23 +489,7 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         let _ = id;
         with_ctx(|_, registry| {
             get_descriptor(registry, &component, &field)
-                .map(|d| match d.field_type {
-                    ReflectFieldType::F32     => "f32",
-                    ReflectFieldType::Vec3    => "vec3",
-                    ReflectFieldType::Quat    => "quat",
-                    ReflectFieldType::Color3  => "color3",
-                    ReflectFieldType::Color4  => "color4",
-                    ReflectFieldType::Bool    => "bool",
-                    ReflectFieldType::U32     => "u32",
-                    ReflectFieldType::U8      => "u8",
-                    ReflectFieldType::USize   => "usize",
-                    ReflectFieldType::Str     => "str",
-                    ReflectFieldType::OptionStr => "option_str",
-                    ReflectFieldType::Enum    => "enum",
-                    ReflectFieldType::Texture => "texture",
-                    ReflectFieldType::I32     => "i32",
-                    ReflectFieldType::Vec2    => "vec2",
-                }.to_string())
+                .map(|d| fluxion_core::reflect::field_type_str(d.field_type).to_string())
                 .unwrap_or_default()
         }).unwrap_or_default()
     }).build()?;
@@ -546,6 +542,40 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                 .unwrap_or("")
                 .to_string()
         }).unwrap_or_default()
+    }).build()?;
+
+    m.function("field_header", |id: i64, component: Ref<str>, field: Ref<str>| -> String {
+        let _ = id;
+        with_ctx(|_, registry| {
+            get_descriptor(registry, &component, &field)
+                .and_then(|d| d.header)
+                .unwrap_or("")
+                .to_string()
+        }).unwrap_or_default()
+    }).build()?;
+
+    m.function("field_tooltip", |id: i64, component: Ref<str>, field: Ref<str>| -> String {
+        let _ = id;
+        with_ctx(|_, registry| {
+            get_descriptor(registry, &component, &field)
+                .and_then(|d| d.tooltip)
+                .unwrap_or("")
+                .to_string()
+        }).unwrap_or_default()
+    }).build()?;
+
+    m.function("field_render_hint", |id: i64, component: Ref<str>, field: Ref<str>| -> String {
+        let _ = id;
+        with_ctx(|_, registry| {
+            get_descriptor(registry, &component, &field)
+                .map(|d| match d.render_hint {
+                    fluxion_core::reflect::RenderHint::Slider       => "slider",
+                    fluxion_core::reflect::RenderHint::UniformScale => "uniform_scale",
+                    fluxion_core::reflect::RenderHint::Default      => "default",
+                })
+                .unwrap_or("default")
+                .to_string()
+        }).unwrap_or_else(|| "default".to_string())
     }).build()?;
 
     m.function("field_visible", |id: i64, component: Ref<str>, field: Ref<str>| -> bool {
@@ -697,7 +727,13 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             let entity = id_to_entity(world, id)?;
             let ft = get_descriptor(reg, &component, &field)?.field_type;
             let rv = match ft {
-                ReflectFieldType::OptionStr => ReflectValue::OptionStr(Some(val)),
+                ReflectFieldType::OptionStr
+                | ReflectFieldType::Material
+                | ReflectFieldType::Mesh
+                | ReflectFieldType::Scene   => ReflectValue::OptionStr(
+                    if val.is_empty() { None } else { Some(val) }
+                ),
+                ReflectFieldType::Audio     => ReflectValue::Str(val),
                 ReflectFieldType::Enum      => ReflectValue::Enum(val),
                 _                           => ReflectValue::Str(val),
             };
@@ -737,6 +773,23 @@ pub fn build_world_module() -> anyhow::Result<Module> {
     m.function("set_i32", |id: i64, component: String, field: String, val: i64| {
         if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
             queue_edit(e, component, field, ReflectValue::I32(val as i32));
+        }
+    }).build()?;
+
+    m.function("get_entity_ref", |id: i64, component: Ref<str>, field: Ref<str>| -> i64 {
+        with_ctx(|world, registry| {
+            let entity = id_to_entity(world, id)?;
+            let reflect = registry.get_reflect(&component, world, entity)?;
+            match reflect.get_field(&field) {
+                Some(ReflectValue::I32(v)) => Some(v as i64),
+                _ => Some(-1),
+            }
+        }).flatten().unwrap_or(-1)
+    }).build()?;
+
+    m.function("set_entity_ref", |id: i64, component: String, field: String, ref_id: i64| {
+        if let Some(e) = with_ctx(|world, _| id_to_entity(world, id)).flatten() {
+            queue_edit(e, component, field, ReflectValue::I32(ref_id as i32));
         }
     }).build()?;
 
@@ -1830,6 +1883,80 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         }
     }).build()?;
 
+    // script_field_decl(script_name) → [[name, type_str, hint, min_str, max_str], …]
+    // Returns declared field metadata registered by `fluxion::script::declare_field`.
+    // The inspector uses this to choose the correct widget per script field.
+    m.function("script_field_decl", |script_name: String| -> Vec<Vec<String>> {
+        crate::rune_bindings::gameplay_module::get_field_decls(&script_name)
+    }).build()?;
+
+    // ── Asset info bindings (Phase F) ─────────────────────────────────────────
+
+    // texture_info(path) → [width_str, height_str, format_str]
+    // Reads image dimensions from the file header without full decode.
+    // Returns ["?", "?", ext] if unreadable.
+    m.function("texture_info", |path: String| -> Vec<String> {
+        let full = format!("assets/{}", path);
+        let ext = std::path::Path::new(&full)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let format_str = match ext.as_str() {
+            "png"  => "PNG",
+            "jpg" | "jpeg" => "JPEG",
+            "webp" => "WebP",
+            "bmp"  => "BMP",
+            "tga"  => "TGA",
+            "hdr"  => "HDR",
+            "exr"  => "EXR",
+            "ktx"  => "KTX",
+            "dds"  => "DDS",
+            _      => "Unknown",
+        };
+        match image::image_dimensions(&full) {
+            Ok((w, h)) => vec![w.to_string(), h.to_string(), format_str.to_string()],
+            Err(_)     => vec!["?".to_string(), "?".to_string(), format_str.to_string()],
+        }
+    }).build()?;
+
+    // model_info(path) → [format_str, mesh_count_str]
+    // For glTF/GLB: counts mesh primitives from JSON.
+    // For other formats: returns extension + "1".
+    m.function("model_info", |path: String| -> Vec<String> {
+        let full = format!("assets/{}", path);
+        let ext = std::path::Path::new(&full)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let format_str = match ext.as_str() {
+            "glb"  => "GLB (Binary glTF)",
+            "gltf" => "glTF",
+            "obj"  => "Wavefront OBJ",
+            "fbx"  => "FBX",
+            _      => "Unknown",
+        };
+        // Count meshes from glTF JSON: read file, find "meshes":[...] and count objects
+        let mesh_count = (|| -> Option<usize> {
+            let content = std::fs::read(&full).ok()?;
+            // For GLB: JSON starts at byte 20, length at bytes 12-16
+            let json_str = if ext == "glb" {
+                if content.len() < 20 { return None; }
+                let json_len = u32::from_le_bytes([content[12], content[13], content[14], content[15]]) as usize;
+                if content.len() < 20 + json_len { return None; }
+                String::from_utf8(content[20..20 + json_len].to_vec()).ok()?
+            } else if ext == "gltf" {
+                String::from_utf8(content).ok()?
+            } else {
+                return None;
+            };
+            // Quick count: number of "primitives" arrays → proxy for submesh count
+            Some(json_str.matches("\"primitives\"").count().max(1))
+        })().unwrap_or(1);
+        vec![format_str.to_string(), mesh_count.to_string()]
+    }).build()?;
+
     // ── Viewport stats ────────────────────────────────────────────────────────
     // frame_stats() → [draw_calls, entity_count, frame_ms]
     m.function("frame_stats", || -> Vec<f64> {
@@ -2056,5 +2183,252 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
+    // ── Material asset bindings ───────────────────────────────────────────────
+
+    m.function("read_material", |path: String| -> String {
+        PROJECT_ROOT.with(|root| {
+            let full = root.borrow().join(&path);
+            std::fs::read_to_string(&full)
+                .or_else(|_| std::fs::read_to_string(&path))
+                .unwrap_or_default()
+        })
+    }).build()?;
+
+    m.function("write_material", |path: String, json: String| {
+        PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+            entity:    fluxion_core::EntityId::INVALID,
+            component: "__write_material__".to_string(),
+            field:     path,
+            value:     ReflectValue::Str(json),
+        }));
+    }).build()?;
+
+    m.function("create_material", |path: String| {
+        PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+            entity:    fluxion_core::EntityId::INVALID,
+            component: "__create_material__".to_string(),
+            field:     path,
+            value:     ReflectValue::Bool(true),
+        }));
+    }).build()?;
+
+    m.function("material_slots", |entity_id: i64| -> Vec<Vec<String>> {
+        if entity_id < 0 { return Vec::new(); }
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                WORLD_PTR.with(|w| {
+                    let ptr = w.get()?;
+                    let world = unsafe { ptr.as_ref() };
+                    let mr = world.get_component::<fluxion_core::MeshRenderer>(eid)?;
+                    let result: Vec<Vec<String>> = mr.material_slots.iter().map(|s| {
+                        vec![
+                            s.slot_index.to_string(),
+                            s.name.clone(),
+                            s.material_path.clone().unwrap_or_default(),
+                        ]
+                    }).collect();
+                    Some(result)
+                }).unwrap_or_default()
+            } else { Vec::new() }
+        })
+    }).build()?;
+
+    m.function("set_material_slot", |entity_id: i64, slot_idx: i64, path: String| {
+        if entity_id < 0 { return; }
+        ENTITY_CACHE.with(|cache| {
+            if let Some(&eid) = cache.borrow().get(&(entity_id as u64)) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity:    eid,
+                    component: "__set_material_slot__".to_string(),
+                    field:     slot_idx.to_string(),
+                    value:     ReflectValue::Str(path),
+                }));
+            }
+        });
+    }).build()?;
+
+    m.function("clear_material_slot", |entity_id: i64, slot_idx: i64| {
+        if entity_id < 0 { return; }
+        ENTITY_CACHE.with(|cache| {
+            if let Some(&eid) = cache.borrow().get(&(entity_id as u64)) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity:    eid,
+                    component: "__set_material_slot__".to_string(),
+                    field:     slot_idx.to_string(),
+                    value:     ReflectValue::Str(String::new()),
+                }));
+            }
+        });
+    }).build()?;
+
+    m.function("get_material_path", |entity_id: i64| -> String {
+        if entity_id < 0 { return String::new(); }
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                WORLD_PTR.with(|w| {
+                    let ptr = w.get()?;
+                    let world = unsafe { ptr.as_ref() };
+                    let mr = world.get_component::<fluxion_core::MeshRenderer>(eid)?;
+                    Some(mr.material_path.clone().unwrap_or_default())
+                }).unwrap_or_default()
+            } else { String::new() }
+        })
+    }).build()?;
+
+    m.function("set_material_path", |entity_id: i64, path: String| {
+        if entity_id < 0 { return; }
+        ENTITY_CACHE.with(|cache| {
+            if let Some(&eid) = cache.borrow().get(&(entity_id as u64)) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity:    eid,
+                    component: "__set_material_path__".to_string(),
+                    field:     path,
+                    value:     ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    // ── Material editor (in-memory JSON cache) ────────────────────────────────
+
+    m.function("mat_load", |path: String| -> bool {
+        let json = PROJECT_ROOT.with(|root| {
+            let full = root.borrow().join(&path);
+            std::fs::read_to_string(&full)
+                .or_else(|_| std::fs::read_to_string(&path))
+                .ok()
+        });
+        if let Some(text) = json {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                MATERIAL_CACHE.with(|c| c.borrow_mut().insert(path, val));
+                return true;
+            }
+        }
+        false
+    }).build()?;
+
+    m.function("mat_f32", |path: String, field: String| -> f64 {
+        MATERIAL_CACHE.with(|c| {
+            c.borrow().get(&path)
+                .and_then(|v| v.get(&field))
+                .and_then(|f| f.as_f64())
+                .unwrap_or(0.0)
+        })
+    }).build()?;
+
+    m.function("mat_bool", |path: String, field: String| -> bool {
+        MATERIAL_CACHE.with(|c| {
+            c.borrow().get(&path)
+                .and_then(|v| v.get(&field))
+                .and_then(|f| f.as_bool())
+                .unwrap_or(false)
+        })
+    }).build()?;
+
+    m.function("mat_str", |path: String, field: String| -> String {
+        MATERIAL_CACHE.with(|c| {
+            c.borrow().get(&path)
+                .and_then(|v| v.get(&field))
+                .and_then(|f| f.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_default()
+        })
+    }).build()?;
+
+    m.function("mat_color3", |path: String, field: String| -> Vec<f64> {
+        MATERIAL_CACHE.with(|c| {
+            c.borrow().get(&path)
+                .and_then(|v| v.get(&field))
+                .and_then(|a| a.as_array())
+                .map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect())
+                .unwrap_or_else(|| vec![0.0, 0.0, 0.0])
+        })
+    }).build()?;
+
+    m.function("mat_color4", |path: String, field: String| -> Vec<f64> {
+        MATERIAL_CACHE.with(|c| {
+            c.borrow().get(&path)
+                .and_then(|v| v.get(&field))
+                .and_then(|a| a.as_array())
+                .map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0)).collect())
+                .unwrap_or_else(|| vec![1.0, 1.0, 1.0, 1.0])
+        })
+    }).build()?;
+
+    m.function("mat_set_f32", |path: String, field: String, val: f64| {
+        MATERIAL_CACHE.with(|c| {
+            if let Some(obj) = c.borrow_mut().get_mut(&path) {
+                if let Some(map) = obj.as_object_mut() {
+                    map.insert(field, serde_json::json!(val));
+                }
+            }
+        });
+    }).build()?;
+
+    m.function("mat_set_bool", |path: String, field: String, val: bool| {
+        MATERIAL_CACHE.with(|c| {
+            if let Some(obj) = c.borrow_mut().get_mut(&path) {
+                if let Some(map) = obj.as_object_mut() {
+                    map.insert(field, serde_json::json!(val));
+                }
+            }
+        });
+    }).build()?;
+
+    m.function("mat_set_str", |path: String, field: String, val: String| {
+        MATERIAL_CACHE.with(|c| {
+            if let Some(obj) = c.borrow_mut().get_mut(&path) {
+                if let Some(map) = obj.as_object_mut() {
+                    if val.is_empty() {
+                        map.insert(field, serde_json::Value::Null);
+                    } else {
+                        map.insert(field, serde_json::json!(val));
+                    }
+                }
+            }
+        });
+    }).build()?;
+
+    m.function("mat_set_color3", |path: String, field: String, r: f64, g: f64, b: f64| {
+        MATERIAL_CACHE.with(|c| {
+            if let Some(obj) = c.borrow_mut().get_mut(&path) {
+                if let Some(map) = obj.as_object_mut() {
+                    map.insert(field, serde_json::json!([r, g, b]));
+                }
+            }
+        });
+    }).build()?;
+
+    m.function("mat_set_color4", |path: String, field: String, vals: Vec<f64>| {
+        MATERIAL_CACHE.with(|c| {
+            if let Some(obj) = c.borrow_mut().get_mut(&path) {
+                if let Some(map) = obj.as_object_mut() {
+                    map.insert(field, serde_json::json!(vals));
+                }
+            }
+        });
+    }).build()?;
+
+    m.function("mat_save", |path: String| {
+        MATERIAL_CACHE.with(|c| {
+            if let Some(obj) = c.borrow().get(&path) {
+                if let Ok(json) = serde_json::to_string_pretty(obj) {
+                    PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                        entity:    fluxion_core::EntityId::INVALID,
+                        component: "__write_material__".to_string(),
+                        field:     path,
+                        value:     ReflectValue::Str(json),
+                    }));
+                }
+            }
+        });
+    }).build()?;
+
     Ok(m)
+}
+
+thread_local! {
+    static MATERIAL_CACHE: RefCell<HashMap<String, serde_json::Value>> = RefCell::new(HashMap::new());
 }

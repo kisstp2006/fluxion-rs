@@ -35,7 +35,15 @@ pub fn draw_component_fields(entity_id, comp_name) {
         let max   = range[1];
         let grp   = fluxion::world::field_group(sel, c.clone(), f.clone());
         let lbl   = fluxion::world::field_display_name(sel, c.clone(), f.clone());
+        let hint  = fluxion::world::field_render_hint(sel, c.clone(), f.clone());
+        let hdr   = fluxion::world::field_header(sel, c.clone(), f.clone());
+        let tip   = fluxion::world::field_tooltip(sel, c.clone(), f.clone());
         let fid   = `${c}_${f}`;
+
+        // [Header("...")] label above the field
+        if hdr != "" {
+            fluxion::ui::header_label(hdr.clone());
+        }
 
         // ── group collapsing ──────────────────────────────────────────
         if grp != cur_group {
@@ -62,11 +70,19 @@ pub fn draw_component_fields(entity_id, comp_name) {
 
         // ── widget dispatch ───────────────────────────────────────────
         if ft == "vec3" {
-            let v  = fluxion::world::get_vec3(sel, c.clone(), f.clone());
-            let nv = fluxion::ui::vec3_inline(lbl.clone(), v[0], v[1], v[2], 0.01);
-            if nv[0] != v[0] || nv[1] != v[1] || nv[2] != v[2] {
-                fluxion::world::set_vec3(sel, c.clone(), f.clone(), [nv[0], nv[1], nv[2]]);
+            let v = fluxion::world::get_vec3(sel, c.clone(), f.clone());
+            if hint == "uniform_scale" {
+                let nv = fluxion::ui::vec3_uniform_scale(lbl.clone(), v[0], v[1], v[2]);
+                if nv[0] != v[0] || nv[1] != v[1] || nv[2] != v[2] {
+                    fluxion::world::set_vec3(sel, c.clone(), f.clone(), [nv[0], nv[1], nv[2]]);
+                }
+            } else {
+                let nv = fluxion::ui::vec3_inline(lbl.clone(), v[0], v[1], v[2], 0.01);
+                if nv[0] != v[0] || nv[1] != v[1] || nv[2] != v[2] {
+                    fluxion::world::set_vec3(sel, c.clone(), f.clone(), [nv[0], nv[1], nv[2]]);
+                }
             }
+            if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
             fluxion::ui::prop_context_menu(fid.clone());
 
         } else if ft == "quat" {
@@ -75,16 +91,23 @@ pub fn draw_component_fields(entity_id, comp_name) {
             if nv[0] != v[0] || nv[1] != v[1] || nv[2] != v[2] {
                 fluxion::world::set_euler(sel, c.clone(), f.clone(), [nv[0], nv[1], nv[2]]);
             }
+            if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
             fluxion::ui::prop_context_menu(fid.clone());
 
         } else if ft == "f32" {
             let v = fluxion::world::get_f32(sel, c.clone(), f.clone());
             if ro {
                 fluxion::ui::label(`${lbl}: ${v}`);
+            } else if hint == "slider" {
+                let nv = fluxion::ui::slider(lbl.clone(), v, min, max, 0.0);
+                if nv != v { fluxion::world::set_f32(sel, c.clone(), f.clone(), nv); }
+                if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
             } else {
                 let nv = fluxion::ui::drag_float(lbl.clone(), v, 0.01, min, max);
                 if nv != v { fluxion::world::set_f32(sel, c.clone(), f.clone(), nv); }
-                fluxion::ui::prop_context_menu(fid.clone());
+                if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
             }
 
         } else if ft == "bool" {
@@ -94,7 +117,8 @@ pub fn draw_component_fields(entity_id, comp_name) {
             } else {
                 let nv = fluxion::ui::checkbox(lbl.clone(), v);
                 if nv != v { fluxion::world::set_bool(sel, c.clone(), f.clone(), nv); }
-                fluxion::ui::prop_context_menu(fid.clone());
+                if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
             }
 
         } else if ft == "color3" {
@@ -106,7 +130,8 @@ pub fn draw_component_fields(entity_id, comp_name) {
                 if nc[0] != v[0] || nc[1] != v[1] || nc[2] != v[2] {
                     fluxion::world::set_color3(sel, c.clone(), f.clone(), [nc[0], nc[1], nc[2]]);
                 }
-                fluxion::ui::prop_context_menu(fid.clone());
+                if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
             }
 
         } else if ft == "color4" {
@@ -118,7 +143,8 @@ pub fn draw_component_fields(entity_id, comp_name) {
                 if nc[0] != v[0] || nc[1] != v[1] || nc[2] != v[2] || nc[3] != v[3] {
                     fluxion::world::set_color4(sel, c.clone(), f.clone(), [nc[0], nc[1], nc[2], nc[3]]);
                 }
-                fluxion::ui::prop_context_menu(fid.clone());
+                if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
             }
 
         } else if ft == "enum" {
@@ -132,15 +158,62 @@ pub fn draw_component_fields(entity_id, comp_name) {
                 if nv != v {
                     fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
                 }
-                fluxion::ui::prop_context_menu(fid.clone());
+                if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
             }
 
         } else if ft == "texture" {
             let v  = fluxion::world::get_str(sel, c.clone(), f.clone());
-            let nv = fluxion::ui::asset_path_picker(lbl.clone(), v.clone());
+            let nv = fluxion::ui::asset_path_picker(lbl.clone(), v.clone(), "texture");
             if nv != v {
                 fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
             }
+            if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
+
+        } else if ft == "material" {
+            let v  = fluxion::world::get_str(sel, c.clone(), f.clone());
+            let nv = fluxion::ui::asset_path_picker(lbl.clone(), v.clone(), "material");
+            if nv != v {
+                fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
+            }
+            if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
+
+        } else if ft == "mesh" {
+            let v  = fluxion::world::get_str(sel, c.clone(), f.clone());
+            let nv = fluxion::ui::asset_path_picker(lbl.clone(), v.clone(), "mesh");
+            if nv != v {
+                fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
+            }
+            if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
+
+        } else if ft == "audio" {
+            let v  = fluxion::world::get_str(sel, c.clone(), f.clone());
+            let nv = fluxion::ui::asset_path_picker(lbl.clone(), v.clone(), "audio");
+            if nv != v {
+                fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
+            }
+            if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
+
+        } else if ft == "scene" {
+            let v  = fluxion::world::get_str(sel, c.clone(), f.clone());
+            let nv = fluxion::ui::asset_path_picker(lbl.clone(), v.clone(), "scene");
+            if nv != v {
+                fluxion::world::set_str(sel, c.clone(), f.clone(), nv);
+            }
+            if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
+
+        } else if ft == "entity_ref" {
+            let v  = fluxion::world::get_entity_ref(sel, c.clone(), f.clone());
+            let nv = fluxion::ui::entity_picker(lbl.clone(), v);
+            if nv != v {
+                fluxion::world::set_entity_ref(sel, c.clone(), f.clone(), nv);
+            }
+            if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
             fluxion::ui::prop_context_menu(fid.clone());
 
         } else if ft == "str" || ft == "option_str" {
@@ -150,7 +223,8 @@ pub fn draw_component_fields(entity_id, comp_name) {
             } else {
                 let nv = fluxion::ui::input_text(lbl.clone(), v.clone());
                 if nv != v { fluxion::world::set_str(sel, c.clone(), f.clone(), nv); }
-                fluxion::ui::prop_context_menu(fid.clone());
+                if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
             }
 
         } else if ft == "u32" || ft == "u8" || ft == "usize" {
@@ -160,7 +234,8 @@ pub fn draw_component_fields(entity_id, comp_name) {
             } else {
                 let nv = fluxion::ui::drag_int(lbl.clone(), v);
                 if nv != v { fluxion::world::set_u32(sel, c.clone(), f.clone(), nv); }
-                fluxion::ui::prop_context_menu(fid.clone());
+                if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
             }
 
         } else if ft == "i32" {
@@ -170,7 +245,8 @@ pub fn draw_component_fields(entity_id, comp_name) {
             } else {
                 let nv = fluxion::ui::drag_int(lbl.clone(), v);
                 if nv != v { fluxion::world::set_i32(sel, c.clone(), f.clone(), nv); }
-                fluxion::ui::prop_context_menu(fid.clone());
+                if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
             }
 
         } else if ft == "vec2" {
@@ -182,7 +258,8 @@ pub fn draw_component_fields(entity_id, comp_name) {
                 if nv[0] != v[0] || nv[1] != v[1] {
                     fluxion::world::set_vec2(sel, c.clone(), f.clone(), [nv[0], nv[1]]);
                 }
-                fluxion::ui::prop_context_menu(fid.clone());
+                if tip != "" { fluxion::ui::prop_tooltip(tip.clone()); }
+            fluxion::ui::prop_context_menu(fid.clone());
             }
 
         } else {
@@ -215,17 +292,39 @@ fn asset_type_icon(t) {
 fn draw_asset_inspector(path) {
     let t     = fluxion::world::asset_type(path.clone());
     let fname = fluxion::world::asset_filename(path.clone());
-    let guid  = fluxion::world::asset_guid(path.clone());
-    let sz    = fluxion::world::asset_size_display(path.clone());
     let icon  = asset_type_icon(t.clone());
-    let tags  = fluxion::world::asset_tags(path.clone());
 
     // ── Heading ───────────────────────────────────────────────────────────
     fluxion::ui::icon(icon.clone(), 24.0);
-    fluxion::ui::heading(fname);
+    fluxion::ui::heading(fname.clone());
     fluxion::ui::separator();
 
-    // ── Metadata rows ─────────────────────────────────────────────────────
+    if t == "material" {
+        draw_material_inspector(path.clone());
+    } else if t == "texture" {
+        draw_texture_inspector(path.clone());
+        fluxion::ui::separator();
+        draw_generic_asset_inspector(path.clone(), t.clone());
+    } else if t == "model" {
+        draw_model_inspector(path.clone());
+        fluxion::ui::separator();
+        draw_generic_asset_inspector(path.clone(), t.clone());
+    } else {
+        draw_generic_asset_inspector(path.clone(), t.clone());
+    }
+
+    // Deselect button
+    fluxion::ui::separator();
+    if fluxion::ui::icon_button("x", 14.0, 0.75, 0.38, 0.38) {
+        fluxion::world::clear_selected_asset();
+    }
+}
+
+fn draw_generic_asset_inspector(path, t) {
+    let guid  = fluxion::world::asset_guid(path.clone());
+    let sz    = fluxion::world::asset_size_display(path.clone());
+    let tags  = fluxion::world::asset_tags(path.clone());
+
     fluxion::ui::colored_label("Type", 0.55, 0.75, 0.95);
     fluxion::ui::small(t.clone());
 
@@ -254,7 +353,6 @@ fn draw_asset_inspector(path) {
 
     fluxion::ui::separator();
 
-    // ── Actions ───────────────────────────────────────────────────────────
     if t == "scene" {
         if fluxion::ui::icon_button("film", 14.0, 0.7, 0.7, 0.75) {
             fluxion::world::load_scene(path.clone());
@@ -271,11 +369,167 @@ fn draw_asset_inspector(path) {
             fluxion::ui::small("(select an entity to attach)");
         }
     }
+}
 
-    // Deselect button
+// ── Texture Asset Inspector ───────────────────────────────────────────────────
+
+fn draw_texture_inspector(path) {
+    let info = fluxion::world::texture_info(path.clone());
+    let w    = info[0].clone();
+    let h    = info[1].clone();
+    let fmt  = info[2].clone();
+
+    fluxion::ui::header_label("Image");
+    fluxion::ui::horizontal_begin();
+    fluxion::ui::colored_label("Dimensions", 0.55, 0.75, 0.95);
+    fluxion::ui::label(`  ${w} × ${h} px`);
+    fluxion::ui::horizontal_end();
+
+    fluxion::ui::horizontal_begin();
+    fluxion::ui::colored_label("Format    ", 0.55, 0.75, 0.95);
+    fluxion::ui::label(`  ${fmt}`);
+    fluxion::ui::horizontal_end();
+}
+
+// ── Model Asset Inspector ─────────────────────────────────────────────────────
+
+fn draw_model_inspector(path) {
+    let info       = fluxion::world::model_info(path.clone());
+    let fmt        = info[0].clone();
+    let mesh_count = info[1].clone();
+
+    fluxion::ui::header_label("Mesh");
+    fluxion::ui::horizontal_begin();
+    fluxion::ui::colored_label("Format   ", 0.55, 0.75, 0.95);
+    fluxion::ui::label(`  ${fmt}`);
+    fluxion::ui::horizontal_end();
+
+    fluxion::ui::horizontal_begin();
+    fluxion::ui::colored_label("Sub-meshes", 0.55, 0.75, 0.95);
+    fluxion::ui::label(`  ${mesh_count}`);
+    fluxion::ui::horizontal_end();
+
     fluxion::ui::separator();
-    if fluxion::ui::icon_button("x", 14.0, 0.75, 0.38, 0.38) {
-        fluxion::world::clear_selected_asset();
+    let entity = fluxion::world::selected();
+    if entity != -1 {
+        if fluxion::ui::icon_button("box", 14.0, 0.7, 0.65, 0.55) {
+            fluxion::world::set_str(entity, "MeshRenderer", "mesh_path", path.clone());
+        }
+        fluxion::ui::label(" Apply to Selected Entity");
+    } else {
+        fluxion::ui::small("(select an entity to apply mesh)");
+    }
+}
+
+// ── Material Asset Inspector ──────────────────────────────────────────────────
+
+fn mat_drag(path, label, field, speed, min, max) {
+    let v  = fluxion::world::mat_f32(path.clone(), field.clone());
+    let nv = fluxion::ui::drag_float(label, v, speed, min, max);
+    if nv != v {
+        fluxion::world::mat_set_f32(path.clone(), field.clone(), nv);
+        fluxion::world::mat_save(path.clone());
+    }
+}
+
+fn mat_tex(path, label, field) {
+    let v  = fluxion::world::mat_str(path.clone(), field.clone());
+    let nv = fluxion::ui::asset_path_picker(label, v.clone(), "texture");
+    if nv != v {
+        fluxion::world::mat_set_str(path.clone(), field.clone(), nv);
+        fluxion::world::mat_save(path.clone());
+    }
+}
+
+fn draw_material_inspector(path) {
+    fluxion::world::mat_load(path.clone());
+
+    // ── Base Color ────────────────────────────────────────────────────────
+    let col = fluxion::world::mat_color4(path.clone(), "color");
+    let nc  = fluxion::ui::color4("Albedo##mat_col", col[0], col[1], col[2], col[3]);
+    if nc[0] != col[0] || nc[1] != col[1] || nc[2] != col[2] || nc[3] != col[3] {
+        fluxion::world::mat_set_color4(path.clone(), "color", [nc[0], nc[1], nc[2], nc[3]]);
+        fluxion::world::mat_save(path.clone());
+    }
+
+    // ── PBR scalars ───────────────────────────────────────────────────────
+    mat_drag(path.clone(), "Roughness##mat_r",  "roughness",  0.01, 0.0, 1.0);
+    mat_drag(path.clone(), "Metalness##mat_m",  "metalness",  0.01, 0.0, 1.0);
+    mat_drag(path.clone(), "Normal Scale##mat_ns", "normalScale", 0.01, 0.0, 4.0);
+    mat_drag(path.clone(), "AO Intensity##mat_ao", "aoIntensity", 0.01, 0.0, 2.0);
+
+    // ── Emissive ──────────────────────────────────────────────────────────
+    let em  = fluxion::world::mat_color3(path.clone(), "emissive");
+    let nem = fluxion::ui::color3("Emissive##mat_em", em[0], em[1], em[2]);
+    if nem[0] != em[0] || nem[1] != em[1] || nem[2] != em[2] {
+        fluxion::world::mat_set_color3(path.clone(), "emissive", nem[0], nem[1], nem[2]);
+        fluxion::world::mat_save(path.clone());
+    }
+    mat_drag(path.clone(), "Emissive Intensity##mat_ei", "emissiveIntensity", 0.1, 0.0, 100.0);
+
+    fluxion::ui::separator();
+
+    // ── Flags ─────────────────────────────────────────────────────────────
+    let ds = fluxion::world::mat_bool(path.clone(), "doubleSided");
+    let nds = fluxion::ui::checkbox("Double Sided##mat_ds", ds);
+    if nds != ds {
+        fluxion::world::mat_set_bool(path.clone(), "doubleSided", nds);
+        fluxion::world::mat_save(path.clone());
+    }
+
+    let wf = fluxion::world::mat_bool(path.clone(), "wireframe");
+    let nwf = fluxion::ui::checkbox("Wireframe##mat_wf", wf);
+    if nwf != wf {
+        fluxion::world::mat_set_bool(path.clone(), "wireframe", nwf);
+        fluxion::world::mat_save(path.clone());
+    }
+
+    fluxion::ui::separator();
+
+    // ── Texture Maps ──────────────────────────────────────────────────────
+    if fluxion::ui::collapsing_begin("Texture Maps##mat_tex") {
+        mat_tex(path.clone(), "Albedo Map##mat_alb",    "albedoMap");
+        mat_tex(path.clone(), "Normal Map##mat_nor",    "normalMap");
+        mat_tex(path.clone(), "Roughness Map##mat_rm",  "roughnessMap");
+        mat_tex(path.clone(), "Metalness Map##mat_mm",  "metalnessMap");
+        mat_tex(path.clone(), "AO Map##mat_aom",        "aoMap");
+        mat_tex(path.clone(), "Emissive Map##mat_emap", "emissiveMap");
+        fluxion::ui::collapsing_end();
+    }
+
+    // ── Extended PBR ─────────────────────────────────────────────────────
+    if fluxion::ui::collapsing_begin("Extended PBR##mat_ext") {
+        mat_drag(path.clone(), "Clearcoat##mat_cc",           "clearcoat",          0.01, 0.0, 1.0);
+        mat_drag(path.clone(), "Clearcoat Roughness##mat_ccr","clearcoatRoughness",  0.01, 0.0, 1.0);
+        mat_drag(path.clone(), "Anisotropy##mat_ani",          "anisotropy",         0.01, -1.0, 1.0);
+
+        let sc  = fluxion::world::mat_color3(path.clone(), "sheenColor");
+        let nsc = fluxion::ui::color3("Sheen Color##mat_sc", sc[0], sc[1], sc[2]);
+        if nsc[0] != sc[0] || nsc[1] != sc[1] || nsc[2] != sc[2] {
+            fluxion::world::mat_set_color3(path.clone(), "sheenColor", nsc[0], nsc[1], nsc[2]);
+            fluxion::world::mat_save(path.clone());
+        }
+        mat_drag(path.clone(), "Sheen Roughness##mat_sr", "sheenRoughness", 0.01, 0.0, 1.0);
+
+        let ssc  = fluxion::world::mat_color3(path.clone(), "subsurfaceColor");
+        let nssc = fluxion::ui::color3("Subsurface Color##mat_ssc", ssc[0], ssc[1], ssc[2]);
+        if nssc[0] != ssc[0] || nssc[1] != ssc[1] || nssc[2] != ssc[2] {
+            fluxion::world::mat_set_color3(path.clone(), "subsurfaceColor", nssc[0], nssc[1], nssc[2]);
+            fluxion::world::mat_save(path.clone());
+        }
+        mat_drag(path.clone(), "Subsurface##mat_ss", "subsurface", 0.01, 0.0, 1.0);
+
+        fluxion::ui::collapsing_end();
+    }
+
+    // ── Quick assign ─────────────────────────────────────────────────────
+    fluxion::ui::separator();
+    let entity = fluxion::world::selected();
+    if entity != -1 {
+        if fluxion::ui::icon_button("droplet", 14.0, 0.4, 0.75, 0.95) {
+            fluxion::world::set_material_path(entity, path.clone());
+        }
+        fluxion::ui::label(" Assign to Selected");
     }
 }
 
@@ -335,16 +589,48 @@ fn draw_script_bundle(sel) {
 
             // ── Script-defined struct fields ──────────────────────────────────
             let fields = fluxion::world::script_fields(sel, name.clone());
+            // declared field metadata from declare_field() calls
+            let decls  = fluxion::world::script_field_decl(name.clone());
             if !fields.is_empty() {
                 fluxion::ui::separator();
                 let fi = 0;
                 while fi < fields.len() {
                     let fname = fields[fi][0].clone();
-                    let fval  = fields[fi][1].clone();  // JSON string from serde
+                    let fval  = fields[fi][1].clone();
                     let fid   = `##sf_${ei}_${fi}`;
 
-                    if fval == "true" || fval == "false" {
-                        // Boolean field — checkbox
+                    // Look up declared metadata for this field name
+                    let decl_type = "";
+                    let decl_hint = "";
+                    let decl_min  = 0.0;
+                    let decl_max  = 0.0;
+                    let di = 0;
+                    while di < decls.len() {
+                        if decls[di][0] == fname {
+                            decl_type = decls[di][1].clone();
+                            decl_hint = decls[di][2].clone();
+                            let pm = fluxion::world::parse_f64(decls[di][3].clone());
+                            let px = fluxion::world::parse_f64(decls[di][4].clone());
+                            if pm[0] == 1.0 { decl_min = pm[1]; }
+                            if px[0] == 1.0 { decl_max = px[1]; }
+                        }
+                        di += 1;
+                    }
+
+                    // Dispatch on declared type first, then fall back to value heuristic
+                    if decl_type == "material" || decl_type == "mesh" || decl_type == "audio" || decl_type == "scene" {
+                        let nv = fluxion::ui::asset_path_picker(`${fname}${fid}`, fval.clone(), decl_type.clone());
+                        if nv != fval {
+                            fluxion::world::set_script_field(sel, name.clone(), fname.clone(), nv);
+                        }
+                    } else if decl_type == "entity_ref" {
+                        let as_f = fluxion::world::parse_f64(fval.clone());
+                        let cur_id = if as_f[0] == 1.0 { as_f[1] as i64 } else { -1 };
+                        let nv = fluxion::ui::entity_picker(`${fname}${fid}`, cur_id);
+                        if nv != cur_id {
+                            fluxion::world::set_script_field(sel, name.clone(), fname.clone(), `${nv}`);
+                        }
+                    } else if decl_type == "bool" || fval == "true" || fval == "false" {
                         let cur = fval == "true";
                         let checked = fluxion::ui::checkbox(`${fname}${fid}`, cur);
                         if checked != cur {
@@ -352,19 +638,19 @@ fn draw_script_bundle(sel) {
                             fluxion::world::set_script_field(sel, name.clone(), fname.clone(), new_str);
                         }
                     } else if fval == "null" {
-                        // Null / unknown — skip display
                         fluxion::ui::small(`${fname}: (unset)`);
                     } else {
-                        // Try numeric — use drag widget; fall back to text if not a number
                         let as_f = fluxion::world::parse_f64(fval.clone());
                         if as_f[0] == 1.0 {
-                            // Valid number
-                            let new_val = fluxion::ui::drag_float(`${fname}${fid}`, as_f[1], 0.1, 0.0, 0.0);
-                            if new_val != as_f[1] {
-                                fluxion::world::set_script_field(sel, name.clone(), fname.clone(), `${new_val}`);
+                            let nv = if decl_hint == "slider" && decl_max > decl_min {
+                                fluxion::ui::slider(`${fname}${fid}`, as_f[1], decl_min, decl_max, 0.0)
+                            } else {
+                                fluxion::ui::drag_float(`${fname}${fid}`, as_f[1], 0.1, decl_min, decl_max)
+                            };
+                            if nv != as_f[1] {
+                                fluxion::world::set_script_field(sel, name.clone(), fname.clone(), `${nv}`);
                             }
                         } else {
-                            // String / other
                             let new_str = fluxion::ui::input_text(`${fname}${fid}`, fval.clone());
                             if new_str != fval {
                                 fluxion::world::set_script_field(sel, name.clone(), fname.clone(), new_str);
@@ -378,6 +664,38 @@ fn draw_script_bundle(sel) {
         }
 
         ei += 1;
+    }
+}
+
+// ── MeshRenderer material slot UI ────────────────────────────────────────────
+
+fn draw_mesh_renderer_extras(sel) {
+    // ── Single material_path ──────────────────────────────────────────────
+    let mp  = fluxion::world::get_material_path(sel);
+    let nmp = fluxion::ui::asset_path_picker("Material##mr_mat", mp.clone(), "material");
+    if nmp != mp {
+        fluxion::world::set_material_path(sel, nmp);
+    }
+
+    // ── Multi-slot materials ──────────────────────────────────────────────
+    let slots = fluxion::world::material_slots(sel);
+    if slots.len() > 0 {
+        fluxion::ui::separator();
+        if fluxion::ui::collapsing_begin("Material Slots##mr_slots") {
+            let si = 0;
+            while si < slots.len() {
+                let slot     = slots[si].clone();
+                let name     = slot[1].clone();
+                let slot_mat = slot[2].clone();
+                let lbl      = if name != "" { `${name} (${si})##mr_slot_${si}` } else { `Slot ${si}##mr_slot_${si}` };
+                let new_mat  = fluxion::ui::asset_path_picker(lbl, slot_mat.clone(), "material");
+                if new_mat != slot_mat {
+                    fluxion::world::set_material_slot(sel, si, new_mat);
+                }
+                si += 1;
+            }
+            fluxion::ui::collapsing_end();
+        }
     }
 }
 
@@ -425,6 +743,9 @@ pub fn panel() {
         if open {
             if c == "ScriptBundle" {
                 draw_script_bundle(sel);
+            } else if c == "MeshRenderer" {
+                draw_component_fields(sel, c.clone());
+                draw_mesh_renderer_extras(sel);
             } else {
                 draw_component_fields(sel, c.clone());
             }

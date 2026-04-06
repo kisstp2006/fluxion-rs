@@ -70,23 +70,23 @@ pub struct Camera {
 
     /// Vertical field of view in degrees. Only used for Perspective mode.
     /// Typical values: 60–90. Default: 70.
-    #[reflect(range(min = 1.0, max = 180.0))]
+    #[reflect(range(min = 1.0, max = 180.0), slider, header = "Projection", tooltip = "Vertical field of view in degrees.")]
     pub fov: f32,
 
     /// Near clipping plane distance (meters). Default: 0.1.
-    #[reflect(range(min = 0.001, max = 100.0))]
+    #[reflect(range(min = 0.001, max = 100.0), tooltip = "Near clipping plane (meters).")]
     pub near: f32,
 
     /// Far clipping plane distance (meters). Default: 1000.0.
-    #[reflect(range(min = 1.0, max = 100000.0))]
+    #[reflect(range(min = 1.0, max = 100000.0), tooltip = "Far clipping plane (meters).")]
     pub far: f32,
 
     /// Projection mode. Default: Perspective.
-    #[reflect(variants("Perspective", "Orthographic"))]
+    #[reflect(variants("Perspective", "Orthographic"), tooltip = "Perspective = 3D, Orthographic = 2D/UI.")]
     pub projection_mode: ProjectionMode,
 
     /// Half-height of the orthographic view volume (Orthographic mode only).
-    #[reflect(range(min = 0.1, max = 1000.0))]
+    #[reflect(range(min = 0.1, max = 1000.0), tooltip = "Orthographic half-height.")]
     pub ortho_size: f32,
 
     // ── Culling & ordering ────────────────────────────────────────────────────

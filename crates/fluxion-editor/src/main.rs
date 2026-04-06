@@ -924,6 +924,20 @@ impl EditorInner {
             }
         }
 
+        // Drain material hot-reload signals queued by flush_pending_edits.
+        {
+            let reloads: Vec<String> = std::mem::take(&mut self.host.pending_material_reloads);
+            for path in reloads {
+                if let Err(e) = self.renderer.reload_material(&mut self.host.world, &path) {
+                    log::warn!("material hot-reload '{path}': {e}");
+                }
+            }
+            if std::mem::take(&mut self.host.needs_asset_rescan) {
+                self.host.asset_db.scan(&self.project_root);
+                crate::rune_bindings::set_asset_db_context(&self.host.asset_db);
+            }
+        }
+
         // Handle file menu actions (after the render closure, to avoid borrow issues).
         if do_save_scene {
             self.save_scene();

@@ -36,27 +36,29 @@ pub enum AudioRolloffMode {
 #[serde(rename_all = "camelCase")]
 pub struct AudioSource {
     /// Asset path of the audio clip to play (relative to project root).
+    #[reflect(asset_type = "audio", header = "Audio Clip", tooltip = "The audio clip to play.")]
     pub clip_path: String,
     /// Volume multiplier before spatial attenuation. Range: [0, 1].
-    #[reflect(range(min = 0.0, max = 1.0))]
+    #[reflect(range(min = 0.0, max = 1.0), slider, header = "Playback", tooltip = "Volume multiplier (0 = silent, 1 = full).")]
     pub volume: f32,
     /// Pitch multiplier. 1.0 = normal. Range: [0.1, 3.0].
-    #[reflect(range(min = 0.1, max = 3.0))]
+    #[reflect(range(min = 0.1, max = 3.0), slider, tooltip = "Pitch shift (1.0 = normal speed).")]
     pub pitch: f32,
     /// Whether the clip loops.
     pub looping: bool,
     /// Whether the source starts playing on scene load.
     pub play_on_awake: bool,
     /// Distance falloff model.
+    #[reflect(header = "3D Sound", variants("InverseDistance", "Linear", "None"))]
     pub rolloff_mode: AudioRolloffMode,
     /// Distance at which volume starts falling off.
-    #[reflect(range(min = 0.0, max = 500.0))]
+    #[reflect(range(min = 0.0, max = 500.0), tooltip = "Distance at which attenuation begins.")]
     pub min_distance: f32,
     /// Distance at which the source becomes inaudible.
-    #[reflect(range(min = 1.0, max = 2000.0))]
+    #[reflect(range(min = 1.0, max = 2000.0), tooltip = "Distance at which the source is silent.")]
     pub max_distance: f32,
     /// Blend between fully 3D (1.0) and fully 2D (0.0).
-    #[reflect(range(min = 0.0, max = 1.0))]
+    #[reflect(range(min = 0.0, max = 1.0), slider, tooltip = "0 = 2D (no spatialization), 1 = full 3D.")]
     pub spatial_blend: f32,
     /// Computed gain this frame (read by audio engine, not serialised).
     #[serde(skip)]

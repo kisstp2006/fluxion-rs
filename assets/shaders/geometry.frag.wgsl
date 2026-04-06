@@ -19,22 +19,47 @@
 // ============================================================
 
 // ── Material uniform ──────────────────────────────────────────────────────────
+//
+// Layout (112 bytes, 7×16):
+//   [  0] color              vec4<f32>   16 B
+//   [ 16] emissive           vec3<f32>   12 B
+//   [ 28] emissive_intensity f32          4 B
+//   [ 32] roughness          f32          4 B
+//   [ 36] metalness          f32          4 B
+//   [ 40] normal_scale       f32          4 B
+//   [ 44] ao_intensity       f32          4 B
+//   [ 48] uv_scale           vec2<f32>    8 B
+//   [ 56] uv_offset          vec2<f32>    8 B
+//   [ 64] texture_flags      u32          4 B
+//   [ 68] clearcoat          f32          4 B
+//   [ 72] clearcoat_roughness f32         4 B
+//   [ 76] anisotropy         f32          4 B
+//   [ 80] sheen_color        vec3<f32>   12 B  (16-byte aligned ✓)
+//   [ 92] sheen_roughness    f32          4 B
+//   [ 96] subsurface_color   vec3<f32>   12 B  (16-byte aligned ✓)
+//   [108] subsurface         f32          4 B
+//   total = 112 B
 
 struct PbrParams {
-    color:              vec4<f32>,   // base color RGBA (linear)
-    emissive:           vec3<f32>,
-    emissive_intensity: f32,
-    roughness:          f32,
-    metalness:          f32,
-    normal_scale:       f32,         // normal map strength (1.0 = full, 0.0 = flat)
-    ao_intensity:       f32,
-    uv_scale:           vec2<f32>,
-    uv_offset:          vec2<f32>,
-    // Bitfield: which texture slots are bound.
-    // bit 0 = albedo, 1 = normal, 2 = orm, 3 = emissive
-    texture_flags:      u32,
-    // implicit 12-byte gap here (WGSL aligns vec4 to 16)
-    _pad:               vec4<f32>,  // offset 80, size 16 → struct size = 96
+    color:               vec4<f32>,
+    emissive:            vec3<f32>,
+    emissive_intensity:  f32,
+    roughness:           f32,
+    metalness:           f32,
+    normal_scale:        f32,
+    ao_intensity:        f32,
+    uv_scale:            vec2<f32>,
+    uv_offset:           vec2<f32>,
+    // Bitfield: bit 0=albedo, 1=normal, 2=orm, 3=emissive
+    texture_flags:       u32,
+    // Extended PBR (clearcoat, sheen, subsurface, anisotropy)
+    clearcoat:           f32,
+    clearcoat_roughness: f32,
+    anisotropy:          f32,
+    sheen_color:         vec3<f32>,
+    sheen_roughness:     f32,
+    subsurface_color:    vec3<f32>,
+    subsurface:          f32,
 }
 
 @group(2) @binding(0) var<uniform> material: PbrParams;
@@ -58,12 +83,17 @@ struct FragInput {
 }
 
 // ── GBuffer output (4 render targets) ────────────────────────────────────────
+//
+//   RT0 albedo_ao:  RGB=base color (linear), A=AO
+//   RT1 normal:     RGB=world normal packed [0,1], A=clearcoat strength
+//   RT2 orm:        R=AO, G=roughness, B=metalness, A=pack(anisotropy,subsurface)
+//   RT3 emission:   RGB=emissive radiance, A=pack(sheen+clearcoat_roughness)
 
 struct GBufferOutput {
-    @location(0) albedo_ao: vec4<f32>,  // RGB=albedo, A=ao
-    @location(1) normal:    vec4<f32>,  // RGB=world normal encoded, A=unused
-    @location(2) orm:       vec4<f32>,  // R=ao, G=roughness, B=metalness, A=unused
-    @location(3) emission:  vec4<f32>,  // RGB=emission, A=unused
+    @location(0) albedo_ao: vec4<f32>,
+    @location(1) normal:    vec4<f32>,
+    @location(2) orm:       vec4<f32>,
+    @location(3) emission:  vec4<f32>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -72,9 +102,15 @@ fn has_texture(flags: u32, bit: u32) -> bool {
     return (flags & (1u << bit)) != 0u;
 }
 
-// Pack world normal from [-1,1] to [0,1] for storage in an Rgba8Unorm texture.
 fn pack_normal(n: vec3<f32>) -> vec3<f32> {
     return n * 0.5 + 0.5;
+}
+
+// Pack two [0,1] floats into one f32 channel (8 bits each, top bits).
+fn pack_f2(a: f32, b: f32) -> f32 {
+    let ia = u32(clamp(a, 0.0, 1.0) * 255.0);
+    let ib = u32(clamp(b, 0.0, 1.0) * 255.0);
+    return f32((ia << 8u) | ib) / 65535.0;
 }
 
 // ── Fragment shader ───────────────────────────────────────────────────────────
@@ -89,18 +125,14 @@ fn fs_main(in: FragInput) -> GBufferOutput {
         let tex_color = textureSample(albedo_tex, albedo_samp, uv);
         base_color *= tex_color;
     }
-    // Alpha test: discard fully transparent fragments
     if base_color.a < 0.01 { discard; }
 
     // ── Normal mapping ────────────────────────────────────────────────────────
     var world_normal = normalize(in.world_normal);
     if has_texture(material.texture_flags, 1u) {
-        // Sample normal map, remap from [0,1] to [-1,1]
         var normal_sample = textureSample(normal_tex, normal_samp, uv).xyz * 2.0 - 1.0;
         normal_sample.x *= material.normal_scale;
         normal_sample.y *= material.normal_scale;
-
-        // Build TBN matrix (tangent space → world space)
         let T = normalize(in.world_tangent);
         let B = normalize(in.world_bitangent);
         let N = normalize(in.world_normal);
@@ -113,12 +145,15 @@ fn fs_main(in: FragInput) -> GBufferOutput {
     var roughness = material.roughness;
     var metalness = material.metalness;
     if has_texture(material.texture_flags, 2u) {
-        // Standard ORM packing: R=occlusion, G=roughness, B=metalness
         let orm_sample = textureSample(orm_tex, orm_samp, uv).rgb;
         occlusion *= orm_sample.r;
         roughness *= orm_sample.g;
         metalness *= orm_sample.b;
     }
+
+    // ── Anisotropy tangent rotation (stored in orm.a) ─────────────────────────
+    // Remap anisotropy from [-1,1] → [0,1] for GBuffer storage.
+    let aniso_packed = material.anisotropy * 0.5 + 0.5;
 
     // ── Emission ──────────────────────────────────────────────────────────────
     var emission = material.emissive * material.emissive_intensity;
@@ -127,11 +162,19 @@ fn fs_main(in: FragInput) -> GBufferOutput {
         emission *= emissive_sample;
     }
 
+    // ── Subsurface wrap: tint base color toward subsurface color ──────────────
+    // Only non-zero when subsurface > 0; blended in lighting pass via GBuffer.
+    let sss_weight = material.subsurface;
+
     // ── Write GBuffer ─────────────────────────────────────────────────────────
     var out: GBufferOutput;
     out.albedo_ao = vec4<f32>(base_color.rgb, occlusion);
-    out.normal    = vec4<f32>(pack_normal(world_normal), 0.0);
-    out.orm       = vec4<f32>(occlusion, roughness, metalness, 0.0);
-    out.emission  = vec4<f32>(emission, 0.0);
+    // Pack clearcoat in normal.a (cleared to 0 when no clearcoat).
+    out.normal    = vec4<f32>(pack_normal(world_normal), material.clearcoat);
+    // Pack anisotropy (remapped) and subsurface into orm.a using pack_f2.
+    out.orm       = vec4<f32>(occlusion, roughness, metalness, pack_f2(aniso_packed, sss_weight));
+    // Pack clearcoat_roughness and sheen luminance into emission.a.
+    let sheen_lum  = dot(material.sheen_color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    out.emission  = vec4<f32>(emission, pack_f2(material.clearcoat_roughness, sheen_lum));
     return out;
 }

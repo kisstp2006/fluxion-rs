@@ -561,6 +561,8 @@ impl FluxionRenderer {
             let Some(mut mr) = world.get_component_mut::<MeshRenderer>(id) else {
                 continue;
             };
+
+            // ── Scene inline material (FluxionJS compatibility) ─────────────
             if let Some(v) = mr.scene_inline_material.take() {
                 let name = format!("scene_inline_{:x}", id.to_bits());
                 let asset =
@@ -571,6 +573,36 @@ impl FluxionRenderer {
                 Self::propagate_scene_material_to_gltf_children(world, id, h);
                 continue;
             }
+
+            // ── Multi-slot materials ────────────────────────────────────────
+            let slot_count = mr.material_slots.len();
+            if slot_count > 0 {
+                // Collect (index, path) pairs first to avoid borrow issues.
+                let slot_paths: Vec<(usize, Option<String>)> = mr.material_slots.iter()
+                    .enumerate()
+                    .map(|(i, s)| (i, s.material_path.clone()))
+                    .collect();
+                drop(mr); // release borrow
+
+                for (idx, maybe_path) in slot_paths {
+                    let Some(rel) = maybe_path else { continue; };
+                    let logical = assets::join_logical(base, &rel);
+                    let exists = source.exists(&logical) || source.exists(&rel);
+                    if !exists { continue; }
+                    let bytes = source.read(&logical).or_else(|_| source.read(&rel))
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let asset = crate::material::MaterialAsset::from_json_bytes(&bytes, &logical)?;
+                    let h = self.add_material(&asset)?;
+                    if let Some(mut mr2) = world.get_component_mut::<MeshRenderer>(id) {
+                        if let Some(slot) = mr2.material_slots.get_mut(idx) {
+                            slot.material_handle = Some(h);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // ── Single material_path ────────────────────────────────────────
             if let Some(rel) = mr.material_path.clone() {
                 let logical = assets::join_logical(base, &rel);
                 if !source.exists(&logical) && !source.exists(&rel) {
@@ -587,6 +619,76 @@ impl FluxionRenderer {
                 Self::propagate_scene_material_to_gltf_children(world, id, h);
             }
         }
+        Ok(())
+    }
+
+    /// Hot-reload a `.fluxmat` file — rebuilds its GPU material and patches all
+    /// `MeshRenderer` components that reference it (both single-slot and multi-slot).
+    pub fn reload_material(
+        &mut self,
+        world: &mut ECSWorld,
+        path: &str,
+    ) -> anyhow::Result<()> {
+        // Load updated asset from disk.
+        let asset = crate::material::MaterialAsset::load_from_file(path)?;
+        let src = self.asset_source.as_deref();
+        let new_mat = crate::material::PbrMaterial::from_asset(
+            &self.device,
+            &self.queue,
+            &asset,
+            &self.mat_bgl,
+            &mut self.textures,
+            src,
+        )?;
+
+        // Find which entities reference this path and collect their handles.
+        let entities: Vec<EntityId> = world.all_entities().collect();
+        let mut handles_to_replace: Vec<u32> = Vec::new();
+
+        for id in &entities {
+            if let Some(mr) = world.get_component::<MeshRenderer>(*id) {
+                // Single-slot check
+                if mr.material_path.as_deref() == Some(path) {
+                    if let Some(h) = mr.material_handle {
+                        handles_to_replace.push(h);
+                    }
+                }
+                // Multi-slot check
+                for slot in &mr.material_slots {
+                    if slot.material_path.as_deref() == Some(path) {
+                        if let Some(h) = slot.material_handle {
+                            handles_to_replace.push(h);
+                        }
+                    }
+                }
+            }
+        }
+
+        handles_to_replace.sort_unstable();
+        handles_to_replace.dedup();
+
+        if handles_to_replace.is_empty() {
+            // No live handle — this file will be picked up fresh on next scene load.
+            return Ok(());
+        }
+
+        // Replace the first handle in-place; re-create the GPU material for each extra.
+        let first = handles_to_replace[0];
+        self.materials.replace(first, new_mat);
+
+        for &h in &handles_to_replace[1..] {
+            let extra = crate::material::PbrMaterial::from_asset(
+                &self.device,
+                &self.queue,
+                &asset,
+                &self.mat_bgl,
+                &mut self.textures,
+                src,
+            )?;
+            self.materials.replace(h, extra);
+        }
+
+        log::info!("Hot-reloaded material: {path}");
         Ok(())
     }
 
@@ -718,6 +820,7 @@ impl FluxionRenderer {
                         mesh_handle: Some(hm),
                         material_handle: mat_idx(prim.material_index),
                         scene_inline_material: None,
+                        material_slots: Vec::new(),
                     },
                 );
                 prim_count += 1;

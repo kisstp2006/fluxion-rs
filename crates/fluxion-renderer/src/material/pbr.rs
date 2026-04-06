@@ -20,28 +20,57 @@ use super::material_asset::MaterialAsset;
 use crate::texture::{GpuTexture, TextureCache};
 
 // ── PbrParams (UBO layout) ─────────────────────────────────────────────────────
+//
+// MUST exactly match PbrParams in geometry.frag.wgsl (field order + padding).
+// Total size: 112 bytes (7 × 16).
+//
+// Offset map (verified against WGSL layout rules):
+//   [  0] color               vec4<f32>   16 B
+//   [ 16] emissive            vec3<f32>   12 B
+//   [ 28] emissive_intensity  f32          4 B
+//   [ 32] roughness           f32          4 B
+//   [ 36] metalness           f32          4 B
+//   [ 40] normal_scale        f32          4 B
+//   [ 44] ao_intensity        f32          4 B
+//   [ 48] uv_scale            vec2<f32>    8 B
+//   [ 56] uv_offset           vec2<f32>    8 B
+//   [ 64] texture_flags       u32          4 B
+//   [ 68] clearcoat           f32          4 B
+//   [ 72] clearcoat_roughness f32          4 B
+//   [ 76] anisotropy          f32          4 B
+//   [ 80] sheen_color         vec3<f32>   12 B  (AlignOf=16, 80%16=0 ✓)
+//   [ 92] sheen_roughness     f32          4 B
+//   [ 96] subsurface_color    vec3<f32>   12 B  (AlignOf=16, 96%16=0 ✓)
+//   [108] subsurface          f32          4 B
+//   total = 112 B
 
-/// Must exactly match the `PbrParams` struct in geometry.frag.wgsl.
-/// Field order and padding are critical — Rust and WGSL must agree.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct PbrParams {
-    pub color:              [f32; 4],  // base color RGBA linear
-    pub emissive:           [f32; 3],
-    pub emissive_intensity: f32,
-    pub roughness:          f32,
-    pub metalness:          f32,
-    pub normal_scale:       f32,
-    pub ao_intensity:       f32,
-    pub uv_scale:           [f32; 2],
-    pub uv_offset:          [f32; 2],
-    /// Bitfield: bit 0=albedo tex, 1=normal tex, 2=orm tex, 3=emissive tex.
-    pub texture_flags:      u32,
-    // WGSL aligns vec4<f32> to 16 bytes. texture_flags ends at offset 68,
-    // so we need 12 bytes of explicit gap before the vec4 at offset 80.
-    pub _pad0:              [u32; 3],  // 12 bytes: offset 68..80
-    pub _pad1:              [f32; 4],  // 16 bytes: offset 80..96
+    pub color:               [f32; 4],  // offset   0, 16 B
+    pub emissive:            [f32; 3],  // offset  16, 12 B
+    pub emissive_intensity:  f32,       // offset  28,  4 B
+    pub roughness:           f32,       // offset  32,  4 B
+    pub metalness:           f32,       // offset  36,  4 B
+    pub normal_scale:        f32,       // offset  40,  4 B
+    pub ao_intensity:        f32,       // offset  44,  4 B
+    pub uv_scale:            [f32; 2],  // offset  48,  8 B
+    pub uv_offset:           [f32; 2],  // offset  56,  8 B
+    pub texture_flags:       u32,       // offset  64,  4 B
+    // Extended PBR — fills the gap that used to be padding + adds new fields
+    pub clearcoat:           f32,       // offset  68,  4 B
+    pub clearcoat_roughness: f32,       // offset  72,  4 B
+    pub anisotropy:          f32,       // offset  76,  4 B
+    pub sheen_color:         [f32; 3],  // offset  80, 12 B  (WGSL vec3 AlignOf=16 ✓)
+    pub sheen_roughness:     f32,       // offset  92,  4 B
+    pub subsurface_color:    [f32; 3],  // offset  96, 12 B  (WGSL vec3 AlignOf=16 ✓)
+    pub subsurface:          f32,       // offset 108,  4 B
 }
+
+const _: () = assert!(
+    std::mem::size_of::<PbrParams>() == 112,
+    "PbrParams size must be 112 bytes to match WGSL struct"
+);
 
 // ── PbrMaterial ────────────────────────────────────────────────────────────────
 
@@ -128,18 +157,23 @@ impl PbrMaterial {
             .unwrap_or_default();
 
         let params = PbrParams {
-            color:              asset.color,
-            emissive:           asset.emissive,
-            emissive_intensity: asset.emissive_intensity,
-            roughness:          asset.roughness,
-            metalness:          asset.metalness,
-            normal_scale:       asset.normal_scale,
-            ao_intensity:       asset.ao_intensity,
-            uv_scale:           uv.scale,
-            uv_offset:          uv.offset,
+            color:               asset.color,
+            emissive:            asset.emissive,
+            emissive_intensity:  asset.emissive_intensity,
+            roughness:           asset.roughness,
+            metalness:           asset.metalness,
+            normal_scale:        asset.normal_scale,
+            ao_intensity:        asset.ao_intensity,
+            uv_scale:            uv.scale,
+            uv_offset:           uv.offset,
             texture_flags,
-            _pad0:              [0; 3],
-            _pad1:              [0.0; 4],
+            clearcoat:           asset.clearcoat,
+            clearcoat_roughness: asset.clearcoat_roughness,
+            anisotropy:          asset.anisotropy,
+            sheen_color:         asset.sheen_color,
+            sheen_roughness:     asset.sheen_roughness,
+            subsurface_color:    asset.subsurface_color,
+            subsurface:          asset.subsurface,
         };
 
         let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -223,5 +257,20 @@ impl MaterialRegistry {
 
     pub fn remove(&mut self, handle: u32) {
         if let Some(slot) = self.materials.get_mut(handle as usize) { *slot = None; }
+    }
+
+    /// Replace an existing material in-place (hot-reload). Returns false if handle is invalid.
+    pub fn replace(&mut self, handle: u32, new_mat: PbrMaterial) -> bool {
+        if let Some(slot) = self.materials.get_mut(handle as usize) {
+            *slot = Some(new_mat);
+            return true;
+        }
+        false
+    }
+
+    /// Iterate all valid (handle, material) pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &PbrMaterial)> {
+        self.materials.iter().enumerate()
+            .filter_map(|(i, s)| s.as_ref().map(|m| (i as u32, m)))
     }
 }
