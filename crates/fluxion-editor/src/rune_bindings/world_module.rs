@@ -321,6 +321,9 @@ pub fn set_editor_cam_speed(v: f64) { EDITOR_CAM_SPEED.with(|c| c.set(v)); }
 /// Read the current CSG box gizmo mode (0=none, 1=FaceHandles, 2=AxisArrows).
 pub fn get_box_gizmo_mode_raw() -> u8 { BOX_GIZMO_MODE.with(|c| c.get()) }
 
+/// Directly override the CSG box gizmo mode (called from main.rs to clear stale state).
+pub fn set_box_gizmo_mode_raw(v: u8) { BOX_GIZMO_MODE.with(|c| c.set(v)); }
+
 /// Get the list of multi-selected entity IDs (for Ctrl+D, gizmo average pivot).
 pub fn get_multi_selected() -> Vec<EntityId> {
     SELECTED_MULTI.with(|s| s.borrow().clone())

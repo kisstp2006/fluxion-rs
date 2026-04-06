@@ -41,17 +41,14 @@ thread_local! {
     /// Raw mouse delta accumulated from DeviceEvent::MouseMotion each frame.
     /// This works even when the cursor is locked (unlike egui pointer delta).
     static RAW_MOUSE_DELTA: Cell<(f64, f64)> = Cell::new((0.0, 0.0));
-    /// Map from menu-label → clicked item label.
-    /// Set by menu_end, consumed by menu_item on the next frame.
+    /// Map from menu-label → clicked item label (set this frame, read next frame).
     static MENU_CLICKED: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
     /// Accumulated items for the current menu (filled by menu_item/menu_separator).
     static MENU_ITEMS: RefCell<Vec<MenuEntry>> = RefCell::new(Vec::new());
     /// Label of the currently building menu (set by menu_begin).
     static MENU_LABEL: RefCell<String> = RefCell::new(String::new());
-    /// Rect of the button rendered by menu_begin — used to anchor the popup.
-    static MENU_BTN_RECT: Cell<egui::Rect> = Cell::new(egui::Rect::NOTHING);
-    /// True if the popup was toggled open THIS frame (suppresses immediate close).
-    static MENU_JUST_OPENED: Cell<bool> = Cell::new(false);
+    /// Items from the PREVIOUS frame per menu label — rendered inside ui.menu_button.
+    static MENU_ITEMS_PREV: RefCell<std::collections::HashMap<String, Vec<MenuEntry>>> = RefCell::new(std::collections::HashMap::new());
     /// Keyboard-highlighted row index in the autocomplete dropdown (-1 = none).
     static AUTOCOMPLETE_IDX: Cell<i64> = Cell::new(-1);
     /// True if the pointer was inside the autocomplete popup area last frame.
@@ -1267,9 +1264,15 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("combo_box", |label: Ref<str>, items: Vec<String>| -> String {
         with_ui(|ui| {
+            let raw = label.as_ref();
+            let (display, id_str) = if let Some(pos) = raw.find("##") {
+                (&raw[..pos], &raw[pos+2..])
+            } else {
+                (raw, raw)
+            };
             let mut chosen = String::new();
-            egui::ComboBox::from_label(label.as_ref())
-                .selected_text(label.as_ref())
+            egui::ComboBox::from_id_salt(id_str)
+                .selected_text(display)
                 .show_ui(ui, |ui| {
                     for item in &items {
                         if ui.selectable_label(false, item).clicked() {
@@ -1286,13 +1289,20 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     // Also accepts the raw "enum:a|b|c" format returned by asset_get_import.
     m.function("enum_combo_pipe", |label: Ref<str>, options_pipe: Ref<str>, current: Ref<str>| -> String {
         with_ui(|ui| {
+            let raw_lbl = label.as_ref();
+            let (display, id_str) = if let Some(pos) = raw_lbl.find("##") {
+                (&raw_lbl[..pos], &raw_lbl[pos+2..])
+            } else {
+                (raw_lbl, raw_lbl)
+            };
             let raw  = options_pipe.as_ref();
             let pipe = raw.strip_prefix("enum:").unwrap_or(raw);
             let opts: Vec<&str> = pipe.split('|').collect();
             let mut selected = current.as_ref().to_string();
-            egui::ComboBox::from_label(label.as_ref())
-                .selected_text(selected.clone())
+            egui::ComboBox::from_id_salt(id_str)
+                .selected_text(if selected.is_empty() { display } else { &selected })
                 .show_ui(ui, |ui| {
+                    ui.label(display);
                     for opt in &opts {
                         if ui.selectable_label(*opt == selected.as_str(), *opt).clicked() {
                             selected = opt.to_string();
@@ -1988,31 +1998,43 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     // This avoids storing a live &mut Ui across Rune call boundaries.
 
     m.function("menu_begin", |label: Ref<str>| -> bool {
-        MENU_ITEMS.with(|c| c.borrow_mut().clear());
-        MENU_JUST_OPENED.with(|c| c.set(false));
-        // Do NOT clear MENU_CLICKED here — it must survive to this frame's
-        // menu_item calls so Rune can act on last-frame's click.
-
         let label_str = label.as_ref().to_string();
         MENU_LABEL.with(|c| *c.borrow_mut() = label_str.clone());
+        // Clear items being collected this frame.
+        MENU_ITEMS.with(|c| c.borrow_mut().clear());
 
-        // Render the top-bar button and toggle popup on click.
-        with_ui(|ui| {
-            let popup_id = egui::Id::new(&label_str).with("__mnupop__");
-            let btn = ui.button(&label_str);
-            MENU_BTN_RECT.with(|c| c.set(btn.rect));
-            if btn.clicked() {
-                egui::Popup::toggle_id(ui.ctx(), popup_id);
-                // If we just opened the popup, suppress the close-outside
-                // check this frame so it doesn't immediately close again.
-                if egui::Popup::is_id_open(ui.ctx(), popup_id) {
-                    MENU_JUST_OPENED.with(|c| c.set(true));
+        // Fetch items that were collected LAST frame for this menu.
+        let prev_items: Vec<MenuEntry> = MENU_ITEMS_PREV.with(|c| {
+            c.borrow().get(&label_str).cloned().unwrap_or_default()
+        });
+
+        let mut clicked_item = String::new();
+        // Use egui's native menu_button which handles popup state, positioning,
+        // and close-on-outside-click correctly.
+        let is_open = with_ui(|ui| {
+            let resp = ui.menu_button(label_str.as_str(), |popup_ui| {
+                for entry in &prev_items {
+                    match entry {
+                        MenuEntry::Item(lbl) => {
+                            if popup_ui.button(lbl).clicked() {
+                                clicked_item = lbl.clone();
+                                popup_ui.close();
+                            }
+                        }
+                        MenuEntry::Separator => { popup_ui.separator(); }
+                    }
                 }
-            }
-            // Return whether the popup is currently open so the Rune script
-            // can conditionally call menu_item only while open.
-            egui::Popup::is_id_open(ui.ctx(), popup_id)
-        }).unwrap_or(false)
+            });
+            resp.inner.is_some()
+        }).unwrap_or(false);
+
+        if !clicked_item.is_empty() {
+            MENU_CLICKED.with(|c| c.borrow_mut().insert(label_str.clone(), clicked_item));
+        }
+
+        // On the very first frame a menu is encountered, return true so Rune
+        // queues the items (they will render on the next open).
+        is_open
     }).build()?;
 
     m.function("menu_item", |label: Ref<str>| {
@@ -2025,70 +2047,25 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     }).build()?;
 
     // menu_end() → String
-    // Renders the popup (if the menu is open) and returns the label of the
-    // item clicked this frame, or "" if nothing was clicked.
+    // Promotes this frame's collected items to MENU_ITEMS_PREV so they appear
+    // the next time the menu is open, then returns any clicked item label.
     // Must always be called after every menu_begin/menu_item block.
     m.function("menu_end", || -> String {
         let label_str = MENU_LABEL.with(|c| c.borrow().clone());
+
+        // Promote current items → prev (used by menu_begin next frame).
         let items: Vec<MenuEntry> = MENU_ITEMS.with(|c| c.borrow().clone());
-
-        let clicked = with_ui(|ui| {
-            let popup_id = egui::Id::new(&label_str).with("__mnupop__");
-            if !egui::Popup::is_id_open(ui.ctx(), popup_id) {
-                return String::new();
+        MENU_ITEMS_PREV.with(|c| {
+            if !items.is_empty() {
+                c.borrow_mut().insert(label_str.clone(), items);
             }
-
-            let stored_btn = MENU_BTN_RECT.with(|c| c.get());
-            let bar_bottom = ui.min_rect().bottom();
-            let x = if stored_btn != egui::Rect::NOTHING { stored_btn.left() } else { 0.0 };
-            let pos = egui::pos2(x, bar_bottom);
-
-            let mut clicked_item = String::new();
-            egui::Area::new(popup_id)
-                .order(egui::Order::Foreground)
-                .fixed_pos(pos)
-                .show(ui.ctx(), |popup_ui| {
-                    egui::Frame::popup(popup_ui.style()).show(popup_ui, |inner| {
-                        inner.set_min_width(160.0);
-                        for entry in &items {
-                            match entry {
-                                MenuEntry::Item(lbl) => {
-                                    if inner.button(lbl).clicked() {
-                                        clicked_item = lbl.clone();
-                                    }
-                                }
-                                MenuEntry::Separator => { inner.separator(); }
-                            }
-                        }
-                    });
-                });
-
-            if !clicked_item.is_empty() {
-                egui::Popup::close_id(ui.ctx(), popup_id);
-            }
-
-            // Close when clicking outside (but not the frame the popup just opened).
-            let just_opened = MENU_JUST_OPENED.with(|c| c.get());
-            if !just_opened && clicked_item.is_empty() {
-                let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-                let popup_rect  = ui.ctx().memory(|m| m.area_rect(popup_id));
-                let btn_rect    = MENU_BTN_RECT.with(|c| c.get());
-                if ui.input(|i| i.pointer.any_click()) {
-                    let outside = match (pointer_pos, popup_rect) {
-                        (Some(p), Some(r)) => !r.contains(p) && !btn_rect.contains(p),
-                        _ => true,
-                    };
-                    if outside {
-                        egui::Popup::close_id(ui.ctx(), popup_id);
-                    }
-                }
-            }
-
-            clicked_item
-        }).unwrap_or_default();
-
+        });
         MENU_ITEMS.with(|c| c.borrow_mut().clear());
-        clicked
+
+        // Return (and clear) any item that was clicked this frame.
+        MENU_CLICKED.with(|c| {
+            c.borrow_mut().remove(&label_str).unwrap_or_default()
+        })
     }).build()?;
 
     m.function("badge_right", |text: Ref<str>, r: f64, g: f64, b: f64| {

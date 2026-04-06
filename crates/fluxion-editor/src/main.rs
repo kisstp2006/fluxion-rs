@@ -654,43 +654,51 @@ impl EditorInner {
                     if let Some(world_pos) = gizmo_sel_pos {
                         let box_mode_raw = crate::rune_bindings::get_box_gizmo_mode_raw();
 
-                        if box_mode_raw != 0 {
-                            if let Some(csg_size) = gizmo_csg_size {
-                                let box_mode = if box_mode_raw == 1 {
-                                    viewport_gizmo::GizmoMode::BoxFaceHandles
-                                } else {
-                                    viewport_gizmo::GizmoMode::BoxAxisArrows
-                                };
-                                egui::Area::new(egui::Id::new("gizmo_overlay"))
-                                    .fixed_pos(vp_rect.min)
-                                    .order(egui::Order::Foreground)
-                                    .show(&ctx, |ui| {
-                                        ui.set_clip_rect(vp_rect);
+                        // If box gizmo mode is active but the selected entity has no
+                        // CsgShape, clear the stale mode so we fall through to the
+                        // arrow gizmo. This prevents a ghost Area being left from the
+                        // previous selection.
+                        if box_mode_raw != 0 && gizmo_csg_size.is_none() {
+                            crate::rune_bindings::world_module::set_box_gizmo_mode_raw(0);
+                        }
+
+                        // Always render the overlay Area so egui never leaves a ghost
+                        // from a previous frame. Content is chosen inside the closure.
+                        egui::Area::new(egui::Id::new("gizmo_overlay"))
+                            .fixed_pos(vp_rect.min)
+                            .order(egui::Order::Foreground)
+                            .show(&ctx, |ui| {
+                                ui.set_clip_rect(vp_rect);
+
+                                // Box gizmo when CsgShape is present.
+                                if box_mode_raw != 0 {
+                                    if let Some(csg_size) = gizmo_csg_size {
+                                        let box_mode = if box_mode_raw == 1 {
+                                            viewport_gizmo::GizmoMode::BoxFaceHandles
+                                        } else {
+                                            viewport_gizmo::GizmoMode::BoxAxisArrows
+                                        };
                                         viewport_gizmo::draw_box_and_interact(
                                             ui, vp_rect, world_pos, csg_size,
                                             gizmo_view, gizmo_proj, box_mode,
                                             gizmo_drag,
                                         );
-                                    });
-                            }
-                        } else {
-                            let mode = match *transform_tool {
-                                TransformTool::Translate => viewport_gizmo::GizmoMode::Translate,
-                                TransformTool::Rotate    => viewport_gizmo::GizmoMode::Rotate,
-                                TransformTool::Scale     => viewport_gizmo::GizmoMode::Scale,
-                            };
-                            egui::Area::new(egui::Id::new("gizmo_overlay"))
-                                .fixed_pos(vp_rect.min)
-                                .order(egui::Order::Foreground)
-                                .show(&ctx, |ui| {
-                                    ui.set_clip_rect(vp_rect);
-                                    viewport_gizmo::draw_and_interact(
-                                        ui, vp_rect, world_pos,
-                                        gizmo_view, gizmo_proj, mode,
-                                        gizmo_drag,
-                                    );
-                                });
-                        }
+                                        return;
+                                    }
+                                }
+
+                                // Fallback: standard translate/rotate/scale gizmo.
+                                let mode = match *transform_tool {
+                                    TransformTool::Translate => viewport_gizmo::GizmoMode::Translate,
+                                    TransformTool::Rotate    => viewport_gizmo::GizmoMode::Rotate,
+                                    TransformTool::Scale     => viewport_gizmo::GizmoMode::Scale,
+                                };
+                                viewport_gizmo::draw_and_interact(
+                                    ui, vp_rect, world_pos,
+                                    gizmo_view, gizmo_proj, mode,
+                                    gizmo_drag,
+                                );
+                            });
                     }
                 }
             })
