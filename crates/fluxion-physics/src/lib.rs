@@ -431,9 +431,16 @@ impl PhysicsEcsWorld {
             }
         };
 
+        let groups = InteractionGroups::new(
+            Group::from_bits_truncate(rb.collision_layer),
+            Group::from_bits_truncate(rb.collision_mask),
+        );
+
         let collider = col_builder
             .restitution(rb.restitution)
             .friction(rb.friction)
+            .collision_groups(groups)
+            .solver_groups(groups)
             .active_events(ActiveEvents::COLLISION_EVENTS)
             .build();
 

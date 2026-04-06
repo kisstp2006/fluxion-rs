@@ -552,6 +552,17 @@ impl ComponentRegistry {
             Ok(())
         });
 
+        // ── AudioSource ────────────────────────────────────────────────────────
+        {
+            use crate::components::audio_source::AudioSource;
+            self.register("AudioSource", |data, world, entity| {
+                let src: AudioSource = serde_json::from_value(data.clone())
+                    .unwrap_or_default();
+                world.add_component(entity, src);
+                Ok(())
+            });
+        }
+
         // ── Reflect accessors for all built-in types ──────────────────────────
         // Allows the editor to read / write component fields at runtime.
         self.register_reflect::<Transform>("Transform");
@@ -577,6 +588,10 @@ impl ComponentRegistry {
         {
             use crate::components::csg::CsgShape;
             self.register_reflect::<CsgShape>("CsgShape");
+        }
+        {
+            use crate::components::audio_source::AudioSource;
+            self.register_reflect::<AudioSource>("AudioSource");
         }
     }
     // ScriptBundle uses custom rendering in inspector.rn — no reflect registration needed.

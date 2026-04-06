@@ -19,7 +19,9 @@ use fluxion_core::{
     transform::Transform,
     transform::system::TransformSystem,
     components::{Camera, Light, LightType, CameraControllerSystem},
-    AnimationSystem, LodSystem, CsgSystem,
+    AnimationSystem, LodSystem, CsgSystem, AudioSystem,
+    PhysicsMaterial,
+    components::rigid_body::RigidBody,
 };
 use glam::{Quat, Vec3};
 use fluxion_rune_scripting::{RuneVm, RuneBehaviour};
@@ -30,7 +32,7 @@ use crate::rune_bindings::{
     set_world_context, WorldContextGuard,
     set_physics_context, clear_physics_context,
     set_audio_context, clear_audio_context,
-    set_input_context, clear_input_context,
+    set_input_context, clear_input_context, set_action_map,
     set_camera_world, clear_camera_world, drain_camera_edits,
     set_environment_world, clear_environment_world, drain_environment_edits, EnvEditValue,
     set_asset_db_context, clear_asset_db_context,
@@ -68,6 +70,9 @@ pub struct EditorHost {
 
     /// Project root — needed to resolve gameplay script asset paths.
     pub project_root: PathBuf,
+
+    /// Cache of loaded `.physmat` assets keyed by their asset path.
+    pub physmat_cache: HashMap<String, PhysicsMaterial>,
 }
 
 impl EditorHost {
@@ -131,6 +136,7 @@ impl EditorHost {
             scripts_dir,
             gameplay_scripts: HashMap::new(),
             project_root:     PathBuf::new(),
+            physmat_cache:    HashMap::new(),
         })
     }
 
@@ -297,6 +303,9 @@ impl EditorHost {
     pub fn tick(&mut self) {
         let (fixed_steps, _dt) = self.time.tick();
 
+        // Apply .physmat overrides before physics sync (loads materials lazily).
+        self.apply_physics_materials();
+
         // Physics: fixed-step
         if let Some(ref mut phys) = self.physics {
             for _ in 0..fixed_steps {
@@ -315,6 +324,9 @@ impl EditorHost {
 
         // LOD switching
         LodSystem::update(&self.world);
+
+        // 3D spatial audio gains
+        AudioSystem::update(&self.world);
 
         // CSG re-bake (dirty entities only)
         CsgSystem::update(&mut self.world);
@@ -343,6 +355,7 @@ impl EditorHost {
         self.time.tick();
         AnimationSystem::update(&self.world, self.time.dt);
         LodSystem::update(&self.world);
+        AudioSystem::update(&self.world);
         CsgSystem::update(&mut self.world);
         TransformSystem::update(&mut self.world);
         self.vm.poll_hot_reload();
@@ -362,6 +375,10 @@ impl EditorHost {
             set_audio_context(audio);
         }
         set_input_context(&mut self.input);
+        // Push the current action map so action_pressed/action_value work this frame.
+        crate::rune_bindings::settings_module::with_project_config(|cfg| {
+            set_action_map(&cfg.settings.input.actions);
+        });
         set_camera_world(&self.world);
         set_environment_world(&self.world);
         set_asset_db_context(&self.asset_db);
@@ -376,6 +393,43 @@ impl EditorHost {
         clear_camera_world();
         clear_environment_world();
         clear_asset_db_context();
+    }
+
+    /// For every RigidBody with a non-empty `physics_material_path`, load the
+    /// `.physmat` file (lazy-cached) and apply friction/restitution overrides
+    /// to the ECS component so the physics engine picks them up on next sync.
+    fn apply_physics_materials(&mut self) {
+        // Step 1: collect (entity, path) pairs — immutable borrow of world.
+        let mut pending: Vec<(fluxion_core::EntityId, String)> = Vec::new();
+        self.world.query_all::<&RigidBody, _>(|eid, rb| {
+            if !rb.physics_material_path.is_empty() {
+                pending.push((eid, rb.physics_material_path.clone()));
+            }
+        });
+
+        // Step 2: load materials (may mutate physmat_cache) and collect overrides.
+        let mut overrides: Vec<(fluxion_core::EntityId, f32, f32)> = Vec::new();
+        for (eid, path) in pending {
+            if !self.physmat_cache.contains_key(&path) {
+                let full = self.project_root.join(&path);
+                if let Ok(text) = std::fs::read_to_string(&full) {
+                    if let Ok(m) = PhysicsMaterial::from_json(&text) {
+                        self.physmat_cache.insert(path.clone(), m);
+                    }
+                }
+            }
+            if let Some(m) = self.physmat_cache.get(&path) {
+                overrides.push((eid, m.friction, m.restitution));
+            }
+        }
+
+        // Step 3: apply overrides to ECS components.
+        for (eid, friction, restitution) in overrides {
+            if let Some(mut rb) = self.world.get_component_mut::<RigidBody>(eid) {
+                rb.friction    = friction;
+                rb.restitution = restitution;
+            }
+        }
     }
 
     /// Apply queued field mutations produced by Rune inspector panels.
@@ -598,6 +652,31 @@ impl EditorHost {
                             if let Some(parent) = parent_entity {
                                 self.world.set_parent(edit.entity, Some(parent), false);
                             }
+                        }
+                    }
+                }
+                "__set_collision_layer__" => {
+                    if edit.entity.is_valid() {
+                        if let Ok(layer) = edit.field.parse::<u32>() {
+                            if let Some(mut rb) = self.world.get_component_mut::<RigidBody>(edit.entity) {
+                                rb.collision_layer = layer;
+                            }
+                        }
+                    }
+                }
+                "__set_collision_mask__" => {
+                    if edit.entity.is_valid() {
+                        if let Ok(mask) = edit.field.parse::<i64>() {
+                            if let Some(mut rb) = self.world.get_component_mut::<RigidBody>(edit.entity) {
+                                rb.collision_mask = mask as u32;
+                            }
+                        }
+                    }
+                }
+                "__set_physics_material__" => {
+                    if edit.entity.is_valid() {
+                        if let Some(mut rb) = self.world.get_component_mut::<RigidBody>(edit.entity) {
+                            rb.physics_material_path = edit.field.clone();
                         }
                     }
                 }

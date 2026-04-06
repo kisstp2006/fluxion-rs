@@ -9,16 +9,18 @@
 // Set before any Rune call via set_input_context, cleared after.
 // ============================================================
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 
-use rune::{Module, ContextError};
-use fluxion_core::InputState;
+use rune::{Module, ContextError, runtime::Ref};
+use fluxion_core::{InputState, InputAction, InputBinding};
 
 // ── Thread-local pointer ──────────────────────────────────────────────────────
 
 thread_local! {
-    static INPUT_PTR: Cell<Option<NonNull<InputState>>> = Cell::new(None);
+    static INPUT_PTR:   Cell<Option<NonNull<InputState>>> = Cell::new(None);
+    /// Per-frame copy of the project's input action map.
+    static ACTION_MAP:  RefCell<Vec<InputAction>>         = RefCell::new(Vec::new());
 }
 
 pub fn set_input_context(input: &mut InputState) {
@@ -27,6 +29,11 @@ pub fn set_input_context(input: &mut InputState) {
 
 pub fn clear_input_context() {
     INPUT_PTR.with(|c| c.set(None));
+}
+
+/// Called each frame by the host to push the current action map.
+pub fn set_action_map(actions: &[InputAction]) {
+    ACTION_MAP.with(|a| *a.borrow_mut() = actions.to_vec());
 }
 
 fn with_input<T, F: FnOnce(&InputState) -> T>(f: F) -> T {
@@ -151,5 +158,66 @@ pub fn build_input_module() -> Result<Module, ContextError> {
         with_input(|i| (i.gamepad_buttons >> (bit as u32)) & 1 == 1)
     }).build()?;
 
+    // ── Action Map ────────────────────────────────────────────────────────────
+
+    m.function("action_pressed", |name: Ref<str>| -> bool {
+        with_input(|i| {
+            ACTION_MAP.with(|a| i.action_pressed(&a.borrow(), name.as_ref()))
+        })
+    }).build()?;
+
+    m.function("action_value", |name: Ref<str>| -> f64 {
+        with_input(|i| {
+            ACTION_MAP.with(|a| i.action_value(&a.borrow(), name.as_ref()) as f64)
+        })
+    }).build()?;
+
+    // Adds a key binding to the named action at runtime.
+    // binding_str format: "Key:Space", "Key:MouseLeft", "GamepadButton:0",
+    //   "GamepadAxis:LeftX:0.5"
+    m.function("rebind_action", |name: Ref<str>, binding_str: Ref<str>| {
+        let binding = parse_binding_str(binding_str.as_ref());
+        if let Some(b) = binding {
+            let name_str = name.as_ref().to_string();
+            let b_clone = b.clone();
+            // Persist into project config so the change survives the next set_action_map call.
+            super::settings_module::modify_project_config(|cfg| {
+                if let Some(action) = cfg.settings.input.actions.iter_mut().find(|a| a.name == name_str) {
+                    action.bindings.push(b_clone);
+                }
+            });
+            // Also update the live thread-local for the current frame.
+            ACTION_MAP.with(|a| {
+                let mut map = a.borrow_mut();
+                if let Some(action) = map.iter_mut().find(|ac| ac.name == name.as_ref()) {
+                    action.bindings.push(b);
+                }
+            });
+        }
+    }).build()?;
+
+    // Returns [[name, analog_str, binding1, binding2, ...], ...] for all actions.
+    m.function("action_list", || -> Vec<Vec<String>> {
+        ACTION_MAP.with(|a| {
+            a.borrow().iter().map(|ac| {
+                let mut row = vec![ac.name.clone(), if ac.analog { "1".into() } else { "0".into() }];
+                for b in &ac.bindings { row.push(b.label()); }
+                row
+            }).collect()
+        })
+    }).build()?;
+
     Ok(m)
+}
+
+fn parse_binding_str(s: &str) -> Option<InputBinding> {
+    let parts: Vec<&str> = s.splitn(3, ':').collect();
+    match parts.as_slice() {
+        ["Key", code]              => Some(InputBinding::Key { code: code.to_string() }),
+        ["GamepadButton", idx]     => idx.parse::<u32>().ok().map(|i| InputBinding::GamepadButton { index: i }),
+        ["GamepadAxis", axis, thr] => thr.parse::<f32>().ok().map(|t| InputBinding::GamepadAxis {
+            axis: axis.to_string(), threshold: t,
+        }),
+        _                          => None,
+    }
 }

@@ -684,5 +684,117 @@ pub fn build_settings_module() -> anyhow::Result<Module> {
         SETTINGS_DIRTY_E.with(|d| d.set(false));
     }).build()?;
 
+    // ── CVar system ───────────────────────────────────────────────────────────
+
+    m.function("cvar_get", |name: String| -> String {
+        SETTINGS_CONFIG.with(|c| {
+            c.borrow()
+                .as_ref()
+                .and_then(|cfg| cfg.settings.cvars.get(&name).cloned())
+                .unwrap_or_default()
+        })
+    }).build()?;
+
+    m.function("cvar_set", |name: String, value: String| {
+        SETTINGS_CONFIG.with(|c| {
+            if let Some(cfg) = c.borrow_mut().as_mut() {
+                cfg.settings.cvars.insert(name, value);
+                SETTINGS_DIRTY_P.with(|d| d.set(true));
+            }
+        });
+    }).build()?;
+
+    m.function("cvar_get_float", |name: String| -> f64 {
+        SETTINGS_CONFIG.with(|c| {
+            c.borrow()
+                .as_ref()
+                .and_then(|cfg| cfg.settings.cvars.get(&name))
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(0.0)
+        })
+    }).build()?;
+
+    m.function("cvar_set_float", |name: String, value: f64| {
+        SETTINGS_CONFIG.with(|c| {
+            if let Some(cfg) = c.borrow_mut().as_mut() {
+                cfg.settings.cvars.insert(name, value.to_string());
+                SETTINGS_DIRTY_P.with(|d| d.set(true));
+            }
+        });
+    }).build()?;
+
+    m.function("cvar_get_bool", |name: String| -> bool {
+        SETTINGS_CONFIG.with(|c| {
+            c.borrow()
+                .as_ref()
+                .and_then(|cfg| cfg.settings.cvars.get(&name))
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false)
+        })
+    }).build()?;
+
+    m.function("cvar_set_bool", |name: String, value: bool| {
+        SETTINGS_CONFIG.with(|c| {
+            if let Some(cfg) = c.borrow_mut().as_mut() {
+                cfg.settings.cvars.insert(name, if value { "true".into() } else { "false".into() });
+                SETTINGS_DIRTY_P.with(|d| d.set(true));
+            }
+        });
+    }).build()?;
+
+    m.function("cvar_unset", |name: String| {
+        SETTINGS_CONFIG.with(|c| {
+            if let Some(cfg) = c.borrow_mut().as_mut() {
+                cfg.settings.cvars.remove(&name);
+                SETTINGS_DIRTY_P.with(|d| d.set(true));
+            }
+        });
+    }).build()?;
+
+    m.function("cvar_list", || -> Vec<Vec<String>> {
+        SETTINGS_CONFIG.with(|c| {
+            c.borrow()
+                .as_ref()
+                .map(|cfg| {
+                    let mut pairs: Vec<Vec<String>> = cfg.settings.cvars.iter()
+                        .map(|(k, v)| vec![k.clone(), v.clone()])
+                        .collect();
+                    pairs.sort_by(|a, b| a[0].cmp(&b[0]));
+                    pairs
+                })
+                .unwrap_or_default()
+        })
+    }).build()?;
+
+    // ── Collision layer names ─────────────────────────────────────────────────
+
+    m.function("layer_name", |index: i64| -> String {
+        SETTINGS_CONFIG.with(|c| {
+            c.borrow()
+                .as_ref()
+                .and_then(|cfg| cfg.settings.collision_layers.names.get(index as usize).cloned())
+                .unwrap_or_else(|| format!("Layer {}", index))
+        })
+    }).build()?;
+
+    m.function("layer_names", || -> Vec<String> {
+        SETTINGS_CONFIG.with(|c| {
+            c.borrow()
+                .as_ref()
+                .map(|cfg| cfg.settings.collision_layers.names.clone())
+                .unwrap_or_else(|| (0..32).map(|i: usize| format!("Layer {}", i)).collect())
+        })
+    }).build()?;
+
+    m.function("layer_index", |name: String| -> i64 {
+        SETTINGS_CONFIG.with(|c| {
+            c.borrow()
+                .as_ref()
+                .and_then(|cfg| cfg.settings.collision_layers.names.iter().position(|n| *n == name))
+                .map(|i| i as i64)
+                .unwrap_or(-1)
+        })
+    }).build()?;
+
     Ok(m)
 }

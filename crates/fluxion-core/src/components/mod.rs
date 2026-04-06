@@ -25,6 +25,8 @@ pub mod lod;
 pub mod environment;
 pub mod csg;
 pub mod script_behaviour;
+pub mod physics_material;
+pub mod audio_source;
 
 pub use mesh_renderer::MeshRenderer;
 pub use camera::{Camera, ProjectionMode, ClearFlags};
@@ -38,3 +40,5 @@ pub use lod::{LodGroup, LodLevel, LodSystem};
 pub use environment::{Environment, BackgroundMode, SkySettings, ToneMapMode, FogMode, AmbientSettings, FogSettings, ToneMapSettings, BloomSettings as EnvBloomSettings, SsaoSettings as EnvSsaoSettings, DofSettings, VignetteSettings, FilmSettings, sun_direction_from_angles};
 pub use csg::{CsgShape, CsgOperation, CsgPrimitive, CsgSystem};
 pub use script_behaviour::{ScriptBundle, ScriptEntry, ScriptField, derive_script_name, scan_struct_fields};
+pub use physics_material::{PhysicsMaterial, CombineMode};
+pub use audio_source::{AudioSource, AudioRolloffMode, AudioSystem};

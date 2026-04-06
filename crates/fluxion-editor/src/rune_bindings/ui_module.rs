@@ -445,6 +445,47 @@ fn render_project_content_v3(ui: &mut egui::Ui, tab: &str) {
             if let Some(v) = v3_slider(ui, "Gamepad Deadzone", "Analog stick dead zone", dz, dzd, 0.0, 0.9, 2) {
                 sm::modify_project_config(|c| c.settings.input.gamepad_deadzone = v.clamp(0.0,0.9));
             }
+
+            v3_section(ui, "Input Actions");
+            let actions = sm::with_project_config(|c| c.settings.input.actions.clone()).unwrap_or_default();
+            let mut remove_idx: Option<usize> = None;
+            for (idx, action) in actions.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(&action.name).color(sc_text()).size(11.0).strong());
+                    let kind_str = if action.analog { "analog" } else { "digital" };
+                    ui.label(egui::RichText::new(kind_str).color(sc_label()).size(10.0).italics());
+                    if !action.bindings.is_empty() {
+                        let binding_labels: Vec<String> = action.bindings.iter().map(|b| b.label()).collect();
+                        ui.label(egui::RichText::new(binding_labels.join(", ")).color(sc_label()).size(10.0));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new(egui::RichText::new("−").color(sc_red()).size(11.0)).small().frame(false)).clicked() {
+                            remove_idx = Some(idx);
+                        }
+                    });
+                });
+            }
+            if let Some(i) = remove_idx {
+                sm::modify_project_config(|c| { c.settings.input.actions.remove(i); });
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(egui::RichText::new("+ Digital").size(10.0)).small()).clicked() {
+                    sm::modify_project_config(|c| {
+                        let n = c.settings.input.actions.len() + 1;
+                        c.settings.input.actions.push(fluxion_core::InputAction::new_digital(
+                            format!("Action{}", n), "Space"));
+                    });
+                }
+                if ui.add(egui::Button::new(egui::RichText::new("+ Analog").size(10.0)).small()).clicked() {
+                    sm::modify_project_config(|c| {
+                        let n = c.settings.input.actions.len() + 1;
+                        c.settings.input.actions.push(fluxion_core::InputAction::new_analog(
+                            format!("Axis{}", n)));
+                    });
+                }
+            });
         }
         "Tags & Layers" => {
             v3_section(ui, "Tags");
@@ -460,6 +501,31 @@ fn render_project_content_v3(ui: &mut egui::Ui, tab: &str) {
             }
             if let Some(t) = to_remove {
                 sm::modify_project_config(|c| c.settings.tags.list.retain(|x| x != &t));
+            }
+            ui.add_space(4.0);
+
+            v3_section(ui, "Collision Layers");
+            ui.label(egui::RichText::new("Layers 0–15 (bit index = layer number):").color(sc_label()).size(10.0));
+            let layer_names = sm::with_project_config(|c| c.settings.collision_layers.names.clone())
+                .unwrap_or_default();
+            for i in 0..16usize {
+                let name = layer_names.get(i).cloned().unwrap_or_else(|| format!("Layer {}", i));
+                let mut buf = name.clone();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("{:>2}", i)).color(sc_label()).monospace().size(10.0));
+                    ui.add_space(4.0);
+                    let resp = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(160.0).font(egui::TextStyle::Small));
+                    if resp.lost_focus() && buf != name {
+                        let idx = i;
+                        let new_name = buf.clone();
+                        sm::modify_project_config(move |c| {
+                            if c.settings.collision_layers.names.len() <= idx {
+                                c.settings.collision_layers.names.resize(32, String::new());
+                            }
+                            c.settings.collision_layers.names[idx] = new_name.clone();
+                        });
+                    }
+                });
             }
             ui.add_space(4.0);
         }
@@ -650,6 +716,21 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             });
             v
         }).unwrap_or_else(|| value.as_ref().to_string())
+    }).build()?;
+
+    m.function("input_text_enter", |label: Ref<str>, value: Ref<str>| -> Vec<String> {
+        with_ui(|ui| {
+            let mut v = value.as_ref().to_string();
+            let mut submitted = false;
+            ui.horizontal(|ui| {
+                ui.label(label.as_ref());
+                let resp = ui.text_edit_singleline(&mut v);
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    submitted = true;
+                }
+            });
+            vec![if submitted { "1".to_string() } else { "0".to_string() }, v]
+        }).unwrap_or_else(|| vec!["0".to_string(), value.as_ref().to_string()])
     }).build()?;
 
     // ── Color pickers ─────────────────────────────────────────────────────────

@@ -154,6 +154,9 @@ thread_local! {
     // ── CSG box gizmo ─────────────────────────────────────────────────────────
     /// 0 = none, 1 = BoxFaceHandles, 2 = BoxAxisArrows
     static BOX_GIZMO_MODE: Cell<u8> = Cell::new(0);
+
+    // ── Console command bar ───────────────────────────────────────────────────
+    static CONSOLE_CMD_BUF: RefCell<String> = RefCell::new(String::new());
 }
 
 /// A deferred field mutation queued by Rune, applied after the panel call.
@@ -1416,6 +1419,8 @@ pub fn build_world_module() -> anyhow::Result<Module> {
     m.function("set_console_auto_scroll", |v: bool| { CONSOLE_AUTO_SCROLL.with(|c| c.set(v)); }).build()?;
     m.function("get_console_search", || -> String { CONSOLE_SEARCH.with(|c| c.borrow().clone()) }).build()?;
     m.function("set_console_search", |v: String| { CONSOLE_SEARCH.with(|c| *c.borrow_mut() = v); }).build()?;
+    m.function("get_console_cmd", || -> String { CONSOLE_CMD_BUF.with(|c| c.borrow().clone()) }).build()?;
+    m.function("set_console_cmd", |v: String| { CONSOLE_CMD_BUF.with(|c| *c.borrow_mut() = v); }).build()?;
 
     // ── Entity rename / duplicate ─────────────────────────────────────────────
 
@@ -1948,6 +1953,103 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                     entity:    eid,
                     component: "__set_script_field__".to_string(),
                     field:     packed,
+                    value:     ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    // ── Utility: split string by whitespace (for console command parsing) ────────
+    m.function("cmd_split", |s: Ref<str>| -> Vec<String> {
+        s.as_ref()
+            .split_whitespace()
+            .map(|p| p.to_string())
+            .collect()
+    }).build()?;
+
+    // ── Collision layers on RigidBody ─────────────────────────────────────────
+
+    m.function("get_collision_layer", |entity_id: i64| -> i64 {
+        if entity_id < 0 { return 1; }
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                WORLD_PTR.with(|w| {
+                    let ptr = w.get()?;
+                    let world = unsafe { ptr.as_ref() };
+                    let rb = world.get_component::<fluxion_core::RigidBody>(eid)?;
+                    Some(rb.collision_layer as i64)
+                }).unwrap_or(1)
+            } else { 1 }
+        })
+    }).build()?;
+
+    m.function("set_collision_layer", |entity_id: i64, layer: i64| {
+        if entity_id < 0 { return; }
+        ENTITY_CACHE.with(|cache| {
+            if let Some(&eid) = cache.borrow().get(&(entity_id as u64)) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity:    eid,
+                    component: "__set_collision_layer__".to_string(),
+                    field:     layer.to_string(),
+                    value:     ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    m.function("get_collision_mask", |entity_id: i64| -> i64 {
+        if entity_id < 0 { return -1; }
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                WORLD_PTR.with(|w| {
+                    let ptr = w.get()?;
+                    let world = unsafe { ptr.as_ref() };
+                    let rb = world.get_component::<fluxion_core::RigidBody>(eid)?;
+                    Some(rb.collision_mask as i64)
+                }).unwrap_or(-1)
+            } else { -1 }
+        })
+    }).build()?;
+
+    m.function("set_collision_mask", |entity_id: i64, mask: i64| {
+        if entity_id < 0 { return; }
+        ENTITY_CACHE.with(|cache| {
+            if let Some(&eid) = cache.borrow().get(&(entity_id as u64)) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity:    eid,
+                    component: "__set_collision_mask__".to_string(),
+                    field:     mask.to_string(),
+                    value:     ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
+    m.function("get_physics_material", |entity_id: i64| -> String {
+        if entity_id < 0 { return String::new(); }
+        ENTITY_CACHE.with(|cache| {
+            let map = cache.borrow();
+            if let Some(&eid) = map.get(&(entity_id as u64)) {
+                WORLD_PTR.with(|w| {
+                    let ptr = w.get()?;
+                    let world = unsafe { ptr.as_ref() };
+                    let rb = world.get_component::<fluxion_core::RigidBody>(eid)?;
+                    Some(rb.physics_material_path.clone())
+                }).unwrap_or_default()
+            } else { String::new() }
+        })
+    }).build()?;
+
+    m.function("set_physics_material", |entity_id: i64, path: String| {
+        if entity_id < 0 { return; }
+        ENTITY_CACHE.with(|cache| {
+            if let Some(&eid) = cache.borrow().get(&(entity_id as u64)) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity:    eid,
+                    component: "__set_physics_material__".to_string(),
+                    field:     path,
                     value:     ReflectValue::Bool(true),
                 }));
             }

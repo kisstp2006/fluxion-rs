@@ -7,6 +7,7 @@
 //   • Collapse identical messages (with ×N badge)
 //   • Scrollable log list with auto-scroll to bottom
 //   • Click row → select; detail panel shows full message
+//   • CVar command bar: "set <name> <value>" / "get <name>"
 // ============================================================
 
 pub mod console {
@@ -57,9 +58,10 @@ pub fn panel() {
 
     // ── Calculate panel heights ──────────────────────────────────────────────
     let total_h   = fluxion::ui::available_height();
+    let cmd_h     = 26.0;
     let detail_h  = 58.0;
-    let sep_h     = 6.0;
-    let list_h    = (total_h - detail_h - sep_h).max(40.0);
+    let sep_h     = 12.0;
+    let list_h    = (total_h - detail_h - sep_h - cmd_h).max(40.0);
 
     // ── Filtered entry list ──────────────────────────────────────────────────
     let entries = fluxion::world::log_entries_filtered(
@@ -91,6 +93,69 @@ pub fn panel() {
     } else {
         fluxion::ui::small("Select a message to see details.");
     }
+
+    fluxion::ui::separator();
+
+    // ── CVar command bar ─────────────────────────────────────────────────────
+    let cmd_buf = fluxion::world::get_console_cmd();
+    let result  = fluxion::ui::input_text_enter("  > ", cmd_buf);
+    let submitted = result[0] == "1";
+    fluxion::world::set_console_cmd(result[1].clone());
+    if submitted && result[1].len() > 0 {
+        handle_command(result[1].clone());
+        fluxion::world::set_console_cmd("");
+    }
+}
+
+fn handle_command(cmd) {
+    let parts = fluxion::world::cmd_split(cmd.clone());
+    if parts.is_empty() { return; }
+
+    let verb = parts[0].clone();
+
+    // "set <name> <value>"
+    if verb == "set" {
+        if parts.len() >= 3 {
+            let name  = parts[1].clone();
+            let value = parts[2].clone();
+            fluxion::settings::cvar_set(name.clone(), value.clone());
+            fluxion::world::log(`[CVar] ${name} = "${value}"`);
+        } else {
+            fluxion::world::log("[ERROR] Usage: set <name> <value>");
+        }
+        return;
+    }
+
+    // "get <name>"
+    if verb == "get" {
+        if parts.len() >= 2 {
+            let name = parts[1].clone();
+            let val  = fluxion::settings::cvar_get(name.clone());
+            if val.len() > 0 {
+                fluxion::world::log(`[CVar] ${name} = "${val}"`);
+            } else {
+                fluxion::world::log(`[CVar] ${name} is not set`);
+            }
+        } else {
+            fluxion::world::log("[ERROR] Usage: get <name>");
+        }
+        return;
+    }
+
+    // "cvars" — list all
+    if verb == "cvars" {
+        let pairs = fluxion::settings::cvar_list();
+        if pairs.is_empty() {
+            fluxion::world::log("[CVar] No cvars set.");
+        } else {
+            for pair in pairs {
+                fluxion::world::log(`[CVar] ${pair[0]} = "${pair[1]}"`);
+            }
+        }
+        return;
+    }
+
+    fluxion::world::log(`[ERROR] Unknown command: "${verb}". Try: set <name> <value> | get <name> | cvars`);
 }
 
 } // pub mod console

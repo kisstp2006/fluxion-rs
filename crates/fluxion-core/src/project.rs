@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use crate::input::{InputAction, default_input_actions};
 
 // ── Project audio settings ────────────────────────────────────────────────────
 
@@ -32,11 +33,18 @@ impl Default for ProjectAudioSettings {
 pub struct ProjectInputSettings {
     pub mouse_sensitivity: f32,
     pub gamepad_deadzone:  f32,
+    /// Named logical input actions and their key/button bindings.
+    #[serde(default = "default_input_actions")]
+    pub actions: Vec<InputAction>,
 }
 
 impl Default for ProjectInputSettings {
     fn default() -> Self {
-        Self { mouse_sensitivity: 1.0, gamepad_deadzone: 0.15 }
+        Self {
+            mouse_sensitivity: 1.0,
+            gamepad_deadzone:  0.15,
+            actions:           default_input_actions(),
+        }
     }
 }
 
@@ -163,6 +171,41 @@ impl Default for ProjectEditorSettings {
     }
 }
 
+// ── Collision layer settings ──────────────────────────────────────────────────
+
+fn default_layer_names() -> Vec<String> {
+    let mut v: Vec<String> = (0..32).map(|i| if i == 0 { "Default".to_string() } else { format!("Layer {}", i) }).collect();
+    v[1] = "TransparentFX".to_string();
+    v[2] = "IgnoreRaycast".to_string();
+    v[3] = "Water".to_string();
+    v[4] = "UI".to_string();
+    v
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollisionLayerSettings {
+    /// 32 layer names. Index == bit position in collision_layer/collision_mask.
+    #[serde(default = "default_layer_names")]
+    pub names: Vec<String>,
+}
+
+impl Default for CollisionLayerSettings {
+    fn default() -> Self {
+        Self { names: default_layer_names() }
+    }
+}
+
+// ── CVar (console variable) storage ──────────────────────────────────────────
+
+/// Runtime console variables stored in the .fluxproj file.
+/// Values are always strings; the Rune API provides typed getters/setters.
+/// Built-in cvar names: "r.shadows", "r.vsync", "r.tonemap",
+///   "a.master_volume", "p.gravity_y", "e.show_grid".
+pub fn default_cvars() -> std::collections::HashMap<String, String> {
+    std::collections::HashMap::new()
+}
+
 // ── Aggregated project settings ───────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -178,6 +221,12 @@ pub struct ProjectSettings {
     pub tags:     ProjectTagSettings,
     #[serde(default)]
     pub build:    ProjectBuildSettings,
+    /// Named collision layers (32 entries, index = bit position).
+    #[serde(default)]
+    pub collision_layers: CollisionLayerSettings,
+    /// Runtime console variables.  Key = cvar name, value = string representation.
+    #[serde(default)]
+    pub cvars:    std::collections::HashMap<String, String>,
 }
 
 // ── Main project config (.fluxproj) ──────────────────────────────────────────

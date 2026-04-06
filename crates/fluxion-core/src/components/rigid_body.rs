@@ -125,20 +125,38 @@ pub struct RigidBody {
     /// Friction coefficient. Range: [0, ∞); typically [0, 1].
     #[reflect(range(min = 0.0, max = 2.0))]
     pub friction: f32,
+    /// Collision layer bitmask: which layer(s) this body belongs to (default = 1 = "Default").
+    #[serde(default = "collision_layer_default")]
+    #[reflect(skip)]
+    pub collision_layer: u32,
+    /// Collision mask bitmask: which layers this body collides with (default = all).
+    #[serde(default = "collision_mask_default")]
+    #[reflect(skip)]
+    pub collision_mask: u32,
+    /// Optional path to a `.physmat` asset that overrides friction/restitution.
+    #[serde(default)]
+    #[reflect(skip)]
+    pub physics_material_path: String,
 }
+
+fn collision_layer_default() -> u32 { 1 }
+fn collision_mask_default()  -> u32 { 0xFFFF_FFFF }
 
 impl Default for RigidBody {
     fn default() -> Self {
         RigidBody {
-            shape:           PhysicsShape::default(),
-            body_type:       BodyType::Dynamic,
-            mass:            1.0,
-            linear_damping:  0.0,
-            angular_damping: 0.0,
-            gravity_scale:   1.0,
-            can_sleep:       true,
-            restitution:     0.0,
-            friction:        0.5,
+            shape:                  PhysicsShape::default(),
+            body_type:              BodyType::Dynamic,
+            mass:                   1.0,
+            linear_damping:         0.0,
+            angular_damping:        0.0,
+            gravity_scale:          1.0,
+            can_sleep:              true,
+            restitution:            0.0,
+            friction:               0.5,
+            collision_layer:        1,
+            collision_mask:         0xFFFF_FFFF,
+            physics_material_path:  String::new(),
         }
     }
 }

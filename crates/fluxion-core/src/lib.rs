@@ -44,7 +44,7 @@ pub use ecs::component::Component;
 pub use transform::Transform;
 pub use event::{EventBus, EventHandle, EngineEvent};
 pub use time::Time;
-pub use input::InputState;
+pub use input::{InputState, InputAction, InputBinding, default_input_actions};
 pub use facade::GameObject;
 pub use scene::{
     instantiate_entities, load_scene_from_bytes, load_scene_into_world, parse_prefab_json,
@@ -66,11 +66,14 @@ pub use components::{CameraController, ControllerType, CameraControllerSystem};
 pub use components::{Environment, BackgroundMode, SkySettings, ToneMapMode, FogMode, AmbientSettings, FogSettings, ToneMapSettings, DofSettings, VignetteSettings, FilmSettings, sun_direction_from_angles};
 pub use components::{EnvBloomSettings, EnvSsaoSettings};
 pub use components::{CsgShape, CsgOperation, CsgPrimitive, CsgSystem};
+pub use components::{PhysicsMaterial, CombineMode};
+pub use components::{AudioSource, AudioRolloffMode, AudioSystem};
 pub use particles::step_particle_emitters;
 pub use color::Color;
 pub use project::{ProjectConfig, ProjectSettings, ProjectPhysicsSettings,
     ProjectRenderSettings, ProjectEditorSettings, RecentProject,
-    ProjectAudioSettings, ProjectInputSettings, ProjectTagSettings, ProjectBuildSettings};
+    ProjectAudioSettings, ProjectInputSettings, ProjectTagSettings, ProjectBuildSettings,
+    CollisionLayerSettings};
 #[cfg(not(target_arch = "wasm32"))]
 pub use project::{
     load_project, save_project, create_project,

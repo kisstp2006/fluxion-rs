@@ -705,6 +705,7 @@ impl EditorInner {
                 "exit"           => std::process::exit(0),
                 "rescan_assets"  => {
                     self.host.asset_db.scan(&self.project_root);
+                    self.host.physmat_cache.clear();
                     log::info!("AssetDatabase rescan: {} assets", self.host.asset_db.count());
                 }
                 s if s.starts_with("load_scene:") => {
@@ -916,6 +917,7 @@ impl EditorInner {
                 }
                 if got_event {
                     self.host.asset_db.scan(&self.project_root);
+                    self.host.physmat_cache.clear();
                     log::info!("Asset watcher: rescan triggered ({} assets)", self.host.asset_db.count());
                     self.file_watcher_cooldown = 0.5; // 500 ms debounce
                 }
