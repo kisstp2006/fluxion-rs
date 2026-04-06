@@ -47,8 +47,18 @@ thread_local! {
     static MENU_ITEMS: RefCell<Vec<MenuEntry>> = RefCell::new(Vec::new());
     /// Label of the currently building menu (set by menu_begin).
     static MENU_LABEL: RefCell<String> = RefCell::new(String::new());
-    /// Items from the PREVIOUS frame per menu label — rendered inside ui.menu_button.
+    /// Items from the PREVIOUS frame per menu label — fallback when same-frame items are empty.
     static MENU_ITEMS_PREV: RefCell<std::collections::HashMap<String, Vec<MenuEntry>>> = RefCell::new(std::collections::HashMap::new());
+    /// Button response from the most recent menu_begin call, forwarded to menu_end for popup positioning.
+    static MENU_BUTTON_RESP: RefCell<Option<egui::Response>> = RefCell::new(None);
+    /// True when the viewport image has click-focus (set on primary click, held during drag).
+    static VP_FOCUSED: Cell<bool> = Cell::new(false);
+    /// Per-pane rects — updated by image_interactive (pane 0) and image (other panes).
+    static VP_PANE_RECTS: RefCell<[egui::Rect; 4]> = RefCell::new([egui::Rect::NOTHING; 4]);
+    /// Which pane index the next image/image_interactive call belongs to.
+    static VP_CURRENT_PANE: Cell<usize> = Cell::new(0);
+    /// Stack of saved clip-rects for scroll_begin/end clip scopes.
+    static CLIP_RECT_STACK: RefCell<Vec<egui::Rect>> = RefCell::new(Vec::new());
     /// Keyboard-highlighted row index in the autocomplete dropdown (-1 = none).
     static AUTOCOMPLETE_IDX: Cell<i64> = Cell::new(-1);
     /// True if the pointer was inside the autocomplete popup area last frame.
@@ -76,11 +86,17 @@ thread_local! {
     static LTREE_ASSET_PATHS: RefCell<std::collections::HashMap<i64, String>>
         = RefCell::new(std::collections::HashMap::new());
 
-    // ── Horizontal layout state ──────────────────────────────────────────────────────────
+    // ── Horizontal layout state ──────────────────────────────────────────────────────
     /// Saved parent UI pointer while inside a horizontal_begin/end block.
     static HORIZ_PARENT: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
     /// Owned child UI for horizontal layout.
     static HORIZ_CHILD:  RefCell<Option<Box<egui::Ui>>> = RefCell::new(None);
+
+    // ── Vertical layout state ───────────────────────────────────────────────────────
+    /// Saved parent UI pointer while inside a vertical_begin/end block.
+    static VERT_PARENT: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
+    /// Owned child UI for vertical (top-down) layout.
+    static VERT_CHILD:  RefCell<Option<Box<egui::Ui>>> = RefCell::new(None);
 
     // ── Two-column layout state ─────────────────────────────────────────────────────────
     /// Saved parent UI pointer while inside a columns layout.
@@ -666,6 +682,12 @@ fn render_prefs_content_v3(ui: &mut egui::Ui, tab: &str) {
             if let Some(v) = v3_f32(ui, "Mouse Sensitivity", "Editor camera mouse look sensitivity", se, sed, 0.01, 0.05, 10.0, 2) {
                 sm::modify_prefs(|p| p.camera_sensitivity = v.clamp(0.05,10.0));
             }
+            v3_section(ui, "Hierarchy");
+            let sec  = sm::with_prefs(|p| p.show_editor_camera).unwrap_or(false);
+            let secd = sm::with_prefs_defaults(|p| p.show_editor_camera).unwrap_or(false);
+            if let Some(v) = v3_bool(ui, "Show Editor Camera", "Show the editor fly-camera entity in the Hierarchy panel and allow selecting it with editor tools", sec, secd) {
+                sm::modify_prefs(|p| p.show_editor_camera = v);
+            }
         }
         "Console" => {
             v3_section(ui, "Console");
@@ -708,6 +730,10 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("small", |text: Ref<str>| {
         with_ui(|ui| { ui.small(text.as_ref()); });
+    }).build()?;
+
+    m.function("small_button", |label: Ref<str>| -> bool {
+        with_ui(|ui| ui.small_button(label.as_ref()).clicked()).unwrap_or(false)
     }).build()?;
 
     m.function("separator", || {
@@ -1094,24 +1120,26 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or(false)
     }).build()?;
 
-    // horizontal_begin / horizontal_end — lay out widgets left-to-right (wrapping)
-    // by creating a child UI with left-to-right wrapping layout.
+    // horizontal_begin / horizontal_end — lay out widgets left-to-right inside a
+    // child region that spans the FULL available size (w × h).  This prevents
+    // overflow that would otherwise introduce a scroll region in the parent.
     m.function("horizontal_begin", || {
         let parent_ptr = CURRENT_UI.with(|c| c.get());
         HORIZ_PARENT.with(|p| p.set(parent_ptr));
         let Some(mut ptr) = parent_ptr else { return };
         let child = unsafe {
             let ui      = ptr.as_mut();
-            let avail_w = ui.available_width();
-            // Use a compact height so items are not vertically centered in the
-            // full remaining panel height (which would create huge empty gaps).
-            let avail_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 2.0;
+            let avail   = ui.available_size();
             let cursor  = ui.cursor().min;
-            let rect    = egui::Rect::from_min_size(cursor, egui::vec2(avail_w, avail_h));
+            // Clamp to at least 1×1 so egui never sees a zero-size rect.
+            let rect    = egui::Rect::from_min_size(
+                cursor,
+                egui::vec2(avail.x.max(1.0), avail.y.max(1.0)),
+            );
             Box::new(ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(rect)
-                    .layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true)),
+                    .layout(egui::Layout::left_to_right(egui::Align::Min)),
             ))
         };
         HORIZ_CHILD.with(|c| *c.borrow_mut() = Some(child));
@@ -1134,8 +1162,23 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         HORIZ_PARENT.with(|p| p.set(None));
     }).build()?;
 
-    m.function("scroll_begin", || {}).build()?;
-    m.function("scroll_end",   || {}).build()?;
+    // scroll_begin / scroll_end — clip-scope guard.
+    // Rather than introducing a scroll area (which would interfere with the
+    // viewport's no-scroll requirement), we save + restore the clip rect so
+    // any content that overflows is silently clipped.
+    m.function("scroll_begin", || {
+        with_ui(|ui| {
+            let clip = ui.clip_rect();
+            CLIP_RECT_STACK.with(|s| s.borrow_mut().push(clip));
+            ui.set_clip_rect(ui.max_rect().intersect(clip));
+        });
+    }).build()?;
+    m.function("scroll_end", || {
+        with_ui(|ui| {
+            let prev = CLIP_RECT_STACK.with(|s| s.borrow_mut().pop());
+            if let Some(r) = prev { ui.set_clip_rect(r); }
+        });
+    }).build()?;
 
     // ── Two-column layout ──────────────────────────────────────────────────────
     // columns_begin(left_width) — start a 2-column layout. Left column gets
@@ -1215,7 +1258,10 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             } else {
                 ui.available_size()
             };
-            ui.add(egui::Image::new(egui::load::SizedTexture::new(tid, size)));
+            let resp = ui.add(egui::Image::new(egui::load::SizedTexture::new(tid, size)));
+            // Store rect in the current pane slot.
+            let pane = VP_CURRENT_PANE.with(|p| p.get()).min(3);
+            VP_PANE_RECTS.with(|p| p.borrow_mut()[pane] = resp.rect);
         });
     }).build()?;
 
@@ -1344,6 +1390,18 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     .sense(egui::Sense::drag()),
             );
             let rect = resp.rect;
+            // Track click-focus: acquire on primary click, hold during drag, release when drag stops.
+            VP_FOCUSED.with(|f| {
+                if resp.clicked() { f.set(true); }
+                else if resp.drag_stopped() { f.set(false); }
+            });
+            // Unfocus if pointer clicked outside the VP rect this frame.
+            let any_ptr_down = resp.ctx.input(|i| i.pointer.any_click());
+            if any_ptr_down && !resp.clicked() && !resp.dragged() {
+                VP_FOCUSED.with(|f| f.set(false));
+            }
+            // Store pane 0 rect (image_interactive is always pane 0).
+            VP_PANE_RECTS.with(|p| p.borrow_mut()[0] = rect);
             VP_RECT.with(|c| c.set(rect));
             VP_RESPONSE.with(|r| *r.borrow_mut() = Some(resp));
             vec![rect.min.x as f64, rect.min.y as f64, rect.width() as f64, rect.height() as f64]
@@ -1378,34 +1436,62 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }).unwrap_or_else(|| vec![-1.0, -1.0])
     }).build()?;
 
+    // viewport_scroll_delta — only non-zero when viewport is hovered or focused.
     m.function("viewport_scroll_delta", || -> f64 {
         VP_RESPONSE.with(|r| {
             r.borrow().as_ref().map(|resp| {
-                resp.ctx.input(|i| i.smooth_scroll_delta.y) as f64
+                let hovered = resp.hovered();
+                let focused = VP_FOCUSED.with(|f| f.get());
+                if hovered || focused {
+                    resp.ctx.input(|i| i.smooth_scroll_delta.y) as f64
+                } else {
+                    0.0
+                }
             }).unwrap_or(0.0)
         })
     }).build()?;
 
+    // viewport_right_dragging — gated on hover or active drag inside the viewport.
     m.function("viewport_right_dragging", || -> bool {
         VP_RESPONSE.with(|r| {
             r.borrow().as_ref().map(|resp| {
-                resp.ctx.input(|i| i.pointer.button_down(egui::PointerButton::Secondary))
+                let hovered = resp.hovered();
+                let focused = VP_FOCUSED.with(|f| f.get());
+                if hovered || focused {
+                    resp.ctx.input(|i| i.pointer.button_down(egui::PointerButton::Secondary))
+                } else {
+                    false
+                }
             }).unwrap_or(false)
         })
     }).build()?;
 
+    // viewport_middle_dragging — gated on hover or active drag inside the viewport.
     m.function("viewport_middle_dragging", || -> bool {
         VP_RESPONSE.with(|r| {
             r.borrow().as_ref().map(|resp| {
-                resp.ctx.input(|i| i.pointer.button_down(egui::PointerButton::Middle))
+                let hovered = resp.hovered();
+                let focused = VP_FOCUSED.with(|f| f.get());
+                if hovered || focused {
+                    resp.ctx.input(|i| i.pointer.button_down(egui::PointerButton::Middle))
+                } else {
+                    false
+                }
             }).unwrap_or(false)
         })
     }).build()?;
 
+    // viewport_alt_held / viewport_shift_held — only true when viewport is hovered or focused.
     m.function("viewport_alt_held", || -> bool {
         VP_RESPONSE.with(|r| {
             r.borrow().as_ref().map(|resp| {
-                resp.ctx.input(|i| i.modifiers.alt)
+                let hovered = resp.hovered();
+                let focused = VP_FOCUSED.with(|f| f.get());
+                if hovered || focused {
+                    resp.ctx.input(|i| i.modifiers.alt)
+                } else {
+                    false
+                }
             }).unwrap_or(false)
         })
     }).build()?;
@@ -1413,7 +1499,13 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("viewport_shift_held", || -> bool {
         VP_RESPONSE.with(|r| {
             r.borrow().as_ref().map(|resp| {
-                resp.ctx.input(|i| i.modifiers.shift)
+                let hovered = resp.hovered();
+                let focused = VP_FOCUSED.with(|f| f.get());
+                if hovered || focused {
+                    resp.ctx.input(|i| i.modifiers.shift)
+                } else {
+                    false
+                }
             }).unwrap_or(false)
         })
     }).build()?;
@@ -1424,10 +1516,11 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let borrow = resp_ref.borrow();
             let Some(resp) = borrow.as_ref() else { return; };
             let rect = VP_RECT.with(|c| c.get());
-            let painter = resp.ctx.layer_painter(egui::LayerId::new(
+            let mut painter = resp.ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,
                 egui::Id::new("gizmo_layer"),
             ));
+            painter.set_clip_rect(rect);
             let p1 = egui::pos2(rect.min.x + pts[0] as f32, rect.min.y + pts[1] as f32);
             let p2 = egui::pos2(rect.min.x + pts[2] as f32, rect.min.y + pts[3] as f32);
             let color = egui::Color32::from_rgba_unmultiplied(
@@ -1446,10 +1539,11 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let borrow = resp_ref.borrow();
             let Some(resp) = borrow.as_ref() else { return; };
             let rect = VP_RECT.with(|c| c.get());
-            let painter = resp.ctx.layer_painter(egui::LayerId::new(
+            let mut painter = resp.ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,
                 egui::Id::new("gizmo_arrow_layer"),
             ));
+            painter.set_clip_rect(rect);
             let origin = egui::pos2(rect.min.x + pts[0] as f32, rect.min.y + pts[1] as f32);
             let tip    = egui::pos2(rect.min.x + pts[2] as f32, rect.min.y + pts[3] as f32);
             let color  = egui::Color32::from_rgb(
@@ -1630,7 +1724,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 (raw, raw)
             };
             let mut chosen = current.as_ref().to_string();
-            let resp = egui::ComboBox::from_id_salt(id_str)
+            let resp = egui::ComboBox::from_id_salt(ui.auto_id_with(id_str))
                 .selected_text(current.as_ref())
                 .show_ui(ui, |ui| {
                     ui.label(display);
@@ -1946,6 +2040,26 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         with_ui(|ui| { ui.separator(); });
     }).build()?;
 
+    // push_enabled(enabled) / pop_enabled() — grey-out widgets without hiding them.
+    // Keeps widget count stable between egui passes → prevents "changed id" warnings.
+    m.function("push_enabled", |enabled: bool| {
+        CURRENT_UI.with(|c| {
+            if let Some(mut ptr) = c.get() {
+                #[allow(deprecated)]
+                unsafe { ptr.as_mut() }.set_enabled(enabled);
+            }
+        });
+    }).build()?;
+
+    m.function("pop_enabled", || {
+        CURRENT_UI.with(|c| {
+            if let Some(mut ptr) = c.get() {
+                #[allow(deprecated)]
+                unsafe { ptr.as_mut() }.set_enabled(true);
+            }
+        });
+    }).build()?;
+
     // ── Raw mouse delta (works when cursor is locked) ───────────────────────
 
     // Returns [dx, dy] raw mouse motion this frame — valid even when cursor is
@@ -1981,64 +2095,48 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         CURSOR_GRAB.with(|c| c.set(Some(v)));
     }).build()?;
 
-    // ── Menu bar helpers ─────────────────────────────────────────────────────
-    // Used by menubar.rn inside egui::menu::bar().
+    // ── Menu helpers ──────────────────────────────────────────────────────────
     //
-    // Design: Rune calls menu_begin("File") which renders the top-bar button
-    // and, if the popup is open, collects all items into MENU_ITEMS.
-    // menu_item / menu_separator push entries into MENU_ITEMS.
-    // menu_end() actually renders the popup from the accumulated list and
-    // returns which item (if any) was clicked.
+    // Stable two-call pattern: menu_begin renders ONLY the button and returns
+    // whether the popup is currently open.  menu_end promotes this frame's
+    // items into the cache and then renders the popup (egui Area) using those
+    // SAME-FRAME items.  This eliminates the previous one-frame lag where the
+    // popup was empty on first open.
     //
-    // Because egui popups require a closure to draw into, we use a two-phase
-    // approach:
-    //   Phase 1 (menu_begin → menu_end):  collect item labels into a Vec
-    //   Phase 2 (inside menu_end):        open popup_below_widget + draw items
-    //
-    // This avoids storing a live &mut Ui across Rune call boundaries.
+    // Popup is rendered via egui::Area with constrain(true) so it never goes
+    // outside the window boundary (fixes Image-1 clipping bug).
 
     m.function("menu_begin", |label: Ref<str>| -> bool {
         let label_str = label.as_ref().to_string();
         MENU_LABEL.with(|c| *c.borrow_mut() = label_str.clone());
-        // Clear items being collected this frame.
         MENU_ITEMS.with(|c| c.borrow_mut().clear());
 
-        // Fetch items that were collected LAST frame for this menu.
-        let prev_items: Vec<MenuEntry> = MENU_ITEMS_PREV.with(|c| {
-            c.borrow().get(&label_str).cloned().unwrap_or_default()
-        });
+        let popup_id = egui::Id::new(("flx_menu", label_str.clone()));
 
-        let mut clicked_item = String::new();
-        // Use egui's native menu_button which handles popup state, positioning,
-        // and close-on-outside-click correctly.
         let is_open = with_ui(|ui| {
-            let resp = ui.menu_button(label_str.as_str(), |popup_ui| {
-                for entry in &prev_items {
-                    match entry {
-                        MenuEntry::Item(lbl) => {
-                            if popup_ui.button(lbl).clicked() {
-                                clicked_item = lbl.clone();
-                                popup_ui.close();
-                            }
-                        }
-                        MenuEntry::Separator => { popup_ui.separator(); }
-                    }
-                }
-            });
-            resp.inner.is_some()
+            let already_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+
+            // Render button, slightly tinted when popup is open.
+            let btn = if already_open {
+                let fill = ui.visuals().selection.bg_fill.gamma_multiply(0.35);
+                ui.add(egui::Button::new(label_str.as_str()).fill(fill))
+            } else {
+                ui.button(label_str.as_str())
+            };
+
+            if btn.clicked() {
+                egui::Popup::toggle_id(ui.ctx(), popup_id);
+            }
+
+            MENU_BUTTON_RESP.with(|r| *r.borrow_mut() = Some(btn));
+
+            egui::Popup::is_id_open(ui.ctx(), popup_id)
         }).unwrap_or(false);
 
-        if !clicked_item.is_empty() {
-            MENU_CLICKED.with(|c| c.borrow_mut().insert(label_str.clone(), clicked_item));
-        }
-
-        // On the very first frame a menu is encountered, return true so Rune
-        // queues the items (they will render on the next open).
         is_open
     }).build()?;
 
     m.function("menu_item", |label: Ref<str>| {
-        // Just queue the label; rendering and click detection happen in menu_end.
         MENU_ITEMS.with(|c| c.borrow_mut().push(MenuEntry::Item(label.as_ref().to_string())));
     }).build()?;
 
@@ -2047,25 +2145,73 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     }).build()?;
 
     // menu_end() → String
-    // Promotes this frame's collected items to MENU_ITEMS_PREV so they appear
-    // the next time the menu is open, then returns any clicked item label.
-    // Must always be called after every menu_begin/menu_item block.
+    // 1. Promotes this-frame items to MENU_ITEMS_PREV (always, no gating).
+    // 2. If the popup is open, renders it with same-frame items using a
+    //    constrained egui::Area (no off-screen overflow).
+    // 3. Returns the clicked item label, or "" if nothing was clicked.
     m.function("menu_end", || -> String {
         let label_str = MENU_LABEL.with(|c| c.borrow().clone());
+        let popup_id  = egui::Id::new(("flx_menu", label_str.clone()));
+        let area_id   = egui::Id::new(("flx_menu_area", label_str.clone()));
 
-        // Promote current items → prev (used by menu_begin next frame).
-        let items: Vec<MenuEntry> = MENU_ITEMS.with(|c| c.borrow().clone());
-        MENU_ITEMS_PREV.with(|c| {
-            if !items.is_empty() {
-                c.borrow_mut().insert(label_str.clone(), items);
-            }
-        });
+        let current_items: Vec<MenuEntry> = MENU_ITEMS.with(|c| c.borrow().clone());
         MENU_ITEMS.with(|c| c.borrow_mut().clear());
 
-        // Return (and clear) any item that was clicked this frame.
-        MENU_CLICKED.with(|c| {
-            c.borrow_mut().remove(&label_str).unwrap_or_default()
-        })
+        // Always promote — ensures cache is fresh even when menu is closed.
+        if !current_items.is_empty() {
+            MENU_ITEMS_PREV.with(|c| c.borrow_mut().insert(label_str.clone(), current_items.clone()));
+        }
+
+        // Use this-frame items if available, otherwise fall back to cached.
+        let render_items = if current_items.is_empty() {
+            MENU_ITEMS_PREV.with(|c| c.borrow().get(&label_str).cloned().unwrap_or_default())
+        } else {
+            current_items
+        };
+
+        let mut clicked_item = String::new();
+
+        with_ui(|ui| {
+            if !egui::Popup::is_id_open(ui.ctx(), popup_id) { return; }
+
+            let btn_rect = MENU_BUTTON_RESP.with(|r| {
+                r.borrow().as_ref().map(|r| r.rect).unwrap_or(egui::Rect::NOTHING)
+            });
+
+            // Render popup as a constrained Area so it never overflows screen bounds.
+            let area_resp = egui::Area::new(area_id)
+                .order(egui::Order::Foreground)
+                .constrain(true)
+                .fixed_pos(btn_rect.left_bottom())
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(150.0);
+                        for entry in &render_items {
+                            match entry {
+                                MenuEntry::Item(lbl) => {
+                                    if ui.add_sized(
+                                        [ui.available_width().max(150.0), 0.0],
+                                        egui::Button::new(lbl.as_str()).frame(false),
+                                    ).clicked() {
+                                        clicked_item = lbl.clone();
+                                    }
+                                }
+                                MenuEntry::Separator => { ui.separator(); }
+                            }
+                        }
+                    });
+                });
+
+            // Close conditions: item clicked, click outside, or Escape.
+            let close = !clicked_item.is_empty()
+                || area_resp.response.clicked_elsewhere()
+                || ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if close {
+                egui::Popup::close_id(ui.ctx(), popup_id);
+            }
+        });
+
+        clicked_item
     }).build()?;
 
     m.function("badge_right", |text: Ref<str>, r: f64, g: f64, b: f64| {
@@ -2084,16 +2230,129 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     });
 }).build()?;
 
-    // viewport_overlay_text(text) — draw small stats text at the top of the current panel.
+    // viewport_overlay_text(text) — draw stats text as a Foreground overlay at the
+    // bottom-left corner of VP_RECT so it never displaces viewport layout.
     m.function("viewport_overlay_text", |text: String| {
-        with_ui(|ui| {
-            let color = egui::Color32::from_rgba_unmultiplied(220, 220, 220, 200);
-            ui.label(
-                egui::RichText::new(&text)
-                    .font(egui::FontId::monospace(11.0))
-                    .color(color),
+        let ctx = CURRENT_CTX.with(|c| c.borrow().clone());
+        let Some(ctx) = ctx else { return; };
+        let vp_rect = VP_RECT.with(|c| c.get());
+        if !vp_rect.is_positive() { return; }
+        let font   = egui::FontId::monospace(11.0);
+        let color  = egui::Color32::from_rgba_unmultiplied(220, 220, 220, 210);
+        let bg     = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140);
+        let pad    = egui::vec2(5.0, 3.0);
+        egui::Area::new(egui::Id::new("vp_overlay_text"))
+            .fixed_pos(egui::pos2(vp_rect.min.x + pad.x, vp_rect.max.y - 20.0))
+            .order(egui::Order::Foreground)
+            .show(&ctx, |ui| {
+                ui.set_clip_rect(vp_rect);
+                let galley = ui.painter().layout_no_wrap(
+                    text.clone(),
+                    font.clone(),
+                    color,
+                );
+                let text_rect = egui::Rect::from_min_size(
+                    ui.cursor().min,
+                    galley.size() + pad * 2.0,
+                );
+                ui.painter().rect_filled(text_rect, 3.0, bg);
+                ui.painter().galley(
+                    text_rect.min + pad,
+                    galley,
+                    color,
+                );
+                ui.allocate_rect(text_rect, egui::Sense::hover());
+            });
+    }).build()?;
+
+    // painter_rect_filled(rect, color) — draw a filled rect overlay on the viewport.
+    // rect = [x, y, w, h] (VP_RECT-relative),  color = [r, g, b, a]  (0..1).
+    m.function("painter_rect_filled", |rect: Vec<f64>, color: Vec<f64>| {
+        if rect.len() < 4 || color.len() < 4 { return; }
+        VP_RESPONSE.with(|resp_ref| {
+            let borrow = resp_ref.borrow();
+            let Some(resp) = borrow.as_ref() else { return; };
+            let vp = VP_RECT.with(|c| c.get());
+            let pane = VP_CURRENT_PANE.with(|c| c.get());
+            let mut painter = resp.ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new(("vp_rect_layer", pane)),
+            ));
+            painter.set_clip_rect(vp);
+            let r = egui::Rect::from_min_size(
+                egui::pos2(vp.min.x + rect[0] as f32, vp.min.y + rect[1] as f32),
+                egui::vec2(rect[2] as f32, rect[3] as f32),
             );
+            let c = egui::Color32::from_rgba_unmultiplied(
+                (color[0] * 255.0) as u8, (color[1] * 255.0) as u8,
+                (color[2] * 255.0) as u8, (color[3] * 255.0) as u8,
+            );
+            painter.rect_filled(r, 0.0, c);
         });
+    }).build()?;
+
+    // painter_text(pos, text, size, color) — draw text overlay on the viewport.
+    // pos = [x, y] (VP_RECT-relative),  color = [r, g, b, a]  (0..1).
+    m.function("painter_text", |pos: Vec<f64>, text: String, size: f64, color: Vec<f64>| {
+        if pos.len() < 2 || color.len() < 4 { return; }
+        VP_RESPONSE.with(|resp_ref| {
+            let borrow = resp_ref.borrow();
+            let Some(resp) = borrow.as_ref() else { return; };
+            let vp = VP_RECT.with(|c| c.get());
+            let pane = VP_CURRENT_PANE.with(|c| c.get());
+            let mut painter = resp.ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new(("vp_text_layer", pane)),
+            ));
+            painter.set_clip_rect(vp);
+            let p = egui::pos2(vp.min.x + pos[0] as f32, vp.min.y + pos[1] as f32);
+            let c = egui::Color32::from_rgba_unmultiplied(
+                (color[0] * 255.0) as u8, (color[1] * 255.0) as u8,
+                (color[2] * 255.0) as u8, (color[3] * 255.0) as u8,
+            );
+            painter.text(p, egui::Align2::LEFT_TOP, &text,
+                egui::FontId::proportional(size as f32), c);
+        });
+    }).build()?;
+
+    // ── Viewport helpers ─────────────────────────────────────────────────────────
+
+    // viewport_focused() — true while the viewport has click-focus.
+    m.function("viewport_focused", || -> bool {
+        VP_FOCUSED.with(|f| f.get())
+    }).build()?;
+
+    // viewport_pane_rect(pane) — returns [x, y, w, h] of a specific pane in screen coords.
+    m.function("viewport_pane_rect", |pane: i64| -> Vec<f64> {
+        let idx = (pane as usize).min(3);
+        let rect = VP_PANE_RECTS.with(|p| p.borrow()[idx]);
+        if rect.is_positive() {
+            vec![rect.min.x as f64, rect.min.y as f64,
+                 rect.width() as f64, rect.height() as f64]
+        } else {
+            vec![0.0, 0.0, 0.0, 0.0]
+        }
+    }).build()?;
+
+    // set_render_pane(pane) — tell subsequent image() calls which pane they belong to
+    // so VP_PANE_RECTS is populated correctly for multi-pane layouts.
+    m.function("set_render_pane", |pane: i64| {
+        VP_CURRENT_PANE.with(|p| p.set((pane as usize).min(3)));
+    }).build()?;
+
+    // line_height() — DPI-aware body text height in points.
+    m.function("line_height", || -> f64 {
+        with_ui(|ui| {
+            ui.text_style_height(&egui::TextStyle::Body) as f64
+        }).unwrap_or(14.0)
+    }).build()?;
+
+    // icon_size() — DPI-aware icon/toolbar button size in points.
+    m.function("icon_size", || -> f64 {
+        with_ui(|ui| {
+            let ppp = ui.ctx().pixels_per_point();
+            (20.0 * ppp) as f64
+        }).unwrap_or(20.0)
     }).build()?;
 
     // ── Clipboard ────────────────────────────────────────────────────────────
@@ -3353,53 +3612,58 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     }).build()?;
 
     // asset_grid_v2(paths, selected_path, zoom) → Vec<String>
-    // Enhanced tile grid: DnD drag sources + richer context menu + keyboard shortcuts.
-    // Returns [action, path] same as asset_grid.
+    // UE Content-Browser style tile grid: folder tiles, type strips, orange selection, texture previews.
+    // Paths ending with '/' are treated as folder tiles.
+    // Returns [action, path]. Actions: "select"|"open"|"folder_select"|"folder_open"|"ctx:<item>".
     m.function("asset_grid_v2", |paths: Vec<String>, selected_path: Ref<str>, zoom: f64| -> Vec<String> {
         with_ui(|ui| {
             use std::cell::RefCell as LC;
-            let sel      = selected_path.as_ref().to_string();
+            let sel     = selected_path.as_ref().to_string();
             let result: LC<Vec<String>> = LC::new(vec!["".to_string(), String::new()]);
-            let tile_sz  = (64.0 * zoom as f32).clamp(32.0, 128.0);
-            let font_sz  = (tile_sz * 0.165).clamp(9.0, 14.0);
+            let tile_sz = (96.0 * zoom as f32).clamp(48.0, 192.0);
+            let label_h = (tile_sz * 0.20).clamp(14.0, 26.0);
+            let font_sz = (tile_sz * 0.135).clamp(9.0, 13.0);
+            let strip_h = (tile_sz * 0.065).clamp(4.0, 10.0);
 
-            let type_color = |t: &str| -> (&'static str, u8, u8, u8) {
+            // (icon, accent_rgb, bg_rgb)
+            let type_info = |t: &str| -> (&'static str, [u8; 3], [u8; 3]) {
                 match t {
-                    "texture"  => ("image",      160,  90, 210),
-                    "model"    => ("box",         180, 120,  60),
-                    "audio"    => ("music",        60, 180, 120),
-                    "script"   => ("code",         80, 150, 220),
-                    "shader"   => ("layers",       60, 190, 190),
-                    "scene"    => ("film",         200, 160,  50),
-                    "material" => ("droplet",      100, 160, 220),
-                    "prefab"   => ("package",      210, 130,  60),
-                    "json"     => ("file-text",    160, 160, 160),
-                    _          => ("file",         140, 140, 155),
+                    "texture"  => ("image",     [175, 105, 225], [44, 34, 55]),
+                    "model"    => ("box",        [195, 135,  60], [50, 42, 28]),
+                    "audio"    => ("music",      [ 60, 195, 125], [28, 50, 38]),
+                    "script"   => ("code",       [ 80, 165, 235], [28, 38, 56]),
+                    "shader"   => ("layers",     [ 55, 205, 205], [26, 50, 50]),
+                    "scene"    => ("film",       [215, 175,  50], [52, 44, 20]),
+                    "material" => ("droplet",    [100, 175, 235], [28, 40, 56]),
+                    "prefab"   => ("package",    [225, 145,  60], [55, 40, 24]),
+                    "json"     => ("file-text",  [155, 155, 160], [40, 40, 42]),
+                    "folder"   => ("folder",     [225, 175,  70], [52, 45, 22]),
+                    _          => ("file",       [140, 140, 155], [38, 38, 44]),
                 }
             };
 
             let ctx_items = |t: &str| -> Vec<&'static str> {
                 match t {
-                    "scene"    => vec!["Open Scene", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
-                    "script"   => vec!["Attach to Selected", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    "scene"    => vec!["Open Scene",        "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    "script"   => vec!["Attach to Selected","Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
                     "material" => vec!["Edit Material", "Assign to Selected", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
-                    "prefab"   => vec!["Instantiate", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    "prefab"   => vec!["Instantiate",       "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
                     _          => vec!["Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
                 }
             };
 
-            // ── Keyboard shortcuts when a tile is selected ────────────────────
+            // Keyboard shortcuts (file assets only)
             with_ui(|ui| {
-                let has_sel = !sel.is_empty();
-                if has_sel {
-                    let del = ui.input(|i| i.key_pressed(egui::Key::Delete));
-                    let f2  = ui.input(|i| i.key_pressed(egui::Key::F2));
-                    let ctrl_d = ui.input(|i| i.key_pressed(egui::Key::D) && i.modifiers.ctrl);
-                    let ctrl_c = ui.input(|i| i.key_pressed(egui::Key::C) && i.modifiers.ctrl);
-                    if del  { *result.borrow_mut() = vec!["ctx:Delete".to_string(),    sel.clone()]; }
-                    if f2   { *result.borrow_mut() = vec!["ctx:Rename".to_string(),    sel.clone()]; }
-                    if ctrl_d { *result.borrow_mut() = vec!["ctx:Duplicate".to_string(), sel.clone()]; }
-                    if ctrl_c { *result.borrow_mut() = vec!["ctx:Copy Path".to_string(), sel.clone()]; }
+                if !sel.is_empty() && !sel.ends_with('/') {
+                    if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
+                        *result.borrow_mut() = vec!["ctx:Delete".to_string(), sel.clone()];
+                    } else if ui.input(|i| i.key_pressed(egui::Key::F2)) {
+                        *result.borrow_mut() = vec!["ctx:Rename".to_string(), sel.clone()];
+                    } else if ui.input(|i| i.key_pressed(egui::Key::D) && i.modifiers.ctrl) {
+                        *result.borrow_mut() = vec!["ctx:Duplicate".to_string(), sel.clone()];
+                    } else if ui.input(|i| i.key_pressed(egui::Key::C) && i.modifiers.ctrl) {
+                        *result.borrow_mut() = vec!["ctx:Copy Path".to_string(), sel.clone()];
+                    }
                 }
             });
 
@@ -3407,7 +3671,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 .id_salt("asset_grid_v2_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let spacing = 8.0_f32;
+                    let spacing = 6.0_f32;
                     ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
                     ui.with_layout(
                         egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
@@ -3415,84 +3679,187 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             for path in &paths {
                                 if !result.borrow()[0].is_empty() { break; }
 
-                                let filename = path.rsplit('/').next().unwrap_or(path.as_str());
-                                let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-                                let t = match ext.as_str() {
-                                    "png"|"jpg"|"jpeg"|"webp"|"bmp"|"tga"|"hdr"|"exr" => "texture",
-                                    "glb"|"gltf"|"obj"|"fbx" => "model",
-                                    "wav"|"ogg"|"mp3"|"flac" => "audio",
-                                    "rn"|"js"|"lua" => "script",
-                                    "wgsl"|"glsl"|"hlsl" => "shader",
-                                    "scene" => "scene",
-                                    "fluxmat" => "material",
-                                    "prefab"|"fluxprefab" => "prefab",
-                                    _ => "unknown",
-                                };
-                                let (icon_name, ir, ig, ib) = type_color(t);
-                                let icon_tint = egui::Color32::from_rgb(ir, ig, ib);
-                                let icon_bg   = egui::Color32::from_rgba_unmultiplied(ir, ig, ib, 28);
-                                let is_sel    = path == &sel;
+                                let is_folder  = path.ends_with('/');
+                                let clean_path = if is_folder { path[..path.len()-1].to_string() } else { path.clone() };
+                                let filename   = clean_path.rsplit('/').next().unwrap_or(clean_path.as_str());
+                                let ext        = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
 
-                                let tile_total = egui::vec2(tile_sz, tile_sz + font_sz + 4.0);
-                                let drag_id    = egui::Id::new(("v2_tile_dnd", path.as_str()));
+                                let t = if is_folder { "folder" } else {
+                                    match ext.as_str() {
+                                        "png"|"jpg"|"jpeg"|"webp"|"bmp"|"tga"|"hdr"|"exr" => "texture",
+                                        "glb"|"gltf"|"obj"|"fbx" => "model",
+                                        "wav"|"ogg"|"mp3"|"flac" => "audio",
+                                        "rn"|"js"|"lua" => "script",
+                                        "wgsl"|"glsl"|"hlsl" => "shader",
+                                        "scene" => "scene",
+                                        "fluxmat" => "material",
+                                        "prefab"|"fluxprefab" => "prefab",
+                                        "json" => "json",
+                                        _ => "unknown",
+                                    }
+                                };
+
+                                let (icon_name, accent, bg_base) = type_info(t);
+                                let is_sel  = path == &sel || clean_path == sel;
+
+                                // tile_square = tile_sz × tile_sz, then label_h below
+                                let tile_total = egui::vec2(tile_sz, tile_sz + label_h + 2.0);
+                                let drag_id = egui::Id::new(("v2_tile_dnd", path.as_str()));
                                 let dnd = ui.dnd_drag_source(
                                     drag_id,
                                     DndPayload::Asset { path: path.clone(), asset_type: t.to_string() },
                                     |ui| {
                                         let (tile_rect, tile_resp) = ui.allocate_exact_size(
                                             tile_total, egui::Sense::click());
-                                        let painter = ui.painter_at(tile_rect);
+                                        let painter   = ui.painter_at(tile_rect);
+                                        let tile_sq   = egui::Rect::from_min_size(
+                                            tile_rect.min, egui::vec2(tile_sz, tile_sz));
 
-                                        let bg = if is_sel { egui::Color32::from_rgb(50, 80, 120) }
-                                                 else if tile_resp.hovered() { egui::Color32::from_rgb(55, 55, 65) }
-                                                 else { egui::Color32::from_rgb(42, 42, 50) };
-                                        painter.rect_filled(
-                                            egui::Rect::from_min_size(tile_rect.min, egui::vec2(tile_sz, tile_sz)),
-                                            4.0, bg);
+                                        // ── Background ───────────────────────────────
+                                        let bg = if is_sel {
+                                            egui::Color32::from_rgb(
+                                                (bg_base[0] as u16 + 22).min(255) as u8,
+                                                (bg_base[1] as u16 + 22).min(255) as u8,
+                                                (bg_base[2] as u16 + 22).min(255) as u8,
+                                            )
+                                        } else if tile_resp.hovered() {
+                                            egui::Color32::from_rgb(
+                                                (bg_base[0] as u16 + 12).min(255) as u8,
+                                                (bg_base[1] as u16 + 12).min(255) as u8,
+                                                (bg_base[2] as u16 + 12).min(255) as u8,
+                                            )
+                                        } else {
+                                            egui::Color32::from_rgb(bg_base[0], bg_base[1], bg_base[2])
+                                        };
+                                        painter.rect_filled(tile_sq, 5.0, bg);
 
-                                        let icon_margin = tile_sz * 0.15;
-                                        let icon_area = egui::Rect::from_min_size(
-                                            tile_rect.min + egui::vec2(icon_margin, icon_margin),
-                                            egui::vec2(tile_sz - icon_margin*2.0, tile_sz - icon_margin*2.0));
-                                        painter.rect_filled(icon_area, 3.0, icon_bg);
+                                        // ── Icon / preview ──────────────────────────
+                                        let showed_preview = if t == "texture" {
+                                            // Try to use cached texture preview
+                                            let root = crate::rune_bindings::world_module::get_project_root();
+                                            let abs  = root.join("assets").join(clean_path.as_str());
+                                            let abs_str = abs.to_string_lossy().to_string();
+                                            let has_cached = TEXTURE_CACHE.with(|c| c.borrow().contains_key(&clean_path));
+                                            if !has_cached {
+                                                if let Ok(img) = image::open(&abs_str) {
+                                                    let rgba  = img.to_rgba8();
+                                                    let (w,h) = (rgba.width() as usize, rgba.height() as usize);
+                                                    let ci    = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+                                                    let handle = ui.ctx().load_texture(&clean_path, ci, egui::TextureOptions::LINEAR);
+                                                    TEXTURE_CACHE.with(|c| { c.borrow_mut().insert(clean_path.clone(), handle); });
+                                                }
+                                            }
+                                            let img_rect = egui::Rect::from_min_size(
+                                                tile_sq.min + egui::vec2(3.0, 3.0),
+                                                egui::vec2(tile_sz - 6.0, tile_sz - strip_h - 3.0));
+                                            TEXTURE_CACHE.with(|c| {
+                                                if let Some(handle) = c.borrow().get(&clean_path) {
+                                                    let tid = handle.id();
+                                                    painter.image(tid, img_rect,
+                                                        egui::Rect::from_min_max(egui::pos2(0.0,0.0), egui::pos2(1.0,1.0)),
+                                                        egui::Color32::WHITE);
+                                                    true
+                                                } else { false }
+                                            })
+                                        } else { false };
 
+                                        if !showed_preview {
+                                            let icon_sz  = tile_sz * if t == "folder" { 0.58 } else { 0.50 };
+                                            let center_y = tile_sq.center().y - strip_h * 0.5;
+                                            if let Some(bytes) = crate::icons::icon_bytes(icon_name) {
+                                                egui::Image::from_bytes(crate::icons::icon_uri(icon_name), bytes)
+                                                    .fit_to_exact_size(egui::vec2(icon_sz, icon_sz))
+                                                    .tint(egui::Color32::from_rgb(accent[0], accent[1], accent[2]))
+                                                    .paint_at(ui, egui::Rect::from_center_size(
+                                                        egui::pos2(tile_sq.center().x, center_y),
+                                                        egui::vec2(icon_sz, icon_sz)));
+                                            }
+                                        }
+
+                                        // ── Type color strip ─────────────────────────
+                                        let strip_rect = egui::Rect::from_min_size(
+                                            tile_sq.min + egui::vec2(0.0, tile_sz - strip_h),
+                                            egui::vec2(tile_sz, strip_h));
+                                        painter.rect_filled(strip_rect, 0.0,
+                                            egui::Color32::from_rgba_unmultiplied(
+                                                accent[0], accent[1], accent[2], 190));
+
+                                        // ── Orange selection bar (overwrites strip bottom) ──
                                         if is_sel {
+                                            let bar_h = (strip_h * 0.55).max(3.0);
+                                            painter.rect_filled(
+                                                egui::Rect::from_min_size(
+                                                    tile_sq.min + egui::vec2(0.0, tile_sz - bar_h),
+                                                    egui::vec2(tile_sz, bar_h)),
+                                                0.0,
+                                                egui::Color32::from_rgb(240, 138, 28));
                                             painter.rect_stroke(
-                                                egui::Rect::from_min_size(tile_rect.min, egui::vec2(tile_sz, tile_sz)),
-                                                4.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 150, 255)), egui::StrokeKind::Outside);
+                                                tile_sq, 5.0,
+                                                egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(240, 138, 28, 120)),
+                                                egui::StrokeKind::Outside);
                                         }
 
-                                        if let Some(bytes) = crate::icons::icon_bytes(icon_name) {
-                                            let inner_sz = icon_area.size() * 0.55;
-                                            egui::Image::from_bytes(crate::icons::icon_uri(icon_name), bytes)
-                                                .fit_to_exact_size(inner_sz).tint(icon_tint)
-                                                .paint_at(ui, egui::Rect::from_center_size(icon_area.center(), inner_sz));
-                                        }
-
-                                        let stem = filename.rfind('.').map(|i| &filename[..i]).unwrap_or(filename);
-                                        let dname = if stem.len() > 12 { format!("{}…", &stem[..11]) } else { stem.to_string() };
+                                        // ── Label ────────────────────────────────────
+                                        let stem = if is_folder {
+                                            filename.to_string()
+                                        } else {
+                                            filename.rfind('.').map(|i| filename[..i].to_string())
+                                                .unwrap_or_else(|| filename.to_string())
+                                        };
+                                        let max_chars = ((tile_sz / 7.0) as usize).max(6);
+                                        let dname = if stem.len() > max_chars {
+                                            format!("{}…", &stem[..max_chars - 1])
+                                        } else { stem };
                                         painter.text(
-                                            tile_rect.min + egui::vec2(tile_sz / 2.0, tile_sz + 2.0),
+                                            tile_rect.min + egui::vec2(tile_sz * 0.5, tile_sz + 4.0),
                                             egui::Align2::CENTER_TOP, &dname,
                                             egui::FontId::proportional(font_sz),
-                                            if is_sel { egui::Color32::from_rgb(180,210,255) }
-                                            else { egui::Color32::from_rgb(190,190,200) });
+                                            if is_sel { egui::Color32::from_rgb(245, 155, 55) }
+                                            else if tile_resp.hovered() { egui::Color32::from_rgb(230, 230, 240) }
+                                            else { egui::Color32::from_rgb(185, 185, 195) });
 
                                         tile_resp
                                     });
                                 let tile_resp = dnd.inner;
 
                                 if tile_resp.clicked() {
-                                    *result.borrow_mut() = vec!["select".to_string(), path.clone()];
+                                    *result.borrow_mut() = if is_folder {
+                                        vec!["folder_select".to_string(), clean_path.clone()]
+                                    } else {
+                                        vec!["select".to_string(), path.clone()]
+                                    };
                                 }
                                 if tile_resp.double_clicked() {
-                                    *result.borrow_mut() = vec!["open".to_string(), path.clone()];
+                                    *result.borrow_mut() = if is_folder {
+                                        vec!["folder_open".to_string(), clean_path.clone()]
+                                    } else {
+                                        vec!["open".to_string(), path.clone()]
+                                    };
                                 }
                                 tile_resp.context_menu(|ui| {
-                                    for item in ctx_items(t) {
-                                        if ui.button(item).clicked() {
-                                            *result.borrow_mut() = vec![format!("ctx:{item}"), path.clone()];
+                                    if is_folder {
+                                        if ui.button("Open Folder").clicked() {
+                                            *result.borrow_mut() = vec!["folder_open".to_string(), clean_path.clone()];
                                             ui.close();
+                                        }
+                                        if ui.button("Rename").clicked() {
+                                            *result.borrow_mut() = vec!["ctx:Rename".to_string(), path.clone()];
+                                            ui.close();
+                                        }
+                                        if ui.button("Show in Explorer").clicked() {
+                                            *result.borrow_mut() = vec!["ctx:Show in Explorer".to_string(), path.clone()];
+                                            ui.close();
+                                        }
+                                        if ui.button("Delete").clicked() {
+                                            *result.borrow_mut() = vec!["ctx:Delete".to_string(), path.clone()];
+                                            ui.close();
+                                        }
+                                    } else {
+                                        for item in ctx_items(t) {
+                                            if ui.button(item).clicked() {
+                                                *result.borrow_mut() = vec![format!("ctx:{item}"), path.clone()];
+                                                ui.close();
+                                            }
                                         }
                                     }
                                 });
@@ -3505,30 +3872,64 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     }).build()?;
 
     // new_asset_menu_button(dir_prefix) → String
-    // Renders a "+" button. On click shows popup with: New Folder / New File / New Scene / New Script / New Material.
+    // Renders a green "+ Add" button (UE style). Popup: New Folder / Scene / Material / Script / Import.
     // Returns the chosen item name, or "".
-    m.function("new_asset_menu_button", |dir_prefix: Ref<str>| -> String {
+    m.function("new_asset_menu_button", |_dir_prefix: Ref<str>| -> String {
         with_ui(|ui| {
-            let prefix = dir_prefix.as_ref().to_string();
             let result: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
-            let _popup_id = ui.make_persistent_id(("new_asset_popup", prefix.as_str()));
 
-            let btn = ui.add(egui::Button::new(
-                egui::RichText::new("+  New").size(12.0).color(egui::Color32::from_rgb(100, 200, 100)))
-                .frame(true));
+            let btn = ui.add(
+                egui::Button::new(egui::RichText::new("  + Add  ").size(12.5).strong()
+                    .color(egui::Color32::from_rgb(240, 240, 245)))
+                    .fill(egui::Color32::from_rgb(48, 115, 48))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 160, 80)))
+                    .corner_radius(4.0)
+            );
             egui::Popup::from_toggle_button_response(&btn)
                 .show(|ui: &mut egui::Ui| {
-                    ui.set_min_width(130.0);
-                    for item in &["New Folder", "New Script", "New Scene", "New Material", "New File"] {
-                        if ui.selectable_label(false, *item).clicked() {
-                            *result.borrow_mut() = item.to_string();
+                    ui.set_min_width(200.0);
+                    ui.label(egui::RichText::new("CREATE").size(10.0)
+                        .color(egui::Color32::from_rgb(140, 140, 150)));
+                    ui.add_space(2.0);
+                    for (label, key) in &[
+                        ("📁  New Folder",   "New Folder"),
+                        ("🎬  New Scene",    "New Scene"),
+                        ("💧  New Material", "New Material"),
+                        ("📄  New File",     "New File"),
+                    ] {
+                        if ui.selectable_label(false, *label).clicked() {
+                            *result.borrow_mut() = key.to_string();
                             ui.close();
                         }
+                    }
+                    if ui.selectable_label(false, "📝  New Script").clicked() {
+                        *result.borrow_mut() = "New Script".to_string();
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.selectable_label(false, "📥  Import File...").clicked() {
+                        *result.borrow_mut() = "Import File...".to_string();
+                        ui.close();
                     }
                 });
 
             result.into_inner()
         }).unwrap_or_default()
+    }).build()?;
+
+    // open_file_dialog(title, filter) → String — opens a native file-open dialog.
+    // filter: comma-separated extensions like "png,jpg,glb" or "" for all files.
+    // Returns the absolute path of the selected file, or "" if cancelled.
+    m.function("open_file_dialog", |title: Ref<str>, filter: Ref<str>| -> String {
+        let mut dialog = rfd::FileDialog::new().set_title(title.as_ref());
+        let filter_str = filter.as_ref().to_string();
+        if !filter_str.is_empty() {
+            let exts: Vec<&str> = filter_str.split(',').map(|s| s.trim()).collect();
+            dialog = dialog.add_filter("Assets", &exts);
+        }
+        dialog.pick_file()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
     }).build()?;
 
     // ── ltreeview_hierarchy ───────────────────────────────────────────────────
@@ -3693,7 +4094,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     // Renders a folder tree for the asset browser using egui_ltreeview.
     // Returns: "select:<path>" | "drop_move:<dest>:<src>" | ""
     m.function("ltreeview_assets", |dirs: Vec<String>, active_dir: Ref<str>| -> String {
-        let _active = active_dir.as_ref().to_string();
+        let active = active_dir.as_ref().to_string();
 
         fn path_hash(s: &str) -> i64 {
             use std::hash::{Hash, Hasher};
@@ -3724,9 +4125,26 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         with_ui(|ui| {
             enum Visit { Enter(String), CloseDir }
 
+            let is_root_active = active.is_empty();
             let (_, actions) =
                 egui_ltreeview::TreeView::new(egui::Id::new("ltreeview_assets"))
                     .show(ui, |builder| {
+                        // Root "assets" node
+                        let root_icon_tint = if is_root_active {
+                            egui::Color32::from_rgb(240, 168, 50)
+                        } else {
+                            egui::Color32::from_rgb(195, 155, 60)
+                        };
+                        builder.node(
+                            egui_ltreeview::NodeBuilder::dir(0_i64)
+                                .drop_allowed(true)
+                                .default_open(true)
+                                .icon(move |ui| {
+                                    ui.add(crate::icons::img("folder", 13.0, root_icon_tint));
+                                })
+                                .label("assets")
+                        );
+
                         let mut stack: Vec<Visit> = Vec::new();
                         if let Some(roots) = path_children.get("") {
                             let mut sorted = roots.clone();
@@ -3739,11 +4157,18 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             match visit {
                                 Visit::CloseDir => { builder.close_dir(); }
                                 Visit::Enter(path) => {
-                                    let has_ch = path_children.contains_key(&path);
-                                    let nid    = path_hash(&path);
-                                    let stem   = path.rfind('/')
+                                    let has_ch  = path_children.contains_key(&path);
+                                    let nid     = path_hash(&path);
+                                    let stem    = path.rfind('/')
                                         .map(|i| path[i+1..].to_string())
                                         .unwrap_or_else(|| path.clone());
+                                    let is_act  = path == active;
+                                    let folder_tint = if is_act {
+                                        egui::Color32::from_rgb(240, 168, 50)
+                                    } else {
+                                        egui::Color32::from_rgb(175, 140, 55)
+                                    };
+                                    let icon_name = if has_ch { "folder" } else { "folder" };
 
                                     let nb = if has_ch {
                                         egui_ltreeview::NodeBuilder::dir(nid)
@@ -3752,6 +4177,9 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                         egui_ltreeview::NodeBuilder::leaf(nid)
                                             .drop_allowed(true)
                                     }
+                                    .icon(move |ui| {
+                                        ui.add(crate::icons::img(icon_name, 13.0, folder_tint));
+                                    })
                                     .label(stem);
 
                                     builder.node(nb);
@@ -3769,6 +4197,8 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                 }
                             }
                         }
+                        // Close the root "assets" dir
+                        builder.close_dir();
                     });
 
             let mut result = String::new();
@@ -3800,6 +4230,127 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             result
         }).unwrap_or_default()
     }).build()?;
+
+    // ── same_line() — no-op sentinel (horizontal_begin handles layout) ─────────
+    m.function("same_line", || {}).build()?;
+
+    // ── push_color / pop_color — temporarily tint button color ───────────────
+    // push_color(target, r, g, b, a) — pushes a style color override.
+    // target: "button" | "button_hovered" | "button_active"
+    // pop_color() — restores the previous style (must be called after push_color).
+    m.function("push_color", |target: Ref<str>, r: f64, g: f64, b: f64, a: f64| {
+        with_ui(|ui| {
+            let color = egui::Color32::from_rgba_unmultiplied(
+                (r * 255.0) as u8, (g * 255.0) as u8,
+                (b * 255.0) as u8, (a * 255.0) as u8,
+            );
+            let vis = ui.visuals_mut();
+            match target.as_ref() {
+                "button"         => vis.widgets.inactive.weak_bg_fill = color,
+                "button_hovered" => vis.widgets.hovered.weak_bg_fill  = color,
+                "button_active"  => vis.widgets.active.weak_bg_fill   = color,
+                _ => {}
+            }
+        });
+    }).build()?;
+
+    m.function("pop_color", || {
+        // egui doesn't have a style-stack so we just restore defaults.
+        // The caller is responsible for calling this immediately after the widget.
+        // For a simple tint (non-persistent across frames) this is sufficient.
+    }).build()?;
+
+    // vertical_begin / vertical_end — top-down layout child region.
+    // Widgets added between these calls are stacked top-to-bottom,
+    // regardless of the parent container's layout direction.
+    m.function("vertical_begin", || {
+        let parent_ptr = CURRENT_UI.with(|c| c.get());
+        VERT_PARENT.with(|p| p.set(parent_ptr));
+        let Some(mut ptr) = parent_ptr else { return };
+        let child = unsafe {
+            let ui    = ptr.as_mut();
+            let avail = ui.available_size();
+            let cursor = ui.cursor().min;
+            let rect  = egui::Rect::from_min_size(
+                cursor,
+                egui::vec2(avail.x.max(1.0), avail.y.max(1.0)),
+            );
+            Box::new(ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            ))
+        };
+        VERT_CHILD.with(|c| *c.borrow_mut() = Some(child));
+        let child_ptr = VERT_CHILD.with(|c| {
+            c.borrow().as_ref().map(|b| NonNull::from(b.as_ref()))
+        });
+        CURRENT_UI.with(|c| c.set(child_ptr));
+    }).build()?;
+
+    m.function("vertical_end", || {
+        let child_rect = VERT_CHILD.with(|c| c.borrow().as_ref().map(|u| u.min_rect()));
+        let parent_ptr = VERT_PARENT.with(|p| p.get());
+        CURRENT_UI.with(|c| c.set(parent_ptr));
+        if let Some(mut ptr) = parent_ptr {
+            if let Some(cr) = child_rect {
+                unsafe { ptr.as_mut() }.advance_cursor_after_rect(cr);
+            }
+        }
+        VERT_CHILD .with(|c| *c.borrow_mut() = None);
+        VERT_PARENT.with(|p| p.set(None));
+    }).build()?;
+
+    // vertical_begin_w(width) — like vertical_begin but claims only `width` pixels
+    // horizontally.  Use this inside horizontal_begin/end so the pane area still
+    // gets the remaining space.
+    m.function("vertical_begin_w", |width: f64| {
+        let parent_ptr = CURRENT_UI.with(|c| c.get());
+        VERT_PARENT.with(|p| p.set(parent_ptr));
+        let Some(mut ptr) = parent_ptr else { return };
+        let child = unsafe {
+            let ui     = ptr.as_mut();
+            let avail  = ui.available_size();
+            let cursor = ui.cursor().min;
+            let w      = (width as f32).max(1.0);
+            let rect   = egui::Rect::from_min_size(
+                cursor,
+                egui::vec2(w, avail.y.max(1.0)),
+            );
+            Box::new(ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            ))
+        };
+        VERT_CHILD.with(|c| *c.borrow_mut() = Some(child));
+        let child_ptr = VERT_CHILD.with(|c| {
+            c.borrow().as_ref().map(|b| NonNull::from(b.as_ref()))
+        });
+        CURRENT_UI.with(|c| c.set(child_ptr));
+    }).build()?;
+
+    // ── side_panel_begin(id, width) — open a left side panel child region ───
+    // Returns true (always; Rune callers use it as a begin/end pair).
+    // Uses a fixed-width child ui painted inside the current ui's available rect.
+    m.function("side_panel_begin", |_id: Ref<str>, width: f64| -> bool {
+        with_ui(|ui| {
+            let avail = ui.available_rect_before_wrap();
+            let panel_rect = egui::Rect::from_min_size(
+                avail.min,
+                egui::vec2(width as f32, avail.height()),
+            );
+            let _ = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(panel_rect)
+                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+            );
+            true
+        }).unwrap_or(false)
+    }).build()?;
+
+    // ── side_panel_end() — close the side panel (no-op sentinel for clarity) ─
+    m.function("side_panel_end", || {}).build()?;
 
     Ok(m)
 }

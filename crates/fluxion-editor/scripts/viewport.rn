@@ -1,34 +1,203 @@
 // ============================================================
-// viewport.rn — Viewport panel
+// viewport.rn — Modular Viewport panel
 //
-// Shows the rendered 3D scene. Gizmo overlay is drawn in Rust
-// (viewport_gizmo.rs) after this panel runs — no gizmo code here.
+// Layout:
+//   [Header bar: layout picker, gizmo menu, fullscreen]
+//   [Left toolbar] | [Scene pane(s)]
 //
-// Editor camera movement is handled by editor_camera::update()
-// which runs every frame while in Editing/Paused mode.
+// Supports 1/2/4-pane split modes. Perspective pane is always pane 0.
+// Ortho panes (Top, Front, Right) use pre-baked camera overrides from main.rs.
+//
+// No hardcoded pixel sizes — all dimensions derived from DPI-aware helpers.
 // ============================================================
 
 pub mod viewport {
 
-pub fn panel() {
-    let tid = fluxion::viewport::texture_id();
+// ── Layout picker popup ──────────────────────────────────────────────────────
 
+fn layout_label(layout) {
+    if layout == "One"         { return "1"; }
+    if layout == "TwoH"        { return "2H"; }
+    if layout == "TwoV"        { return "2V"; }
+    if layout == "ThreeLeft"   { return "3L"; }
+    if layout == "ThreeRight"  { return "3R"; }
+    if layout == "ThreeTop"    { return "3T"; }
+    if layout == "ThreeBottom" { return "3B"; }
+    if layout == "Four"        { return "4"; }
+    "?"
+}
+
+fn draw_layout_picker() {
+    let cur = fluxion::viewport::get_layout();
+    let lbl = layout_label(cur);
+
+    fluxion::ui::menu_begin(`[${lbl}]`);
+    fluxion::ui::menu_item("One (1 pane)");
+    fluxion::ui::menu_item("TwoH (2 horiz)");
+    fluxion::ui::menu_item("TwoV (2 vert)");
+    fluxion::ui::menu_item("Four (4 panes)");
+    let action = fluxion::ui::menu_end();
+
+    if action == "One (1 pane)"    { fluxion::viewport::set_layout("One"); }
+    if action == "TwoH (2 horiz)"  { fluxion::viewport::set_layout("TwoH"); }
+    if action == "TwoV (2 vert)"   { fluxion::viewport::set_layout("TwoV"); }
+    if action == "Four (4 panes)"  { fluxion::viewport::set_layout("Four"); }
+}
+
+// ── Gizmo overlay menu ───────────────────────────────────────────────────────
+
+fn draw_gizmo_menu() {
+    fluxion::ui::menu_begin("Gizmos");
+    let entries = fluxion::viewport::get_gizmo_registry();
+    for entry in entries {
+        let label    = entry[1];
+        let enabled  = entry[3] == "true";
+        let item_lbl = if enabled { `✓ ${label}` } else { `  ${label}` };
+        fluxion::ui::menu_item(item_lbl);
+    }
+    let action = fluxion::ui::menu_end();
+    if action != "" {
+        let entries2 = fluxion::viewport::get_gizmo_registry();
+        for entry in entries2 {
+            let label   = entry[1];
+            let enabled = entry[3] == "true";
+            let check   = if enabled { `✓ ${label}` } else { `  ${label}` };
+            if check == action {
+                fluxion::viewport::set_gizmo_enabled(label, !enabled);
+            }
+        }
+    }
+}
+
+// ── Header bar (layout + gizmo + fullscreen) — compact, no stats label ───────
+
+fn draw_header() {
+    fluxion::ui::horizontal_begin();
+
+    draw_layout_picker();
+    draw_gizmo_menu();
+
+    let is_fullscreen = fluxion::viewport::get_fullscreen();
+    let fs_icon = if is_fullscreen { "minimize-2" } else { "maximize-2" };
+    if fluxion::ui::icon_button(fs_icon, 14.0, 0.75, 0.75, 0.75) {
+        fluxion::viewport::set_fullscreen(!is_fullscreen);
+    }
+
+    // Editor mode badge
+    let mode = fluxion::world::get_editor_mode();
+    fluxion::ui::label(`  ${mode}`);
+
+    fluxion::ui::horizontal_end();
+}
+
+// ── Single pane renderer ──────────────────────────────────────────────────────
+// Passes 0, 0 to image/image_interactive so they fill the available rect exactly.
+// The pane label is painted as a Foreground overlay — does not consume layout space.
+
+fn draw_pane(pane) {
+    fluxion::ui::set_render_pane(pane);
+    let tid = fluxion::viewport::texture_id(pane);
     if tid < 0 {
-        fluxion::ui::label("(viewport not ready)");
+        fluxion::ui::label("(rendering...)");
+        return;
+    }
+    // Render the texture filling all remaining available space (0,0 = fill-available).
+    if pane == 0 {
+        fluxion::ui::image_interactive(tid, 0.0, 0.0);
+    } else {
+        fluxion::ui::image(tid, 0.0, 0.0);
+    }
+    // Paint the pane label as a painter overlay so it costs no layout space.
+    let label = fluxion::viewport::pane_label(pane);
+    fluxion::ui::painter_text([4.0, 4.0], label, 11.0, [0.9, 0.9, 0.9, 0.75]);
+}
+
+// ── Multi-pane layout ────────────────────────────────────────────────────────
+// Sizes are guarded to min 50px to handle tiny windows.
+
+fn draw_panes(w, h) {
+    let layout = fluxion::viewport::get_layout();
+    let min_sz = 50.0;
+
+    if layout == "One" {
+        draw_pane(0);
+    } else if layout == "TwoH" {
+        let half_w = ((w - 2.0) / 2.0).max(min_sz);
+        fluxion::ui::horizontal_begin();
+        draw_pane(0);
+        draw_pane(2);
+        fluxion::ui::horizontal_end();
+    } else if layout == "TwoV" {
+        draw_pane(0);
+        draw_pane(1);
+    } else if layout == "Four" {
+        fluxion::ui::horizontal_begin();
+        draw_pane(0);
+        draw_pane(1);
+        fluxion::ui::horizontal_end();
+        fluxion::ui::horizontal_begin();
+        draw_pane(2);
+        draw_pane(3);
+        fluxion::ui::horizontal_end();
+    } else {
+        draw_pane(0);
+    }
+}
+
+// ── Left vertical toolbar ────────────────────────────────────────────────────
+
+fn draw_left_toolbar() {
+    let tool = fluxion::world::get_transform_tool();
+    let mode = fluxion::world::get_editor_mode();
+
+    let toolbar_w = fluxion::ui::icon_size() + 10.0;
+    fluxion::ui::vertical_begin_w(toolbar_w);
+
+    if mode == "Editing" || mode == "Paused" {
+        if fluxion::ui::icon_tool_button("move", tool == "Translate") {
+            fluxion::world::set_transform_tool("Translate");
+        }
+        if fluxion::ui::icon_tool_button("rotate-cw", tool == "Rotate") {
+            fluxion::world::set_transform_tool("Rotate");
+        }
+        if fluxion::ui::icon_tool_button("maximize-2", tool == "Scale") {
+            fluxion::world::set_transform_tool("Scale");
+        }
+        fluxion::ui::separator();
+    }
+
+    fluxion::ui::vertical_end();
+}
+
+// ── Main panel entry point ────────────────────────────────────────────────────
+
+pub fn panel() {
+    let total_w = fluxion::ui::available_width();
+    let total_h = fluxion::ui::available_height();
+
+    // Bail out on degenerate panel sizes.
+    if total_w < 50.0 || total_h < 50.0 {
         return;
     }
 
-    let w = fluxion::ui::available_width();
-    let h = fluxion::ui::available_height();
+    // Draw header row (horizontal, compact height).
+    draw_header();
 
-    if w < 1.0 || h < 1.0 {
-        return;
-    }
+    // Body row: toolbar + panes side by side.
+    fluxion::ui::horizontal_begin();
 
-    // Show the scene texture — sets VP_RECT and VP_RESPONSE used by editor_camera.
-    // editor_camera::update(dt) is called by the Rust host after this panel returns,
-    // so VP_RESPONSE is already populated when the camera update runs.
-    fluxion::ui::image_interactive(tid, w, h);
+    draw_left_toolbar();
+
+    // Pane area fills all remaining space — no explicit width/height passed.
+    draw_panes(total_w, total_h);
+
+    fluxion::ui::horizontal_end();
+
+    // Stats overlay — rendered as a Foreground Area at the bottom of VP_RECT.
+    let stats = fluxion::world::frame_stats();
+    let ft    = stats[2];
+    let fps   = if ft > 0.0 { 1000.0 / ft } else { 0.0 };
+    fluxion::ui::viewport_overlay_text(`Draw: ${stats[0]} | Ent: ${stats[1]} | ${ft}ms (${fps}fps)`);
 }
 
 } // pub mod viewport

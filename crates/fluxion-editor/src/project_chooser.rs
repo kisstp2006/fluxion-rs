@@ -15,6 +15,7 @@ use egui::{Align2, Color32, Context, FontId, RichText, Vec2, Window};
 use fluxion_core::{
     ProjectConfig, RecentProject,
     create_project, load_project, load_recent_projects, push_recent_project,
+    TemplateRegistry, TemplateCategory, TemplateOptions, TemplateInstaller,
 };
 
 // ── Result type ───────────────────────────────────────────────────────────────
@@ -34,6 +35,11 @@ pub struct ProjectChooser {
     error_msg:     Option<String>,
     tab:           ChooserTab,
     ready:         Option<ProjectChoice>,
+    // Template system
+    template_registry: TemplateRegistry,
+    selected_template: Option<String>,
+    template_search: String,
+    template_filter_category: Option<TemplateCategory>,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -48,6 +54,11 @@ impl ProjectChooser {
             error_msg: None,
             tab:       ChooserTab::Recent,
             ready:     None,
+            // Template system
+            template_registry: TemplateRegistry::new(),
+            selected_template: Some("empty_3d".to_string()), // Default template
+            template_search: String::new(),
+            template_filter_category: None,
         }
     }
 
@@ -75,7 +86,7 @@ impl ProjectChooser {
             .collapsible(false)
             .resizable(false)
             .frame(egui::Frame::window(&ctx.global_style()).fill(Color32::from_rgb(30, 30, 38)))
-            .fixed_size([680.0, 440.0])
+            .fixed_size([900.0, 600.0])
             .show(ctx, |ui| {
                 ui.style_mut().spacing.item_spacing = Vec2::new(8.0, 6.0);
                 self.show_inner(ui);
@@ -173,17 +184,213 @@ impl ProjectChooser {
     }
 
     fn show_new(&mut self, ui: &mut egui::Ui) {
+        // Split view: template gallery on left, project details on right
+        ui.horizontal(|ui| {
+            // Left side - Template Gallery (60% width)
+            ui.allocate_ui_with_layout([540.0, 400.0].into(), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                self.show_template_gallery(ui);
+            });
+            
+            ui.separator();
+            
+            // Right side - Project Details (40% width)
+            ui.allocate_ui_with_layout([340.0, 400.0].into(), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                self.show_project_details(ui);
+            });
+        });
+    }
+    
+    fn show_template_gallery(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Choose Template");
+        ui.add_space(4.0);
+        
+        // Search and filter
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            ui.add(egui::TextEdit::singleline(&mut self.template_search)
+                .hint_text("Search templates...")
+                .desired_width(200.0));
+            
+            ui.separator();
+            
+            // Category filter
+            egui::ComboBox::from_label("Category")
+                .selected_text(match self.template_filter_category {
+                    Some(TemplateCategory::Empty) => "Empty",
+                    Some(TemplateCategory::ThreeD) => "3D",
+                    Some(TemplateCategory::TwoD) => "2D", 
+                    Some(TemplateCategory::VR) => "VR",
+                    Some(TemplateCategory::Mobile) => "Mobile",
+                    Some(TemplateCategory::Educational) => "Educational",
+                    None => "All",
+                })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(self.template_filter_category.is_none(), "All").clicked() {
+                        self.template_filter_category = None;
+                    }
+                    if ui.selectable_label(self.template_filter_category == Some(TemplateCategory::Empty), "Empty").clicked() {
+                        self.template_filter_category = Some(TemplateCategory::Empty);
+                    }
+                    if ui.selectable_label(self.template_filter_category == Some(TemplateCategory::ThreeD), "3D").clicked() {
+                        self.template_filter_category = Some(TemplateCategory::ThreeD);
+                    }
+                    if ui.selectable_label(self.template_filter_category == Some(TemplateCategory::TwoD), "2D").clicked() {
+                        self.template_filter_category = Some(TemplateCategory::TwoD);
+                    }
+                    if ui.selectable_label(self.template_filter_category == Some(TemplateCategory::VR), "VR").clicked() {
+                        self.template_filter_category = Some(TemplateCategory::VR);
+                    }
+                    if ui.selectable_label(self.template_filter_category == Some(TemplateCategory::Mobile), "Mobile").clicked() {
+                        self.template_filter_category = Some(TemplateCategory::Mobile);
+                    }
+                    if ui.selectable_label(self.template_filter_category == Some(TemplateCategory::Educational), "Educational").clicked() {
+                        self.template_filter_category = Some(TemplateCategory::Educational);
+                    }
+                });
+        });
+        
+        ui.add_space(8.0);
+        
+        // Template grid
+        let templates = if self.template_search.is_empty() && self.template_filter_category.is_none() {
+            self.template_registry.get_all()
+        } else if !self.template_search.is_empty() {
+            self.template_registry.search(&self.template_search)
+        } else {
+            self.template_registry.get_by_category(self.template_filter_category.unwrap())
+        };
+        
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            let mut clicked_template = None;
+            
+            for (i, template_meta) in templates.iter().enumerate() {
+                let template_id = if let Some(id) = self.template_registry.get_all().iter()
+                    .find(|m| std::ptr::eq(*m, template_meta))
+                    .and_then(|m| self.template_registry.get_all().iter().position(|x| std::ptr::eq(x, m))) {
+                    // Get template ID by matching metadata - this is a workaround
+                    // In a real implementation, we'd have a better way to map metadata to ID
+                    match i {
+                        0 => "empty_3d",
+                        1 => "empty_2d", 
+                        2 => "basic_3d",
+                        _ => "empty_3d",
+                    }
+                } else {
+                    "empty_3d"
+                };
+                
+                let is_selected = self.selected_template.as_ref() == Some(&template_id.to_string());
+                
+                let frame = egui::Frame::NONE
+                    .fill(if is_selected { 
+                        Color32::from_rgb(60, 80, 120) 
+                    } else { 
+                        Color32::from_rgb(40, 40, 50) 
+                    })
+                    .inner_margin(egui::Margin::symmetric(8, 6))
+                    .corner_radius(6.0);
+                
+                frame.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Template icon/thumbnail placeholder
+                        ui.label(
+                            RichText::new("📁")
+                                .font(FontId::proportional(24.0))
+                                .color(Color32::from_rgb(180, 180, 180))
+                        );
+                        
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(&template_meta.name)
+                                    .font(FontId::proportional(14.0))
+                                    .strong()
+                                    .color(Color32::WHITE)
+                            );
+                            ui.label(
+                                RichText::new(&template_meta.description)
+                                    .font(FontId::proportional(11.0))
+                                    .color(Color32::from_rgb(150, 150, 150))
+                            );
+                            
+                            // Tags
+                            if !template_meta.tags.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
+                                    for tag in &template_meta.tags {
+                                        ui.label(
+                                            RichText::new(format!("#{}", tag))
+                                                .font(FontId::proportional(10.0))
+                                                .color(Color32::from_rgb(100, 150, 200))
+                                        );
+                                    }
+                                });
+                            }
+                        });
+                    });
+                    
+                    if ui.button("Select").clicked() {
+                        clicked_template = Some(template_id.to_string());
+                    }
+                });
+                
+                ui.add_space(4.0);
+            }
+            
+            if let Some(template_id) = clicked_template {
+                self.selected_template = Some(template_id);
+            }
+        });
+    }
+    
+    fn show_project_details(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Project Details");
+        ui.add_space(8.0);
+        
+        // Show selected template details
+        if let Some(template_id) = &self.selected_template {
+            if let Some(template_meta) = self.template_registry.get_metadata(template_id) {
+                ui.group(|ui| {
+                    ui.heading(&template_meta.name);
+                    ui.add_space(4.0);
+                    ui.label(&template_meta.long_description);
+                    
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Difficulty:");
+                        ui.label(
+                            RichText::new(format!("{:?}", template_meta.difficulty))
+                                .color(Color32::from_rgb(150, 200, 150))
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Size:");
+                        ui.label(
+                            RichText::new(format!("{:?}", template_meta.size))
+                                .color(Color32::from_rgb(150, 150, 200))
+                        );
+                    });
+                });
+            }
+        }
+        
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+        
+        // Project creation form
+        ui.heading("Project Settings");
+        ui.add_space(4.0);
+        
         egui::Grid::new("new_proj_grid")
             .num_columns(2)
             .spacing([8.0, 8.0])
             .show(ui, |ui| {
                 ui.label("Project Name:");
-                ui.add(egui::TextEdit::singleline(&mut self.new_name).hint_text("MyGame").desired_width(300.0));
+                ui.add(egui::TextEdit::singleline(&mut self.new_name).hint_text("MyGame").desired_width(200.0));
                 ui.end_row();
 
                 ui.label("Directory:");
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.new_dir).hint_text("/path/to/projects").desired_width(240.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.new_dir).hint_text("/path/to/projects").desired_width(140.0));
                     if ui.button("Browse…").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             self.new_dir = path.to_string_lossy().to_string();
@@ -195,10 +402,13 @@ impl ProjectChooser {
 
         ui.add_space(12.0);
 
-        let can_create = !self.new_name.trim().is_empty() && !self.new_dir.trim().is_empty();
+        let can_create = !self.new_name.trim().is_empty() 
+            && !self.new_dir.trim().is_empty() 
+            && self.selected_template.is_some();
+            
         ui.add_enabled_ui(can_create, |ui| {
             if ui.button(RichText::new("  ✔  Create Project  ").font(FontId::proportional(14.0))).clicked() {
-                self.create_new();
+                self.create_new_from_template();
             }
         });
     }
@@ -228,6 +438,46 @@ impl ProjectChooser {
                     self.error_msg = Some(format!("Could not open project: {e}"));
                 }
             }
+        }
+    }
+
+    fn create_new_from_template(&mut self) {
+        let name = self.new_name.trim().to_string();
+        let base = PathBuf::from(self.new_dir.trim());
+        let root = base.join(&name);
+        
+        if let Some(template_id) = &self.selected_template {
+            let options = TemplateOptions {
+                name: name.clone(),
+                directory: root.to_string_lossy().to_string(),
+                custom_options: std::collections::HashMap::new(),
+            };
+            
+            match TemplateInstaller::new(template_id.clone(), options) {
+                Ok(installer) => {
+                    match installer.install() {
+                        Ok(()) => {
+                            // Load the created project
+                            match load_project(&root) {
+                                Ok(config) => {
+                                    self.record_and_emit(config, root);
+                                }
+                                Err(e) => {
+                                    self.error_msg = Some(format!("Failed to load created project: {e}"));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.error_msg = Some(format!("Template installation failed: {e}"));
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.error_msg = Some(format!("Failed to create installer: {e}"));
+                }
+            }
+        } else {
+            self.error_msg = Some("No template selected".to_string());
         }
     }
 

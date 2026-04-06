@@ -21,25 +21,34 @@ pub mod assets {
 fn handle_dialog() {
     let state = fluxion::ui::input_dialog_update();
     if state == "confirmed" {
-        let new_path = fluxion::ui::input_dialog_result();
+        let filename = fluxion::ui::input_dialog_result();
         let mode     = fluxion::world::get_asset_create_mode();
-        if mode == "dir" {
-            fluxion::world::asset_create_dir(new_path.clone());
-        } else if mode == "file" {
-            fluxion::world::asset_create_file(new_path.clone(), "");
-        } else if mode == "scene" {
-            fluxion::world::asset_create_scene(new_path.clone());
-        } else if mode == "script" {
-            let tpl = "pub fn start() {\n    // Called once when play mode starts.\n}\n\npub fn update(dt) {\n    // Called every frame. dt = delta time in seconds.\n    let id = fluxion::script::self_entity();\n}\n\npub fn fixed_update(dt) {\n    // Called at a fixed timestep.\n}\n\npub fn on_destroy() {\n    // Called when the entity is destroyed.\n}\n";
-            fluxion::world::asset_create_file(new_path.clone(), tpl);
-        } else if mode == "material" {
-            fluxion::world::create_material(new_path.clone());
-        } else if mode == "rename" {
+        if mode == "rename" {
             let old_path = fluxion::world::get_asset_create_input();
-            fluxion::world::asset_rename(old_path.clone(), new_path.clone());
+            fluxion::world::asset_rename(old_path.clone(), filename.clone());
             let sel = fluxion::world::get_selected_asset();
             if sel == old_path {
-                fluxion::world::set_selected_asset(new_path.clone());
+                fluxion::world::set_selected_asset(filename.clone());
+            }
+        } else {
+            // Build full path: prepend stored dir prefix (set by handle_new_asset)
+            let prefix = fluxion::world::get_asset_create_input();
+            let new_path = if prefix == "" {
+                filename.clone()
+            } else {
+                `${prefix}/${filename}`
+            };
+            if mode == "dir" {
+                fluxion::world::asset_create_dir(new_path.clone());
+            } else if mode == "file" {
+                fluxion::world::asset_create_file(new_path.clone(), "");
+            } else if mode == "scene" {
+                fluxion::world::asset_create_scene(new_path.clone());
+            } else if mode == "script" {
+                let tpl = "pub fn start() {\n}\n\npub fn update(dt) {\n    let id = fluxion::script::self_entity();\n}\n";
+                fluxion::world::asset_create_file(new_path.clone(), tpl);
+            } else if mode == "material" {
+                fluxion::world::create_material(new_path.clone());
             }
         }
         fluxion::world::set_asset_create_mode("");
@@ -54,7 +63,11 @@ fn handle_grid_action(action, path) {
     let sel    = fluxion::world::get_selected_asset();
     let is_sel = path == sel;
 
-    if action == "select" {
+    if action == "folder_select" {
+        fluxion::world::set_selected_asset(path.clone());
+    } else if action == "folder_open" {
+        fluxion::world::asset_set_active_dir(path.clone());
+    } else if action == "select" {
         fluxion::world::set_selected_asset(path.clone());
     } else if action == "open" {
         let t = fluxion::world::asset_type(path.clone());
@@ -97,22 +110,34 @@ fn handle_grid_action(action, path) {
 // ── Handle new-asset menu button result ──────────────────────────────────────
 
 fn handle_new_asset(choice, active_dir) {
-    let dir_prefix = if active_dir == "" { "" } else { `${active_dir}/` };
     if choice == "New Folder" {
         fluxion::world::set_asset_create_mode("dir");
-        fluxion::ui::input_dialog_open("New Folder", `${dir_prefix}`);
+        fluxion::world::set_asset_create_input(active_dir.clone());
+        fluxion::ui::input_dialog_open("New Folder", "new_folder");
     } else if choice == "New File" {
         fluxion::world::set_asset_create_mode("file");
-        fluxion::ui::input_dialog_open("New File", `${dir_prefix}`);
+        fluxion::world::set_asset_create_input(active_dir.clone());
+        fluxion::ui::input_dialog_open("New File", "new_file.txt");
     } else if choice == "New Scene" {
         fluxion::world::set_asset_create_mode("scene");
-        fluxion::ui::input_dialog_open("New Scene", `${dir_prefix}my_scene.scene`);
+        fluxion::world::set_asset_create_input(active_dir.clone());
+        fluxion::ui::input_dialog_open("New Scene", "my_scene.scene");
     } else if choice == "New Script" {
         fluxion::world::set_asset_create_mode("script");
-        fluxion::ui::input_dialog_open("New Script", `${dir_prefix}my_script.rn`);
+        fluxion::world::set_asset_create_input(active_dir.clone());
+        fluxion::ui::input_dialog_open("New Script", "my_script.rn");
     } else if choice == "New Material" {
         fluxion::world::set_asset_create_mode("material");
-        fluxion::ui::input_dialog_open("New Material", `${dir_prefix}my_material.fluxmat`);
+        fluxion::world::set_asset_create_input(active_dir.clone());
+        fluxion::ui::input_dialog_open("New Material", "my_material.fluxmat");
+    } else if choice == "Import File..." {
+        let src = fluxion::ui::open_file_dialog("Import Asset", "");
+        if src != "" {
+            let result = fluxion::world::asset_import_file(src.clone(), active_dir.clone());
+            if result != "" {
+                fluxion::world::set_selected_asset(result.clone());
+            }
+        }
     }
 }
 
@@ -214,33 +239,49 @@ pub fn panel() {
         fluxion::world::asset_set_active_dir(new_dir.clone());
     }
 
-    // Rescan + new asset buttons on the right
+    // Rescan button on the right
     if fluxion::ui::icon_button("refresh-cw", 13.0, 0.6, 0.6, 0.7) {
         fluxion::world::asset_rescan();
     }
     fluxion::ui::horizontal_end();
 
-    // New asset popup menu
+    // New asset popup menu + zoom slider on same row
+    fluxion::ui::horizontal_begin();
     let dir_prefix = if active_dir == "" { "" } else { active_dir.clone() };
     let new_choice = fluxion::ui::new_asset_menu_button(dir_prefix.clone());
     if new_choice != "" {
         handle_new_asset(new_choice.clone(), active_dir.clone());
     }
-
-    // Zoom slider
-    let new_zoom = fluxion::ui::slider("Zoom##asset_zoom", zoom, 0.5, 2.0, 0.0);
+    let new_zoom = fluxion::ui::slider("##asset_zoom", zoom, 0.5, 2.0, 0.0);
     if new_zoom != zoom {
         fluxion::world::asset_set_zoom(new_zoom);
     }
+    fluxion::ui::horizontal_end();
 
     fluxion::ui::separator();
 
-    // Tile grid — enhanced v2 with DnD + keyboard shortcuts
+    // Tile grid — subdirs first (as folder tiles), then files
     let cur_filter2 = fluxion::world::asset_get_type_filter();
-    let files = fluxion::world::asset_list_typed(active_dir.clone(), cur_filter2.clone());
-    let active_dir2 = fluxion::world::asset_get_active_dir();
+    let subdirs = fluxion::world::asset_subdirs(active_dir.clone());
+    let files   = fluxion::world::asset_list_typed(active_dir.clone(), cur_filter2.clone());
 
-    let ret = fluxion::ui::asset_grid_v2(files, selected.clone(), fluxion::world::asset_get_zoom());
+    // Build combined list: folder paths (with trailing '/') then file paths
+    let combined = [];
+    // Only show subdirs when no type filter is active or filter is empty
+    if cur_filter2 == "" {
+        let si = 0;
+        while si < subdirs.len() {
+            combined.push(`${subdirs[si]}/`);
+            si += 1;
+        }
+    }
+    let fi = 0;
+    while fi < files.len() {
+        combined.push(files[fi]);
+        fi += 1;
+    }
+
+    let ret = fluxion::ui::asset_grid_v2(combined, selected.clone(), fluxion::world::asset_get_zoom());
     if ret[0] != "" {
         handle_grid_action(ret[0].clone(), ret[1].clone());
     }

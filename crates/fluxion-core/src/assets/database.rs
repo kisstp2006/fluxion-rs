@@ -130,16 +130,23 @@ pub struct AssetDatabase {
     pub root: PathBuf,
     /// Top-level subdirectories of assets/ — includes empty ones.
     dirs: BTreeSet<String>,
+    /// Dependency map: asset path → set of asset paths it references.
+    /// Built by `build_dependency_index()` after scan.
+    deps_forward: HashMap<String, BTreeSet<String>>,
+    /// Reverse dependency map: asset path → set of assets that reference it.
+    deps_reverse: HashMap<String, BTreeSet<String>>,
 }
 
 impl Default for AssetDatabase {
     fn default() -> Self {
         Self {
-            records:    Vec::new(),
-            path_index: HashMap::new(),
-            guid_index: HashMap::new(),
-            root:       PathBuf::new(),
-            dirs:       BTreeSet::new(),
+            records:      Vec::new(),
+            path_index:   HashMap::new(),
+            guid_index:   HashMap::new(),
+            root:         PathBuf::new(),
+            dirs:         BTreeSet::new(),
+            deps_forward: HashMap::new(),
+            deps_reverse: HashMap::new(),
         }
     }
 }
@@ -208,6 +215,8 @@ impl AssetDatabase {
             self.records.len(),
             scan_root
         );
+
+        self.build_dependency_index();
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -395,6 +404,119 @@ impl AssetDatabase {
     /// Total number of indexed assets.
     pub fn count(&self) -> usize {
         self.records.len()
+    }
+
+    // ── Dependency tracking ───────────────────────────────────────────────────
+
+    /// Returns all asset paths that `path` directly references (forward deps).
+    pub fn dependencies_of(&self, path: &str) -> Vec<String> {
+        self.deps_forward
+            .get(&norm_path(path))
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Returns all asset paths that reference `path` (reverse deps / "used by").
+    pub fn references_to(&self, path: &str) -> Vec<String> {
+        self.deps_reverse
+            .get(&norm_path(path))
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Build forward and reverse dependency indices by scanning text-based assets.
+    /// Searches `.scene` and `.fluxmat` files for known asset-path strings.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn build_dependency_index(&mut self) {
+        self.deps_forward.clear();
+        self.deps_reverse.clear();
+
+        let scan_root = {
+            let r = self.root.join("assets");
+            if r.is_dir() { r } else { self.root.clone() }
+        };
+
+        let all_paths: Vec<String> = self.records.iter().map(|r| r.path.clone()).collect();
+
+        for rec in &self.records {
+            match rec.asset_type {
+                AssetType::Scene | AssetType::Material | AssetType::Json => {
+                    let abs = scan_root.join(&rec.path);
+                    let Ok(text) = std::fs::read_to_string(&abs) else { continue };
+                    let mut refs: BTreeSet<String> = BTreeSet::new();
+                    for candidate in &all_paths {
+                        if candidate == &rec.path { continue; }
+                        if text.contains(candidate.as_str()) {
+                            refs.insert(candidate.clone());
+                        }
+                    }
+                    if !refs.is_empty() {
+                        let src = rec.path.clone();
+                        for dep in &refs {
+                            self.deps_reverse
+                                .entry(dep.clone())
+                                .or_default()
+                                .insert(src.clone());
+                        }
+                        self.deps_forward.insert(src, refs);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // ── External file import (native only) ────────────────────────────────────
+
+    /// Copy an absolute-path OS file into `{root}/assets/{dest_subdir}/`.
+    /// Returns the resulting project-relative path on success.
+    /// A rescan is NOT triggered here — the caller must call `scan()` afterwards.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn import_file(&mut self, src_abs: &Path, dest_subdir: &str) -> Result<String, String> {
+        let file_name = src_abs.file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| "invalid source file name".to_string())?;
+
+        let assets_root = {
+            let r = self.root.join("assets");
+            if r.is_dir() { r } else { self.root.clone() }
+        };
+
+        let dest_dir = if dest_subdir.is_empty() {
+            assets_root.clone()
+        } else {
+            assets_root.join(dest_subdir)
+        };
+
+        std::fs::create_dir_all(&dest_dir)
+            .map_err(|e| format!("mkdir failed: {e}"))?;
+
+        // Resolve name collision: append _2, _3, … before extension
+        let stem = src_abs.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name);
+        let ext  = src_abs.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+        let mut dest_path = dest_dir.join(file_name);
+        let mut counter = 2u32;
+        while dest_path.exists() {
+            let new_name = if ext.is_empty() {
+                format!("{}_{}", stem, counter)
+            } else {
+                format!("{}_{}.{}", stem, counter, ext)
+            };
+            dest_path = dest_dir.join(&new_name);
+            counter += 1;
+        }
+
+        std::fs::copy(src_abs, &dest_path)
+            .map_err(|e| format!("copy failed: {e}"))?;
+
+        // Return project-relative path
+        let rel = dest_path
+            .strip_prefix(&assets_root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| dest_path.to_string_lossy().to_string());
+
+        Ok(rel)
     }
 }
 

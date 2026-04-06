@@ -31,6 +31,10 @@ pub struct EditorPrefs {
     /// Editor fly-camera mouse-look sensitivity multiplier.
     #[serde(default = "default_camera_sensitivity")]
     pub camera_sensitivity: f32,
+    /// If true, the active Camera entity (editor fly-cam) appears in the Hierarchy.
+    /// Default false — keeps the editor camera invisible to normal scene tools.
+    #[serde(default)]
+    pub show_editor_camera: bool,
 }
 
 fn default_theme()            -> String { "dark".to_string() }
@@ -51,6 +55,7 @@ impl Default for EditorPrefs {
             log_max_entries:        default_log_max(),
             camera_speed:           default_camera_speed(),
             camera_sensitivity:     default_camera_sensitivity(),
+            show_editor_camera:     false,
         }
     }
 }

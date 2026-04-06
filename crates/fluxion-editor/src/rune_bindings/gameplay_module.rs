@@ -82,6 +82,21 @@ pub fn get_compile_summary() -> (i64, i64) {
     COMPILE_SUMMARY.lock().map(|g| *g).unwrap_or((-1, 0))
 }
 
+// ── Script hot-reload pending flag ────────────────────────────────────────────
+
+static SCRIPT_HOTRELOAD_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Set by the file watcher in main.rs when a `.rn` file changes.
+pub fn set_script_hotreload_pending(v: bool) {
+    SCRIPT_HOTRELOAD_PENDING.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read (and consume) the flag — returns true once per hot-reload event.
+pub fn take_script_hotreload_pending() -> bool {
+    SCRIPT_HOTRELOAD_PENDING.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Store a compile error for a given (entity, script_name) pair.
 pub fn set_script_error(entity_bits: u64, script_name: impl Into<String>, msg: impl Into<String>) {
     SCRIPT_ERRORS.with(|m| { m.borrow_mut().insert((entity_bits, script_name.into()), msg.into()); });
@@ -282,6 +297,12 @@ pub fn build_script_module() -> anyhow::Result<Module> {
                 max.to_string(),
             ]);
         }
+    }).build()?;
+
+    // hotreload_pending() → bool — true once after file watcher detected a .rn change.
+    // Consumed on read. Scripts can poll this to reset their own state.
+    m.function("hotreload_pending", || -> bool {
+        take_script_hotreload_pending()
     }).build()?;
 
     Ok(m)

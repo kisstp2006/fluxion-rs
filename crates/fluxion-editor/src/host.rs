@@ -696,7 +696,7 @@ impl EditorHost {
                 "__write_material__" => {
                     let path = edit.field.clone();
                     let json = if let fluxion_core::reflect::ReflectValue::Str(s) = edit.value.clone() { s } else { String::new() };
-                    let full_path = self.project_root.join(&path);
+                    let full_path = self.project_root.join("assets").join(&path);
                     if let Err(e) = std::fs::write(&full_path, json.as_bytes()) {
                         log::warn!("write_material: failed to write {path}: {e}");
                     } else {
@@ -706,7 +706,7 @@ impl EditorHost {
                 }
                 "__create_material__" => {
                     let path = edit.field.clone();
-                    let full_path = self.project_root.join(&path);
+                    let full_path = self.project_root.join("assets").join(&path);
                     if !full_path.exists() {
                         if let Some(parent) = full_path.parent() {
                             let _ = std::fs::create_dir_all(parent);

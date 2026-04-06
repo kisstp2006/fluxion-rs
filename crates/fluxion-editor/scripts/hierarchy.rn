@@ -21,14 +21,18 @@ fn entity_icon(id) {
 
 // Recursively collect a flat node list for ltreeview_hierarchy.
 // Each entry: [id_str, parent_id_str, name, icon, is_selected_str]
-fn collect_nodes(id, parent_id, sel, out) {
+// The editor camera entity is hidden unless the show_editor_camera pref is on.
+fn collect_nodes(id, parent_id, sel, out, cam_id) {
+    if id == cam_id && !fluxion::settings::show_editor_camera() {
+        return;
+    }
     let name     = fluxion::world::entity_name(id);
     let icon     = entity_icon(id);
     let is_sel   = (sel == id) || fluxion::world::is_multi_selected(id);
     out.push([`${id}`, `${parent_id}`, name, icon, if is_sel { "true" } else { "false" }]);
     let children = fluxion::world::entity_children(id);
     for child in children {
-        collect_nodes(child, id, sel, out);
+        collect_nodes(child, id, sel, out, cam_id);
     }
 }
 
@@ -110,10 +114,11 @@ pub fn panel() {
 
     fluxion::ui::separator();
 
-    // Build flat node list
+    // Build flat node list (skip editor camera unless pref is on)
+    let cam_id = fluxion::world::editor_camera_id();
     let nodes = [];
     for id in roots {
-        collect_nodes(id, -1, sel, nodes);
+        collect_nodes(id, -1, sel, nodes, cam_id);
     }
 
     // Render tree and process actions

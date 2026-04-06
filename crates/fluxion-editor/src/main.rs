@@ -471,9 +471,70 @@ impl EditorInner {
         // Bake any dirty CsgShape components → upload scaled GPU mesh.
         self.renderer.upload_csg_meshes(&mut self.host.world);
 
-        // Render 3-D scene to offscreen viewport texture.
-        if let Err(e) = self.renderer.render_to_viewport(&self.host.world, &self.host.time) {
-            log::error!("render_to_viewport: {e}");
+        // Track which entity is the active editor camera (for hierarchy hiding).
+        {
+            use fluxion_core::{Transform, Camera};
+            let mut cam_entity = None;
+            self.host.world.query_active::<(&Transform, &Camera), _>(|id, (_, c)| {
+                if c.is_active && cam_entity.is_none() {
+                    cam_entity = Some(id);
+                }
+            });
+            crate::rune_bindings::set_editor_cam_entity(cam_entity);
+        }
+
+        // Render 3-D scene to offscreen viewport texture(s).
+        // Pane 0 is always the perspective view; panes 1-3 are ortho (Top/Front/Right).
+        // Only render panes that are active in the current layout.
+        use crate::rune_bindings::viewport_module::{get_layout, PaneKind};
+        let layout = get_layout();
+        for &pane in layout.active_panes() {
+            let cam_override = if pane > 0 {
+                // Build a simple orthographic override for ortho panes.
+                use fluxion_renderer::CameraOverride;
+                let kind = PaneKind::from_idx(pane);
+                let w = self.renderer.width.max(1) as f32;
+                let h = self.renderer.height.max(1) as f32;
+                let (pane_w, pane_h) = (w / 2.0, h / 2.0);
+                let ortho_size = 8.0f32;
+                let proj = glam::Mat4::orthographic_rh(
+                    -ortho_size * pane_w / pane_h, ortho_size * pane_w / pane_h,
+                    -ortho_size, ortho_size,
+                    0.1, 1000.0,
+                );
+                let (view, pos) = match kind {
+                    PaneKind::Top   => (
+                        glam::Mat4::look_at_rh(
+                            glam::vec3(0.0, 20.0, 0.0),
+                            glam::Vec3::ZERO,
+                            glam::Vec3::Z,
+                        ),
+                        glam::vec3(0.0, 20.0, 0.0),
+                    ),
+                    PaneKind::Front => (
+                        glam::Mat4::look_at_rh(
+                            glam::vec3(0.0, 0.0, 20.0),
+                            glam::Vec3::ZERO,
+                            glam::Vec3::Y,
+                        ),
+                        glam::vec3(0.0, 0.0, 20.0),
+                    ),
+                    _ => (
+                        glam::Mat4::look_at_rh(
+                            glam::vec3(20.0, 0.0, 0.0),
+                            glam::Vec3::ZERO,
+                            glam::Vec3::Y,
+                        ),
+                        glam::vec3(20.0, 0.0, 0.0),
+                    ),
+                };
+                Some(CameraOverride { view, proj, position: pos })
+            } else {
+                None
+            };
+            if let Err(e) = self.renderer.render_to_pane(&self.host.world, &self.host.time, pane, cam_override) {
+                log::error!("render_to_pane({pane}): {e}");
+            }
         }
 
         // Push camera snapshot so Rune scripts can use screen↔world math.
@@ -498,18 +559,24 @@ impl EditorInner {
             });
         }
 
-        // Register / update the viewport texture with egui.
-        if let Some(view) = self.renderer.viewport_view() {
-            let vp_w = self.renderer.width;
-            let vp_h = self.renderer.height;
-            // Register the texture with the egui-wgpu renderer.
-            let tid = self.ui_shell.register_viewport_texture(
-                &self.renderer.device,
-                view,
-                vp_w,
-                vp_h,
-            );
-            set_viewport_texture(tid, vp_w, vp_h);
+        // Register / update per-pane viewport textures with egui.
+        let vp_w = self.renderer.width;
+        let vp_h = self.renderer.height;
+        for &pane in get_layout().active_panes() {
+            if let Some(view) = self.renderer.viewport_view_for_pane(pane) {
+                let tid = self.ui_shell.register_viewport_texture(
+                    &self.renderer.device,
+                    view,
+                    pane,
+                );
+                if pane == 0 {
+                    set_viewport_texture(tid, vp_w, vp_h);
+                } else {
+                    crate::rune_bindings::set_pane_texture(pane, tid);
+                }
+            }
+        }
+        if vp_w > 0 {
             self.host.vm.push_viewport(vp_w, vp_h);
         }
 
@@ -716,6 +783,16 @@ impl EditorInner {
                     self.host.physmat_cache.clear();
                     log::info!("AssetDatabase rescan: {} assets", self.host.asset_db.count());
                 }
+                "do_undo" => {
+                    let world    = &self.host.world    as *const _;
+                    let registry = &self.host.registry as *const _;
+                    unsafe { self.host.undo.undo(&*world, &*registry); }
+                }
+                "do_redo" => {
+                    let world    = &self.host.world    as *const _;
+                    let registry = &self.host.registry as *const _;
+                    unsafe { self.host.undo.redo(&*world, &*registry); }
+                }
                 s if s.starts_with("load_scene:") => {
                     let rel = &s["load_scene:".len()..];
                     let path = if std::path::Path::new(rel).is_absolute() {
@@ -920,14 +997,32 @@ impl EditorInner {
                 self.file_watcher_cooldown -= dt;
             } else if let Some(ref rx) = self.file_watcher_rx {
                 let mut got_event = false;
-                while let Ok(_) = rx.try_recv() {
+                let mut rn_changed = false;
+                while let Ok(ev) = rx.try_recv() {
                     got_event = true;
+                    if let Ok(event) = ev {
+                        for path in &event.paths {
+                            if path.extension().and_then(|e| e.to_str()) == Some("rn") {
+                                rn_changed = true;
+                            }
+                        }
+                    }
                 }
                 if got_event {
                     self.host.asset_db.scan(&self.project_root);
                     self.host.physmat_cache.clear();
                     log::info!("Asset watcher: rescan triggered ({} assets)", self.host.asset_db.count());
                     self.file_watcher_cooldown = 0.5; // 500 ms debounce
+
+                    // Hot-reload gameplay scripts if any .rn file changed while playing.
+                    if rn_changed {
+                        let is_playing = crate::rune_bindings::get_editor_mode_str() == "Playing";
+                        if is_playing {
+                            self.host.rebuild_gameplay_scripts();
+                            log::info!("Script hot-reload: rebuilt gameplay scripts after .rn change");
+                        }
+                        crate::rune_bindings::set_script_hotreload_pending(true);
+                    }
                 }
             }
         }

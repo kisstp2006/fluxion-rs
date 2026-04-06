@@ -44,6 +44,12 @@ impl<'a> egui_dock::TabViewer for RuneTabViewer<'a> {
         // Build the &[&str] path from "module::function".
         let parts: Vec<&str> = tab.rune_fn.split("::").collect();
 
+        // For the viewport tab: hard-clip to max_rect so any overflow is invisible
+        // rather than causing a scroll region.  Other panels are left unchanged.
+        if tab.rune_fn == "viewport::panel" {
+            ui.set_clip_rect(ui.max_rect());
+        }
+
         // Guard clears CURRENT_UI on drop — safe on both normal return and panic.
         let _ui_guard: UiContextGuard = set_current_ui(ui);
 
@@ -59,6 +65,14 @@ impl<'a> egui_dock::TabViewer for RuneTabViewer<'a> {
 
     fn closeable(&mut self, _tab: &mut EditorTab) -> bool {
         false // panels are not closeable in basic mode
+    }
+
+    fn scroll_bars(&self, tab: &EditorTab) -> [bool; 2] {
+        if tab.rune_fn == "viewport::panel" {
+            [false, false]
+        } else {
+            [false, true]
+        }
     }
 }
 

@@ -108,6 +108,8 @@ thread_local! {
     static UNDO_STATE: Cell<(bool, bool)> = Cell::new((false, false));
     /// Last frame delta time in milliseconds.
     static FRAME_TIME_MS: Cell<f64> = Cell::new(0.0);
+    /// Countdown timer (seconds) for the script hot-reload toast badge.
+    static HOTRELOAD_TOAST_TIMER: Cell<f64> = Cell::new(0.0);
     /// Total elapsed time in seconds — accumulated by set_time_elapsed each frame.
     static TIME_ELAPSED: Cell<f64> = Cell::new(0.0);
     /// Editor mode string: "Editing" | "Playing" | "Paused".
@@ -169,6 +171,12 @@ thread_local! {
     static ASSET_NAV_HISTORY: RefCell<Vec<String>> = RefCell::new(Vec::new());
     /// Current position in ASSET_NAV_HISTORY (index). -1 = uninitialized.
     static ASSET_NAV_POS: Cell<i64> = Cell::new(-1);
+
+    // ── Editor camera entity tracking ─────────────────────────────────────────
+    /// EntityId bits of the active Camera entity used as the editor fly-cam.
+    /// When set, this entity is hidden from the hierarchy (unless show_editor_camera pref is on)
+    /// and cannot be selected via normal editor tools.
+    static EDITOR_CAM_ID: Cell<Option<EntityId>> = Cell::new(None);
 }
 
 /// A deferred field mutation queued by Rune, applied after the panel call.
@@ -275,6 +283,23 @@ pub fn set_selected_id(entity: Option<EntityId>) {
     SELECTED.with(|s| *s.borrow_mut() = entity);
 }
 
+/// Track which entity is the editor fly-camera (hidden from hierarchy).
+pub fn set_editor_cam_entity(entity: Option<EntityId>) {
+    EDITOR_CAM_ID.with(|c| c.set(entity));
+}
+
+/// Returns the editor camera entity bits as i64, or -1 if unset.
+pub fn get_editor_cam_entity_id() -> i64 {
+    EDITOR_CAM_ID.with(|c| c.get().map(|e| e.to_bits() as i64).unwrap_or(-1))
+}
+
+/// Returns true if the given entity id matches the editor camera AND show_editor_camera is false.
+fn is_protected_editor_cam(id: i64) -> bool {
+    let cam_id = EDITOR_CAM_ID.with(|c| c.get().map(|e| e.to_bits() as i64).unwrap_or(-1));
+    if cam_id < 0 || cam_id != id { return false; }
+    !crate::rune_bindings::settings_module::get_show_editor_camera()
+}
+
 /// Set the project root path so Rune scripts can enumerate assets.
 pub fn set_project_root(root: &std::path::Path) {
     PROJECT_ROOT.with(|p| *p.borrow_mut() = root.to_path_buf());
@@ -293,6 +318,10 @@ pub fn set_undo_state(can_undo: bool, can_redo: bool) {
 /// Push the last frame delta time (milliseconds) for the debugger panel.
 pub fn set_frame_time(ms: f64) {
     FRAME_TIME_MS.with(|c| c.set(ms));
+    HOTRELOAD_TOAST_TIMER.with(|t| {
+        let remaining = t.get() - ms / 1000.0;
+        t.set(remaining.max(0.0));
+    });
 }
 
 pub fn set_time_elapsed(secs: f64) {
@@ -486,6 +515,7 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             SELECTED.with(|s| *s.borrow_mut() = None);
             return;
         }
+        if is_protected_editor_cam(id) { return; }
         with_ctx(|world, _| {
             if let Some(entity) = id_to_entity(world, id) {
                 SELECTED.with(|s| *s.borrow_mut() = Some(entity));
@@ -980,6 +1010,29 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         with_adb(|db| db.list_dirs()).unwrap_or_default()
     }).build()?;
 
+    // asset_subdirs(subdir) — immediate child directories of a given folder (sorted).
+    // Pass "" to get top-level dirs.  Returns relative paths like "textures/ui".
+    m.function("asset_subdirs", |subdir: Ref<str>| -> Vec<String> {
+        with_adb(|db| {
+            let prefix = if subdir.as_ref().is_empty() {
+                String::new()
+            } else {
+                format!("{}/", subdir.as_ref())
+            };
+            let mut result: Vec<String> = db.list_dirs().into_iter()
+                .filter(|d| {
+                    if prefix.is_empty() {
+                        !d.contains('/')
+                    } else {
+                        d.starts_with(&prefix) && !d[prefix.len()..].contains('/')
+                    }
+                })
+                .collect();
+            result.sort();
+            result
+        }).unwrap_or_default()
+    }).build()?;
+
     // asset_list_typed(subdir, type_filter) — like asset_list but filtered by type string.
     // Pass "" as type_filter for all types.
     m.function("asset_list_typed", |subdir: Ref<str>, type_filter: Ref<str>| -> Vec<String> {
@@ -1416,6 +1469,36 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             log::error!("[Assets] Failed to delete: {}", full.display());
         }
         ok
+    }).build()?;
+
+    // asset_dependencies(path) → Vec<String> — assets that `path` directly references.
+    m.function("asset_dependencies", |path: Ref<str>| -> Vec<String> {
+        with_adb(|db| db.dependencies_of(path.as_ref())).unwrap_or_default()
+    }).build()?;
+
+    // asset_references(path) → Vec<String> — assets that reference (use) `path`.
+    m.function("asset_references", |path: Ref<str>| -> Vec<String> {
+        with_adb(|db| db.references_to(path.as_ref())).unwrap_or_default()
+    }).build()?;
+
+    // asset_import_file(src_abs_path, dest_subdir) → String
+    // Copy an OS file into {project}/assets/{dest_subdir}/.
+    // Returns the resulting project-relative path on success, "" on failure.
+    // Signals a rescan.
+    m.function("asset_import_file", |src_path: Ref<str>, dest_subdir: Ref<str>| -> String {
+        let src = std::path::PathBuf::from(src_path.as_ref());
+        let result = with_adb_mut(|db| db.import_file(&src, dest_subdir.as_ref()));
+        match result {
+            Some(Ok(rel_path)) => {
+                ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+                rel_path
+            }
+            Some(Err(e)) => {
+                log::error!("[Assets] import_file failed: {e}");
+                String::new()
+            }
+            None => String::new(),
+        }
     }).build()?;
 
     // ── Component add / remove ────────────────────────────────────────────────
@@ -1871,6 +1954,15 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         UNDO_STATE.with(|c| c.get().1)
     }).build()?;
 
+    // trigger_undo() / trigger_redo() — queue action signals consumed by main.rs
+    m.function("trigger_undo", || {
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push("do_undo".to_string()));
+    }).build()?;
+
+    m.function("trigger_redo", || {
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push("do_redo".to_string()));
+    }).build()?;
+
     // ── Euler angle helpers (degrees) ─────────────────────────────────────────
 
     m.function("get_euler", |id: i64, component: Ref<str>, field: Ref<str>| -> Vec<f64> {
@@ -2191,6 +2283,7 @@ pub fn build_world_module() -> anyhow::Result<Module> {
     }).build()?;
 
     m.function("add_to_selection", |id: i64| {
+        if is_protected_editor_cam(id) { return; }
         with_ctx(|world, _| {
             if let Some(entity) = id_to_entity(world, id) {
                 SELECTED_MULTI.with(|s| {
@@ -2636,6 +2729,151 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             let entity   = id_to_entity(world, entity_id)?;
             Some(world.is_ancestor_of(ancestor, entity))
         }).flatten().unwrap_or(false)
+    }).build()?;
+
+    // editor_camera_id() → i64  — returns bits of the protected editor fly-cam entity, or -1
+    m.function("editor_camera_id", || -> i64 {
+        EDITOR_CAM_ID.with(|c| c.get().map(|e| e.to_bits() as i64).unwrap_or(-1))
+    }).build()?;
+
+    // script_hotreload_pending() → bool — true once after a .rn file changed; consumed on read.
+    m.function("script_hotreload_pending", || -> bool {
+        let pending = crate::rune_bindings::gameplay_module::take_script_hotreload_pending();
+        if pending {
+            HOTRELOAD_TOAST_TIMER.with(|t| t.set(3.0));
+        }
+        pending
+    }).build()?;
+
+    // hotreload_toast_visible() → bool — true while the 3-second toast countdown is active.
+    m.function("hotreload_toast_visible", || -> bool {
+        HOTRELOAD_TOAST_TIMER.with(|t| t.get() > 0.0)
+    }).build()?;
+
+    // mat_alpha_mode(path) → String: "opaque" | "blend" | "mask:<cutoff>"
+    m.function("mat_alpha_mode", |path: String| -> String {
+        MATERIAL_CACHE.with(|c| {
+            let cache = c.borrow();
+            let Some(obj) = cache.get(&path) else { return "opaque".to_string() };
+            let v = obj.get("alphaMode").cloned().unwrap_or(serde_json::Value::Null);
+            match &v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Object(m) => {
+                    if let Some(cutoff) = m.get("mask").and_then(|x| x.as_f64()) {
+                        format!("mask:{}", cutoff)
+                    } else {
+                        "opaque".to_string()
+                    }
+                }
+                _ => "opaque".to_string(),
+            }
+        })
+    }).build()?;
+
+    // mat_set_alpha_mode(path, mode) — mode: "opaque" | "blend" | "mask:<cutoff>"
+    m.function("mat_set_alpha_mode", |path: String, mode: String| {
+        MATERIAL_CACHE.with(|c| {
+            if let Some(obj) = c.borrow_mut().get_mut(&path) {
+                if let Some(map) = obj.as_object_mut() {
+                    let val = if mode == "opaque" {
+                        serde_json::Value::String("opaque".into())
+                    } else if mode == "blend" {
+                        serde_json::Value::String("blend".into())
+                    } else if let Some(rest) = mode.strip_prefix("mask:") {
+                        let cutoff: f64 = rest.parse().unwrap_or(0.5);
+                        let mut m2 = serde_json::Map::new();
+                        m2.insert("mask".into(), serde_json::json!(cutoff));
+                        serde_json::Value::Object(m2)
+                    } else {
+                        serde_json::Value::String("opaque".into())
+                    };
+                    map.insert("alphaMode".into(), val);
+                }
+            }
+        });
+    }).build()?;
+
+    // mat_uv_transform(path, slot) → [scale_x, scale_y, offset_x, offset_y]
+    // slot: "albedo" | "normal" | etc.
+    m.function("mat_uv_transform", |path: String, slot: String| -> Vec<f64> {
+        MATERIAL_CACHE.with(|c| {
+            c.borrow().get(&path)
+                .and_then(|obj| obj.get("uvTransforms"))
+                .and_then(|uv| uv.get(&slot))
+                .map(|t| {
+                    let sx = t.get("scale").and_then(|s| s.get(0)).and_then(|v| v.as_f64()).unwrap_or(1.0);
+                    let sy = t.get("scale").and_then(|s| s.get(1)).and_then(|v| v.as_f64()).unwrap_or(1.0);
+                    let ox = t.get("offset").and_then(|s| s.get(0)).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let oy = t.get("offset").and_then(|s| s.get(1)).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    vec![sx, sy, ox, oy]
+                })
+                .unwrap_or_else(|| vec![1.0, 1.0, 0.0, 0.0])
+        })
+    }).build()?;
+
+    // mat_set_uv_transform(path, slot, vals) — vals = [scale_x, scale_y, offset_x, offset_y]
+    m.function("mat_set_uv_transform", |path: String, slot: String, vals: Vec<f64>| {
+        let sx = vals.get(0).copied().unwrap_or(1.0);
+        let sy = vals.get(1).copied().unwrap_or(1.0);
+        let ox = vals.get(2).copied().unwrap_or(0.0);
+        let oy = vals.get(3).copied().unwrap_or(0.0);
+        MATERIAL_CACHE.with(|c| {
+            if let Some(obj) = c.borrow_mut().get_mut(&path) {
+                if let Some(map) = obj.as_object_mut() {
+                    let uv_map = map
+                        .entry("uvTransforms")
+                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                    if let Some(slots) = uv_map.as_object_mut() {
+                        slots.insert(slot, serde_json::json!({
+                            "scale":  [sx, sy],
+                            "offset": [ox, oy]
+                        }));
+                    }
+                }
+            }
+        });
+    }).build()?;
+
+    // mat_apply_preset(path, preset) — overwrite multiple fields in one call.
+    // preset: "metal" | "plastic" | "glass" | "matte" | "emissive"
+    m.function("mat_apply_preset", |path: String, preset: Ref<str>| {
+        MATERIAL_CACHE.with(|c| {
+            if let Some(obj) = c.borrow_mut().get_mut(&path) {
+                if let Some(map) = obj.as_object_mut() {
+                    match preset.as_ref() {
+                        "metal" => {
+                            map.insert("roughness".into(), serde_json::json!(0.15));
+                            map.insert("metalness".into(), serde_json::json!(1.0));
+                            map.insert("alphaMode".into(), serde_json::json!("opaque"));
+                        }
+                        "plastic" => {
+                            map.insert("roughness".into(), serde_json::json!(0.4));
+                            map.insert("metalness".into(), serde_json::json!(0.0));
+                            map.insert("alphaMode".into(), serde_json::json!("opaque"));
+                        }
+                        "glass" => {
+                            map.insert("roughness".into(), serde_json::json!(0.05));
+                            map.insert("metalness".into(), serde_json::json!(0.0));
+                            map.insert("alphaMode".into(), serde_json::json!("blend"));
+                            map.insert("color".into(), serde_json::json!([0.9, 0.95, 1.0, 0.3]));
+                            map.insert("doubleSided".into(), serde_json::json!(true));
+                        }
+                        "matte" => {
+                            map.insert("roughness".into(), serde_json::json!(0.9));
+                            map.insert("metalness".into(), serde_json::json!(0.0));
+                            map.insert("alphaMode".into(), serde_json::json!("opaque"));
+                        }
+                        "emissive" => {
+                            map.insert("roughness".into(), serde_json::json!(0.5));
+                            map.insert("metalness".into(), serde_json::json!(0.0));
+                            map.insert("emissive".into(), serde_json::json!([1.0, 0.9, 0.3]));
+                            map.insert("emissiveIntensity".into(), serde_json::json!(5.0));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
     }).build()?;
 
     m.function("mat_save", |path: String| {

@@ -12,7 +12,7 @@ use winit::window::Window;
 pub struct UiShell {
     state:              egui_winit::State,
     renderer:           egui_wgpu::Renderer,
-    viewport_texture:   Option<egui::TextureId>,
+    viewport_textures:  [Option<egui::TextureId>; 4],
 }
 
 impl UiShell {
@@ -34,7 +34,7 @@ impl UiShell {
             Some(max_tex),
         );
         let renderer = egui_wgpu::Renderer::new(device, surface_format, egui_wgpu::RendererOptions::default());
-        Self { state, renderer, viewport_texture: None }
+        Self { state, renderer, viewport_textures: [None, None, None, None] }
     }
 
     #[allow(dead_code)]
@@ -42,23 +42,24 @@ impl UiShell {
         self.state.egui_ctx()
     }
 
-    /// Register (first call) or update (subsequent calls) the offscreen viewport texture.
+    /// Register (first call) or update (subsequent calls) a viewport pane texture.
+    /// `pane` 0 = Perspective, 1 = Top, 2 = Front, 3 = Right.
     /// Reuses the same `egui::TextureId` every frame to avoid leaking texture slots.
     pub fn register_viewport_texture(
         &mut self,
         device: &wgpu::Device,
         view:   &wgpu::TextureView,
-        _width:  u32,
-        _height: u32,
+        pane:   usize,
     ) -> egui::TextureId {
-        match self.viewport_texture {
+        let slot = &mut self.viewport_textures[pane.min(3)];
+        match *slot {
             None => {
                 let id = self.renderer.register_native_texture(
                     device,
                     view,
                     wgpu::FilterMode::Linear,
                 );
-                self.viewport_texture = Some(id);
+                *slot = Some(id);
                 id
             }
             Some(id) => {
@@ -77,8 +78,10 @@ impl UiShell {
 
 impl Drop for UiShell {
     fn drop(&mut self) {
-        if let Some(id) = self.viewport_texture.take() {
-            self.renderer.free_texture(&id);
+        for slot in &mut self.viewport_textures {
+            if let Some(id) = slot.take() {
+                self.renderer.free_texture(&id);
+            }
         }
     }
 }

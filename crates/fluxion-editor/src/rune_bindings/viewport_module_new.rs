@@ -106,15 +106,15 @@ pub struct GizmoEntry {
 // ── Thread-locals ─────────────────────────────────────────────────────────────
 
 thread_local! {
-    static VP_TEXTURES:   RefCell<[Option<egui::TextureId>; 4]> = RefCell::new([None; 4]);
-    static VP_LAYOUT:     Cell<ViewportLayout>                   = Cell::new(ViewportLayout::One);
-    static VP_FULLSCREEN: Cell<bool>                             = Cell::new(false);
-    static GIZMO_REGISTRY: RefCell<Vec<GizmoEntry>>              = RefCell::new(Vec::new());
+    static VP_TEXTURES: RefCell<[Option<egui::TextureId>; 4]> = RefCell::new([None; 4]);
+    static VP_LAYOUT:   Cell<ViewportLayout>                   = Cell::new(ViewportLayout::One);
+    static VP_FULLSCREEN: Cell<bool>                           = Cell::new(false);
+    static GIZMO_REGISTRY: RefCell<Vec<GizmoEntry>>            = RefCell::new(Vec::new());
 }
 
 // ── Host-facing setters ───────────────────────────────────────────────────────
 
-/// Set viewport pane 0 texture. Called by main.rs for backward compat.
+/// Set viewport pane texture. Called by main.rs after each pane render.
 pub fn set_viewport_texture(id: egui::TextureId, _width: u32, _height: u32) {
     VP_TEXTURES.with(|c| c.borrow_mut()[0] = Some(id));
 }
@@ -126,14 +126,9 @@ pub fn set_pane_texture(pane: usize, id: egui::TextureId) {
     }
 }
 
-/// Returns the current layout.
+/// Returns how many pane textures are needed for the current layout.
 pub fn get_layout() -> ViewportLayout {
     VP_LAYOUT.with(|c| c.get())
-}
-
-/// Returns true if viewport fullscreen mode is active.
-pub fn get_fullscreen() -> bool {
-    VP_FULLSCREEN.with(|c| c.get())
 }
 
 // ── Module builder ────────────────────────────────────────────────────────────
@@ -148,7 +143,7 @@ fn tex_id_to_i64(id: egui::TextureId) -> i64 {
 pub fn build_viewport_module() -> anyhow::Result<Module> {
     let mut m = Module::with_crate_item("fluxion", ["viewport"])?;
 
-    // texture_id(pane) — pane 0..3; 0 = perspective (backward compat when called with no arg is not supported in Rune, use pane=0)
+    // ── texture_id(pane) — pane 0 for backward compat, or 0-3 ──────────────
     m.function("texture_id", |pane: i64| -> i64 {
         let idx = pane.max(0).min(3) as usize;
         VP_TEXTURES.with(|c| {
@@ -156,12 +151,12 @@ pub fn build_viewport_module() -> anyhow::Result<Module> {
         })
     }).build()?;
 
-    // pane_label(pane)
+    // ── pane_label(pane) ────────────────────────────────────────────────────
     m.function("pane_label", |pane: i64| -> String {
         PaneKind::from_idx(pane.max(0).min(3) as usize).label().to_string()
     }).build()?;
 
-    // Layout get/set
+    // ── Layout get/set ───────────────────────────────────────────────────────
     m.function("get_layout", || -> String {
         VP_LAYOUT.with(|c| c.get().as_str().to_string())
     }).build()?;
@@ -170,7 +165,7 @@ pub fn build_viewport_module() -> anyhow::Result<Module> {
         VP_LAYOUT.with(|c| c.set(ViewportLayout::from_str(s.as_ref())));
     }).build()?;
 
-    // Fullscreen
+    // ── Fullscreen ───────────────────────────────────────────────────────────
     m.function("get_fullscreen", || -> bool {
         VP_FULLSCREEN.with(|c| c.get())
     }).build()?;
@@ -179,19 +174,19 @@ pub fn build_viewport_module() -> anyhow::Result<Module> {
         VP_FULLSCREEN.with(|c| c.set(v));
     }).build()?;
 
-    // Active pane count for current layout
+    // ── Active pane count ────────────────────────────────────────────────────
     m.function("pane_count", || -> i64 {
         VP_LAYOUT.with(|c| c.get().active_panes().len() as i64)
     }).build()?;
 
-    // Pane index at layout slot k (e.g. slot 0 may be pane 2 in ThreeRight)
+    // ── Active pane index at slot k ──────────────────────────────────────────
     m.function("pane_at_slot", |slot: i64| -> i64 {
         let panes = VP_LAYOUT.with(|c| c.get().active_panes());
         let k = slot.max(0) as usize;
         panes.get(k).copied().unwrap_or(0) as i64
     }).build()?;
 
-    // Gizmo registry
+    // ── Gizmo registry ───────────────────────────────────────────────────────
     m.function("register_gizmo", |category: Ref<str>, label: Ref<str>, icon: Ref<str>| {
         let lbl = label.as_ref().to_string();
         GIZMO_REGISTRY.with(|reg| {

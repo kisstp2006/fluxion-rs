@@ -50,6 +50,14 @@ use crate::{
     shader::ShaderCache,
 };
 
+/// Camera override for ortho/custom viewport panes.
+/// When passed to [`FluxionRenderer::render_to_pane`], replaces the ECS camera matrices.
+pub struct CameraOverride {
+    pub view:     glam::Mat4,
+    pub proj:     glam::Mat4,
+    pub position: glam::Vec3,
+}
+
 /// The main renderer.
 ///
 /// # Initialization
@@ -106,9 +114,11 @@ pub struct FluxionRenderer {
     /// and the editor grid are drawn as a debug overlay every frame.
     pub gizmos_enabled: bool,
 
-    /// Offscreen render target for the editor viewport panel.
+    /// Offscreen render target for the editor viewport panel (pane 0 = Perspective).
     /// Recreated automatically when the window is resized.
     pub viewport_texture: Option<GpuTexture>,
+    /// Extra offscreen render targets for ortho panes 1 (Top), 2 (Front), 3 (Right).
+    pub viewport_extra_textures: [Option<GpuTexture>; 3],
 
     /// Last frame's camera matrices — cached for use by editor gizmos.
     pub last_view_matrix: glam::Mat4,
@@ -285,6 +295,7 @@ impl FluxionRenderer {
             width: w, height: h,
             gizmos_enabled: false,
             viewport_texture: None,
+            viewport_extra_textures: [None, None, None],
             last_view_matrix: glam::Mat4::IDENTITY,
             last_proj_matrix: glam::Mat4::IDENTITY,
             last_draw_call_count: 0,
@@ -1260,10 +1271,153 @@ impl FluxionRenderer {
         Ok(())
     }
 
+    /// Render the 3-D scene to a specific viewport pane texture.
+    /// `pane` 0 = Perspective (uses `viewport_texture`), 1-3 = ortho panes.
+    /// `cam_override` replaces the ECS-derived camera matrices when `Some`.
+    pub fn render_to_pane(
+        &mut self,
+        world: &ECSWorld,
+        time:  &Time,
+        pane:  usize,
+        cam_override: Option<CameraOverride>,
+    ) -> anyhow::Result<()> {
+        if self.width == 0 || self.height == 0 { return Ok(()); }
+        let w      = self.width;
+        let h      = self.height;
+        let format = self.surface_config.format;
+
+        // Ensure the target texture exists at the correct size.
+        let target: &mut Option<GpuTexture> = if pane == 0 {
+            &mut self.viewport_texture
+        } else if pane <= 3 {
+            &mut self.viewport_extra_textures[pane - 1]
+        } else {
+            return Ok(());
+        };
+        let needs_recreate = target.as_ref()
+            .map(|t| t.width != w || t.height != h || t.format != format)
+            .unwrap_or(true);
+        if needs_recreate {
+            let label = format!("viewport_pane{pane}");
+            *target = Some(GpuTexture::render_target(&self.device, &label, w, h, format));
+        }
+
+        let mut frame = self.extract_frame_data(world, time);
+        if pane == 0 { self.last_draw_call_count = frame.draw_calls.len() as u32; }
+
+        // Apply camera override (ortho panes).
+        if let Some(ov) = cam_override {
+            frame.camera.view        = ov.view;
+            frame.camera.projection  = ov.proj;
+            frame.camera.view_proj   = ov.proj * ov.view;
+            frame.camera.inv_view_proj = frame.camera.view_proj.inverse();
+            frame.camera.inv_proj    = ov.proj.inverse();
+            frame.camera.position    = ov.position;
+            if pane == 0 {
+                self.last_view_matrix = ov.view;
+                self.last_proj_matrix = ov.proj;
+            }
+        } else if pane == 0 {
+            self.last_view_matrix = frame.camera.view;
+            self.last_proj_matrix = frame.camera.projection;
+        }
+
+        // Environment overrides (same logic as render_to_viewport).
+        let mut env_override: Option<Environment> = None;
+        world.query_active::<&Environment, _>(|_, env| {
+            if env_override.is_none() { env_override = Some(env.clone()); }
+        });
+        if let Some(ref env) = env_override {
+            self.apply_environment(env);
+            let sky = &env.sky;
+            frame.sky.sky_mode = match sky.mode {
+                BackgroundMode::Gradient      => 0,
+                BackgroundMode::ProceduralSky => 1,
+                BackgroundMode::SolidColor    => 2,
+                BackgroundMode::Panorama      => 3,
+            };
+            frame.sky.horizon_color      = sky.horizon_color;
+            frame.sky.zenith_color       = sky.zenith_color;
+            frame.sky.solid_color        = sky.solid_color;
+            let dir_light_sun: Option<[f32; 3]> = frame.lights.iter()
+                .find(|l| l.light_type == LIGHT_DIRECTIONAL)
+                .map(|l| [-l.direction[0], -l.direction[1], -l.direction[2]]);
+            frame.sky.sun_direction  = dir_light_sun
+                .unwrap_or_else(|| sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth));
+            frame.sky.sun_intensity  = sky.sun_intensity;
+            frame.sky.sun_size       = sky.sun_size;
+            frame.sky.turbidity      = sky.turbidity;
+            frame.sky.rayleigh       = sky.rayleigh;
+            frame.sky.mie_coefficient    = sky.mie_coefficient;
+            frame.sky.mie_directional_g  = sky.mie_directional_g;
+        } else {
+            self.restore_config_defaults();
+        }
+        let mut light_data = LightBufferData::new();
+        for light in &frame.lights { light_data.push(*light); }
+        if let Some(ref env) = env_override {
+            light_data.ambient_color     = env.ambient.color;
+            light_data.ambient_intensity = env.ambient.intensity;
+            light_data.fog_color         = env.fog.color;
+            light_data.fog_density       = env.fog.density;
+            light_data.fog_enabled       = u32::from(env.fog.enabled);
+            light_data.fog_mode          = env.fog.mode.as_u32();
+            light_data.fog_near          = env.fog.near;
+            light_data.fog_far           = env.fog.far;
+        } else {
+            let s = &self.scene_settings;
+            light_data.ambient_color     = s.ambient_color;
+            light_data.ambient_intensity = s.ambient_intensity;
+            light_data.fog_color         = s.fog_color;
+            light_data.fog_density       = s.fog_density;
+            light_data.fog_enabled       = u32::from(s.fog_enabled);
+            light_data.fog_mode          = 0;
+            light_data.fog_near          = 10.0;
+            light_data.fog_far           = 100.0;
+        }
+        self.light_buffer.upload(&self.queue, &light_data);
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("pane_encoder"),
+        });
+        let target_ref: &Option<GpuTexture> = if pane == 0 {
+            &self.viewport_texture
+        } else {
+            &self.viewport_extra_textures[pane - 1]
+        };
+        let vp_view: *const wgpu::TextureView = &target_ref.as_ref().unwrap().view;
+        let mut ctx = RenderContext {
+            device:       &self.device,
+            queue:        &self.queue,
+            encoder:      &mut encoder,
+            resources:    &self.resources,
+            frame:        &frame,
+            surface_view: unsafe { &*vp_view },
+            light_buffer:   &self.light_buffer.gpu_buffer,
+            meshes:         &self.meshes,
+            materials:      &self.materials,
+            skinned_meshes: &self.skinned_meshes,
+        };
+        self.render_graph.execute(&mut ctx);
+        self.queue.submit(std::iter::once(encoder.finish()));
+        Ok(())
+    }
+
     /// View into the last viewport render target, or `None` if `render_to_viewport`
     /// has not been called yet.
     pub fn viewport_view(&self) -> Option<&wgpu::TextureView> {
         self.viewport_texture.as_ref().map(|t| &t.view)
+    }
+
+    /// View into viewport pane N (0=Perspective, 1=Top, 2=Front, 3=Right).
+    pub fn viewport_view_for_pane(&self, pane: usize) -> Option<&wgpu::TextureView> {
+        if pane == 0 {
+            self.viewport_texture.as_ref().map(|t| &t.view)
+        } else if pane <= 3 {
+            self.viewport_extra_textures[pane - 1].as_ref().map(|t| &t.view)
+        } else {
+            None
+        }
     }
 
     /// Acquire the swap-chain surface, clear it to a neutral colour, then call

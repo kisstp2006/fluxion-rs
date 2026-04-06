@@ -35,6 +35,7 @@ pub mod project;
 pub mod editor_prefs;
 pub mod registry;
 pub mod reflect;
+pub mod templates;
 
 // Re-export the most commonly used types at the crate root so users
 // can write `use fluxion_core::ECSWorld` instead of the full path.
@@ -89,6 +90,8 @@ pub use debug_draw::{DebugDraw, DebugLine, draw_line, draw_ray, draw_sphere,
     draw_cone, draw_frustum, drain_debug_lines};
 pub use assets::{AssetDatabase, AssetRecord, AssetType};
 pub use components::{ScriptBundle, ScriptEntry, ScriptField, derive_script_name, scan_struct_fields};
+pub use templates::{TemplateRegistry, ProjectTemplate, TemplateMetadata, TemplateCategory, 
+    TemplateDifficulty, TemplateSize, TemplateOptions, TemplateInstaller};
 
 // WASM entry-point: sets up the browser panic hook so Rust panics appear
 // as readable messages in the browser console instead of "unreachable".

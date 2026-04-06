@@ -9,8 +9,11 @@
 pub mod toolbar {
 
 pub fn panel() {
-    let tool = fluxion::world::get_transform_tool();
-    let mode = fluxion::world::get_editor_mode();
+    let tool  = fluxion::world::get_transform_tool();
+    let mode  = fluxion::world::get_editor_mode();
+
+    // Polling script_hotreload_pending() here sets the Rust-side 3s toast timer.
+    fluxion::world::script_hotreload_pending();
 
     // ── Transform tool selector ──────────────────────────────────────────────
     if fluxion::ui::icon_tool_button("move",      tool == "Translate") {
@@ -51,18 +54,18 @@ pub fn panel() {
     if fluxion::ui::icon_tool_button("crosshair", snap) {
         fluxion::world::set_snap_enabled(!snap);
     }
-    if snap {
-        let sv = fluxion::world::get_snap_translate();
-        let new_sv = fluxion::ui::drag_float("T", sv, 0.1, 0.01, 100.0);
-        if new_sv != sv {
-            fluxion::world::set_snap_translate(new_sv);
-        }
-        let sr = fluxion::world::get_snap_rotate();
-        let new_sr = fluxion::ui::drag_float("R°", sr, 1.0, 1.0, 180.0);
-        if new_sr != sr {
-            fluxion::world::set_snap_rotate(new_sr);
-        }
+    fluxion::ui::push_enabled(snap);
+    let sv = fluxion::world::get_snap_translate();
+    let new_sv = fluxion::ui::drag_float("T##snap_t", sv, 0.1, 0.01, 100.0);
+    if snap && new_sv != sv {
+        fluxion::world::set_snap_translate(new_sv);
     }
+    let sr = fluxion::world::get_snap_rotate();
+    let new_sr = fluxion::ui::drag_float("R°##snap_r", sr, 1.0, 1.0, 180.0);
+    if snap && new_sr != sr {
+        fluxion::world::set_snap_rotate(new_sr);
+    }
+    fluxion::ui::pop_enabled();
 
     // ── CSG box gizmo (only when selection has CsgShape) ────────────────────
     if fluxion::world::selected_has_csg() {
@@ -90,6 +93,11 @@ pub fn panel() {
     let proj  = fluxion::world::get_project_name();
     let scene = fluxion::world::get_scene_name();
     fluxion::ui::small(`${proj}  ›  ${scene}`);
+
+    // ── Hot-reload toast ─────────────────────────────────────────────────────
+    if fluxion::world::hotreload_toast_visible() {
+        fluxion::ui::badge_right("⟳ SCRIPTS RELOADED", 0.25, 0.80, 0.55);
+    }
 
     // ── Mode badge (right-aligned) ───────────────────────────────────────────
     if mode == "Editing" {

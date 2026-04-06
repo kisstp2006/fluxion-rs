@@ -168,6 +168,13 @@ pub fn with_prefs<F, T>(f: F) -> Option<T>
 where F: FnOnce(&EditorPrefs) -> T
 { SETTINGS_PREFS.with(|p| p.borrow().as_ref().map(f)) }
 
+/// Called by world_module::is_protected_editor_cam — does NOT require Rune context.
+pub fn get_show_editor_camera() -> bool {
+    SETTINGS_PREFS.with(|p| {
+        p.borrow().as_ref().map(|pr| pr.show_editor_camera).unwrap_or(false)
+    })
+}
+
 pub fn modify_prefs<F>(f: F)
 where F: FnOnce(&mut EditorPrefs)
 {
@@ -267,6 +274,7 @@ pub fn prefs_category_modified_count(cat: &str) -> usize {
             let mut n = 0usize;
             if (cur.camera_speed       - def.camera_speed).abs()       > 1e-4 { n += 1; }
             if (cur.camera_sensitivity - def.camera_sensitivity).abs() > 1e-4 { n += 1; }
+            if cur.show_editor_camera  != def.show_editor_camera                { n += 1; }
             n
         }
         "Console" => { if cur.log_max_entries != def.log_max_entries { 1 } else { 0 } }
@@ -688,6 +696,13 @@ pub fn build_settings_module() -> anyhow::Result<Module> {
     }).build()?;
     m.function("set_pref_camera_sensitivity", |v: f64| {
         set_prefs_field!(camera_sensitivity, (v as f32).clamp(0.05, 10.0));
+    }).build()?;
+
+    m.function("show_editor_camera", || -> bool {
+        get_prefs_field!(show_editor_camera, false)
+    }).build()?;
+    m.function("set_show_editor_camera", |v: bool| {
+        set_prefs_field!(show_editor_camera, v);
     }).build()?;
 
     m.function("editor_prefs_dirty", || -> bool {

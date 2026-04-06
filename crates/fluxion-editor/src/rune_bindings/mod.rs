@@ -24,6 +24,7 @@ pub use world_module::{
     get_snap_enabled, get_snap_translate, get_snap_rotate, get_snap_scale,
     get_multi_selected,
     get_box_gizmo_mode_raw,
+    set_editor_cam_entity, get_editor_cam_entity_id,
 };
 pub use camera_module::{
     set_camera_snapshot, set_camera_world, clear_camera_world,
@@ -32,7 +33,7 @@ pub use camera_module::{
 pub use environment_module::{
     set_environment_world, clear_environment_world, drain_environment_edits, EnvEditValue,
 };
-pub use viewport_module::set_viewport_texture;
+pub use viewport_module::{set_viewport_texture, set_pane_texture, get_layout, get_fullscreen};
 pub use physics_module::{set_physics_context, clear_physics_context};
 pub use fluxion_audio::{set_audio_context, clear_audio_context};
 pub use input_module::{set_input_context, clear_input_context, set_action_map};
@@ -44,6 +45,7 @@ pub use gameplay_module::{
     build_gameplay_modules,
     set_compile_summary,
     set_script_fields, drain_script_fields,
+    set_script_hotreload_pending,
 };
 #[allow(unused_imports)]
 pub use settings_module::{

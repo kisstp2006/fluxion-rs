@@ -27,7 +27,7 @@ pub mod shader;
 pub mod config;
 pub mod csg;
 
-pub use renderer::FluxionRenderer;
+pub use renderer::{FluxionRenderer, CameraOverride};
 pub use config::RendererConfig;
 #[cfg(not(target_arch = "wasm32"))]
 pub use config::{load_renderer_config, save_renderer_config};
