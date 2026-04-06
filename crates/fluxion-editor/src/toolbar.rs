@@ -2,7 +2,7 @@
 // toolbar.rs — Play / Pause / Stop toolbar + transform mode
 // ============================================================
 
-use egui::{Color32, Context, RichText, TopBottomPanel, FontId};
+use egui::{Color32, RichText, FontId};
 use crate::icons;
 
 // ── Editor mode ───────────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ pub enum TransformTool {
 /// Render the toolbar panel.  Returns the new `EditorMode` if it changed.
 #[allow(dead_code)]
 pub fn show_toolbar(
-    ctx:        &Context,
+    ui:         &mut egui::Ui,
     mode:       EditorMode,
     tool:       &mut TransformTool,
     proj_name:  &str,
@@ -36,19 +36,19 @@ pub fn show_toolbar(
 ) -> EditorMode {
     let mut new_mode = mode;
 
-    TopBottomPanel::top("toolbar_panel")
-        .exact_height(32.0)
-        .frame(egui::Frame::none()
+    egui::Panel::top("toolbar_panel")
+        .exact_size(32.0)
+        .frame(egui::Frame::NONE
             .fill(crate::theme::TOOLBAR_BG)
             .inner_margin(egui::Margin::symmetric(6, 4)))
-        .show(ctx, |ui| {
+        .show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 // ── Transform tool selector ──────────────────────────────────
                 let icon_tool_btn = |ui: &mut egui::Ui, icon: &str, tip: &str, t: TransformTool, current: TransformTool| {
                     let selected = t == current;
                     let tint = if selected { Color32::from_rgb(220, 180, 60) } else { Color32::from_rgb(160, 160, 175) };
                     let resp = ui.add(
-                        egui::ImageButton::new(icons::img(icon, 16.0, tint)).frame(false)
+                        egui::Button::image(icons::img(icon, 16.0, tint)).frame(false)
                     ).on_hover_text(tip);
                     if selected {
                         let rect = resp.rect;
@@ -68,14 +68,14 @@ pub fn show_toolbar(
                 let pause_col = if mode == EditorMode::Paused  { Color32::from_rgb(220, 200, 60)  } else { Color32::from_rgb(180, 180, 190) };
                 let stop_col  = if mode == EditorMode::Editing { Color32::from_rgb(180, 180, 190) } else { Color32::from_rgb(230, 100, 80)  };
 
-                if ui.add(egui::ImageButton::new(icons::img("play",   18.0, play_col )).frame(false)).on_hover_text("Play") .clicked() {
+                if ui.add(egui::Button::image(icons::img("play",   18.0, play_col )).frame(false)).on_hover_text("Play") .clicked() {
                     new_mode = if mode == EditorMode::Playing { EditorMode::Editing } else { EditorMode::Playing };
                 }
-                if ui.add(egui::ImageButton::new(icons::img("pause",  18.0, pause_col)).frame(false)).on_hover_text("Pause").clicked() {
+                if ui.add(egui::Button::image(icons::img("pause",  18.0, pause_col)).frame(false)).on_hover_text("Pause").clicked() {
                     if mode == EditorMode::Playing      { new_mode = EditorMode::Paused;  }
                     else if mode == EditorMode::Paused  { new_mode = EditorMode::Playing; }
                 }
-                if ui.add(egui::ImageButton::new(icons::img("square", 18.0, stop_col )).frame(false)).on_hover_text("Stop") .clicked() {
+                if ui.add(egui::Button::image(icons::img("square", 18.0, stop_col )).frame(false)).on_hover_text("Stop") .clicked() {
                     new_mode = EditorMode::Editing;
                 }
 

@@ -171,9 +171,9 @@ pub fn panel() {
     fluxion::ui::columns_begin(150.0);
 
     // LEFT — nested folder tree with DnD folder-move support
-    let tree_result = fluxion::ui::asset_folder_tree_v2(dirs.clone(), active_dir.clone());
+    let tree_result = fluxion::ui::ltreeview_assets(dirs.clone(), active_dir.clone());
     if tree_result.starts_with("drop_move:") {
-        // Format: "drop_move:<dest_dir>:<asset_path>" or "drop_move::<asset_path>" for root
+        // Format: "drop_move:<dest_dir>:<asset_path>"
         let rest = tree_result[10..];
         let colon = rest.find(":");
         if let Some(colon_pos) = colon {
@@ -191,8 +191,11 @@ pub fn panel() {
             };
             fluxion::world::asset_rename(src.clone(), new_path.clone());
         }
-    } else if tree_result != active_dir {
-        fluxion::world::asset_set_active_dir(tree_result.clone());
+    } else if tree_result.starts_with("select:") {
+        let path = tree_result[7..];
+        if path != active_dir {
+            fluxion::world::asset_set_active_dir(path.clone());
+        }
     }
 
     fluxion::ui::columns_next();

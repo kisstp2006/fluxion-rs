@@ -62,7 +62,7 @@ impl ProjectChooser {
     /// Call every frame inside an `egui::Context::run` closure.
     pub fn show(&mut self, ctx: &Context) {
         // Dark translucent overlay behind the window.
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         egui::Area::new(egui::Id::new("chooser_backdrop"))
             .order(egui::Order::Background)
             .fixed_pos(screen.min)
@@ -74,7 +74,7 @@ impl ProjectChooser {
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .collapsible(false)
             .resizable(false)
-            .frame(egui::Frame::window(&ctx.style()).fill(Color32::from_rgb(30, 30, 38)))
+            .frame(egui::Frame::window(&ctx.global_style()).fill(Color32::from_rgb(30, 30, 38)))
             .fixed_size([680.0, 440.0])
             .show(ctx, |ui| {
                 ui.style_mut().spacing.item_spacing = Vec2::new(8.0, 6.0);
@@ -146,10 +146,10 @@ impl ProjectChooser {
     }
 
     fn recent_row(&self, ui: &mut egui::Ui, entry: &RecentProject) -> bool {
-        let frame = egui::Frame::none()
+        let frame = egui::Frame::NONE
             .fill(Color32::from_rgb(40, 40, 50))
             .inner_margin(egui::Margin::symmetric(10, 6))
-            .rounding(4.0);
+            .corner_radius(4.0);
 
         let mut clicked = false;
         frame.show(ui, |ui| {

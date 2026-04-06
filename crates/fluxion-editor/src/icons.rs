@@ -94,7 +94,7 @@ pub fn btn(
     color: egui::Color32,
     tooltip: &str,
 ) -> bool {
-    let resp = ui.add(egui::ImageButton::new(img(name, size, color)).frame(false));
+    let resp = ui.add(egui::Button::image(img(name, size, color)).frame(false));
     if tooltip.is_empty() { resp.clicked() } else { resp.on_hover_text(tooltip).clicked() }
 }
 

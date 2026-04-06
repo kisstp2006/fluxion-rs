@@ -105,10 +105,10 @@ impl UiShell {
         surface_view: &wgpu::TextureView,
         width:        u32,
         height:       u32,
-        ui_fn:        impl FnMut(&egui::Context),
+        ui_fn:        impl FnMut(&mut egui::Ui),
     ) -> Vec<wgpu::CommandBuffer> {
         let raw_input = self.state.take_egui_input(window);
-        let output    = self.state.egui_ctx().run(raw_input, ui_fn);
+        let output    = self.state.egui_ctx().run_ui(raw_input, ui_fn);
         self.state.handle_platform_output(window, output.platform_output);
 
         for (id, delta) in &output.textures_delta.set {

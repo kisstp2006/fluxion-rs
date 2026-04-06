@@ -115,11 +115,11 @@ pub fn default_dock_state() -> DockState<EditorTab> {
 
 /// Render the entire dock area for this frame.
 pub fn show_dock(
-    ctx:        &egui::Context,
+    ui:         &mut egui::Ui,
     dock_state: &mut DockState<EditorTab>,
     vm:         &mut fluxion_rune_scripting::RuneVm,
 ) {
     DockArea::new(dock_state)
-        .style(Style::from_egui(ctx.style().as_ref()))
-        .show(ctx, &mut RuneTabViewer { vm });
+        .style(Style::from_egui(ui.ctx().global_style().as_ref()))
+        .show_inside(ui, &mut RuneTabViewer { vm });
 }

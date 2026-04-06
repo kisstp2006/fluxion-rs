@@ -18,19 +18,12 @@ enum MenuEntry {
     Separator,
 }
 
-/// One level on the tree node stack created by tree_node_begin / tree_node_end.
-struct TreeEntry {
-    /// Where CURRENT_UI should be restored after tree_node_end().
-    parent_ptr: Option<NonNull<egui::Ui>>,
-    /// The indented child UI kept alive until tree_node_end().
-    child: Box<egui::Ui>,
-}
-
 /// Unified drag-and-drop payload shared across all editor panels.
 /// Stored in egui's per-frame DragAndDrop context (egui 0.29).
 #[derive(Clone, Debug)]
 pub(crate) enum DndPayload {
     Asset  { path: String, asset_type: String },
+    #[allow(dead_code)]
     Entity { id: i64 },
 }
 
@@ -78,15 +71,19 @@ thread_local! {
     static TEXTURE_CACHE: RefCell<std::collections::HashMap<String, egui::TextureHandle>>
         = RefCell::new(std::collections::HashMap::new());
 
+    // ── ltreeview context menu result ───────────────────────────────────────────────────
+    /// Written by context_menu closures inside ltreeview_hierarchy; read after show().
+    /// Format: (node_id, action_label). -1 means no action this frame.
+    static LTREE_CTX_ACTION: RefCell<(i64, String)> = RefCell::new((-1, String::new()));
+    /// Reverse map for ltreeview_assets: path_hash(i64) → path string.
+    static LTREE_ASSET_PATHS: RefCell<std::collections::HashMap<i64, String>>
+        = RefCell::new(std::collections::HashMap::new());
+
     // ── Horizontal layout state ──────────────────────────────────────────────────────────
     /// Saved parent UI pointer while inside a horizontal_begin/end block.
     static HORIZ_PARENT: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
     /// Owned child UI for horizontal layout.
     static HORIZ_CHILD:  RefCell<Option<Box<egui::Ui>>> = RefCell::new(None);
-
-    // ── Tree node stack ──────────────────────────────────────────────────────────────────
-    /// Stack of open tree nodes created by tree_node_begin (popped by tree_node_end).
-    static TREE_STACK: RefCell<Vec<TreeEntry>> = RefCell::new(Vec::new());
 
     // ── Two-column layout state ─────────────────────────────────────────────────────────
     /// Saved parent UI pointer while inside a columns layout.
@@ -1060,196 +1057,6 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("collapsing_end", || {}).build()?;
 
-    // ── Tree node begin/end ────────────────────────────────────────────────────
-    //
-    // tree_node_begin(id_label, icon, is_selected, has_children, ctx_items)
-    //   → Vec<String> = [open_state, action]
-    //
-    // Renders one row of a tree:
-    //   • ▶/▼ expand arrow  (only when has_children=true)
-    //   • SVG icon (pass "" to skip)
-    //   • Selectable label (highlighted when is_selected)
-    //   • Right-click context menu from ctx_items
-    //
-    // open_state: "open" | "closed"
-    // action    : "" | "select" | one of ctx_items
-    //
-    // If open_state == "open": a child UI indented by 14 px is pushed onto the
-    // TREE_STACK and CURRENT_UI is switched to it.  The caller MUST call
-    // tree_node_end() after rendering all children.
-    //
-    // id_label supports "Display##unique_id" convention.
-    m.function("tree_node_begin",
-        |label: Ref<str>, icon: Ref<str>, is_selected: bool,
-         has_children: bool, ctx_items: Vec<String>| -> Vec<String>
-    {
-        // Capture parent ptr BEFORE entering with_ui (Cell::get doesn't borrow).
-        let parent_ptr = CURRENT_UI.with(|c| c.get());
-
-        with_ui(|ui| {
-            let raw = label.as_ref();
-            let (display, id_suffix) = if let Some(p) = raw.find("##") {
-                (&raw[..p], &raw[p+2..])
-            } else {
-                (raw, raw)
-            };
-            let icon_name = icon.as_ref();
-
-            // RefCell lets nested closures write the action string without
-            // conflicting with the outer immutable borrows.
-            let action: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
-            // Stores the egui Response of the selectable_label for DnD drag-start.
-            let label_resp: std::cell::RefCell<Option<egui::Response>> = std::cell::RefCell::new(None);
-
-            // Convention: id_suffix is "ent_<id>" for hierarchy rows.
-            let entity_id: i64 = id_suffix
-                .strip_prefix("ent_")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(-1);
-
-            // ── Render row ───────────────────────────────────────────────────
-            let render_row = |ui: &mut egui::Ui| {
-                if !icon_name.is_empty() {
-                    let tint = if is_selected {
-                        egui::Color32::from_rgb(200, 220, 255)
-                    } else {
-                        egui::Color32::from_rgb(160, 165, 185)
-                    };
-                    let _ = ui.add(crate::icons::img(icon_name, 13.0, tint));
-                    ui.add_space(2.0);
-                }
-                let label_r = ui.add(egui::SelectableLabel::new(is_selected, display));
-                label_r.context_menu(|ui| {
-                    for item in &ctx_items {
-                        if ui.button(item).clicked() {
-                            *action.borrow_mut() = item.clone();
-                            ui.close_menu();
-                        }
-                    }
-                });
-                if action.borrow().is_empty() && label_r.clicked() {
-                    *action.borrow_mut() = "select".to_string();
-                }
-                // Extend the same rect with drag+hover sense for DnD (different id = no conflict).
-                let drag_id  = ui.make_persistent_id(("ent_dnd", id_suffix));
-                let drag_r   = ui.interact(label_r.rect, drag_id, egui::Sense::drag());
-                // Union the two responses so DnD methods see hover/release correctly.
-                let resp = label_r.union(drag_r);
-                *label_resp.borrow_mut() = Some(resp);
-            };
-
-            let is_open = if has_children {
-                // ── Parent node: CollapsingState for native expand arrow ──
-                let state_id = ui.make_persistent_id(id_suffix);
-                let state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                    ui.ctx(), state_id, false,
-                );
-                let _ = state.show_header(ui, render_row);
-                egui::collapsing_header::CollapsingState::load_with_default_open(
-                    ui.ctx(), state_id, false,
-                ).is_open()
-            } else {
-                // ── Leaf node ─────────────────────────────────────────────
-                ui.horizontal(|ui| render_row(ui));
-                false
-            };
-
-            // ── DnD: use the label response for drag start ────────────────────
-            if let Some(resp) = label_resp.borrow().as_ref() {
-                if resp.drag_started() && entity_id >= 0 {
-                    egui::DragAndDrop::set_payload(ui.ctx(), DndPayload::Entity { id: entity_id });
-                }
-
-                // ── DnD: visual feedback + drop zone on this row ─────────────
-                if let Some(hover_payload) = resp.dnd_hover_payload::<DndPayload>() {
-                    let (stroke_color, fill_color) = match hover_payload.as_ref() {
-                        DndPayload::Entity { id: from_id } => {
-                            // Invalid if: dropping onto self, or dragging a parent onto its descendant
-                            let is_self = entity_id >= 0 && *from_id == entity_id;
-                            let is_cycle = entity_id >= 0 && !is_self
-                                && crate::rune_bindings::world_module::check_is_ancestor(*from_id, entity_id);
-                            if is_self || is_cycle {
-                                // Orange = invalid drop
-                                (egui::Color32::from_rgb(220, 130, 40),
-                                 egui::Color32::from_rgba_unmultiplied(220, 130, 40, 18))
-                            } else {
-                                // Green = valid reparent
-                                (egui::Color32::from_rgb(60, 200, 100),
-                                 egui::Color32::from_rgba_unmultiplied(60, 200, 100, 18))
-                            }
-                        }
-                        DndPayload::Asset { .. } => {
-                            // Blue = asset spawn
-                            (egui::Color32::from_rgb(80, 150, 255),
-                             egui::Color32::from_rgba_unmultiplied(80, 150, 255, 18))
-                        }
-                    };
-                    ui.painter().rect_filled(resp.rect, 2.0, fill_color);
-                    ui.painter().rect_stroke(resp.rect, 2.0, egui::Stroke::new(1.5, stroke_color), egui::StrokeKind::Outside);
-                }
-
-                if let Some(payload) = resp.dnd_release_payload::<DndPayload>() {
-                    if action.borrow().is_empty() {
-                        match payload.as_ref() {
-                            DndPayload::Entity { id: from_id }
-                                if entity_id >= 0 && *from_id != entity_id =>
-                            {
-                                // Format: "reparent:<target_id>:<from_id>"
-                                // Both IDs are embedded so hierarchy.rn always knows
-                                // which entity is the child and which is the new parent,
-                                // regardless of which tree row processes the action.
-                                *action.borrow_mut() = format!("reparent:{entity_id}:{from_id}");
-                            }
-                            DndPayload::Asset { path, .. } if entity_id >= 0 => {
-                                *action.borrow_mut() = format!("spawn_asset:{path}");
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            // If the node is open, push an indented child UI onto the tree stack.
-            if is_open {
-                let indent  = ui.spacing().indent;
-                let cursor  = ui.cursor().min;
-                let avail_h = ui.available_height();
-                let avail_w = (ui.available_width() - indent).max(10.0);
-                let rect    = egui::Rect::from_min_size(
-                    cursor + egui::vec2(indent, 0.0),
-                    egui::vec2(avail_w, avail_h),
-                );
-                let child = Box::new(ui.child_ui(
-                    rect,
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    None,
-                ));
-                let child_ptr = NonNull::from(child.as_ref());
-                TREE_STACK.with(|s| s.borrow_mut().push(TreeEntry { parent_ptr, child }));
-                CURRENT_UI.with(|c| c.set(Some(child_ptr)));
-            }
-
-            vec![
-                if is_open { "open".to_string() } else { "closed".to_string() },
-                action.into_inner(),
-            ]
-        }).unwrap_or_else(|| vec!["closed".to_string(), String::new()])
-    }).build()?;
-
-    // tree_node_end() — pop the innermost tree indent level, restore parent UI.
-    // MUST be called once for every tree_node_begin that returned "open".
-    m.function("tree_node_end", || {
-        let entry = TREE_STACK.with(|s| s.borrow_mut().pop());
-        if let Some(entry) = entry {
-            let child_rect = entry.child.min_rect();
-            CURRENT_UI.with(|c| c.set(entry.parent_ptr));
-            if let Some(mut ptr) = entry.parent_ptr {
-                unsafe { ptr.as_mut() }.allocate_rect(child_rect, egui::Sense::hover());
-            }
-            // entry.child dropped here — frees the child egui::Ui
-        }
-    }).build()?;
-
     // icon_collapsing_begin(icon, label) → bool
     // Same as collapsing_begin but prepends a 14px SVG icon on the left.
     // icon: Lucide icon name without path/extension (e.g. "box", "camera").
@@ -1304,10 +1111,10 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let avail_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 2.0;
             let cursor  = ui.cursor().min;
             let rect    = egui::Rect::from_min_size(cursor, egui::vec2(avail_w, avail_h));
-            Box::new(ui.child_ui(
-                rect,
-                egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true),
-                None,
+            Box::new(ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true)),
             ))
         };
         HORIZ_CHILD.with(|c| *c.borrow_mut() = Some(child));
@@ -1352,8 +1159,8 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let rr = egui::Rect::from_min_size(
                 cursor + egui::vec2(lw + spacing, 0.0),
                 egui::vec2(rw, avail_h));
-            let l = Box::new(ui.child_ui(lr, egui::Layout::top_down(egui::Align::LEFT), None));
-            let r = Box::new(ui.child_ui(rr, egui::Layout::top_down(egui::Align::LEFT), None));
+            let l = Box::new(ui.new_child(egui::UiBuilder::new().max_rect(lr).layout(egui::Layout::top_down(egui::Align::LEFT))));
+            let r = Box::new(ui.new_child(egui::UiBuilder::new().max_rect(rr).layout(egui::Layout::top_down(egui::Align::LEFT))));
             (l, r)
         };
         LEFT_CHILD.with(|l| *l.borrow_mut()  = Some(left));
@@ -1446,7 +1253,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 for item in &items {
                     if ui.button(item).clicked() {
                         action = item.clone();
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             });
@@ -1758,16 +1565,16 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 resp.context_menu(|ui| {
                     if ui.button("Copy value").clicked() {
                         action = "copy".to_string();
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("Paste value").clicked() {
                         action = "paste".to_string();
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     if ui.button("Reset to default").clicked() {
                         action = "reset".to_string();
-                        ui.close_menu();
+                        ui.close();
                     }
                 });
             }
@@ -2093,7 +1900,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 egui::Color32::from_rgb(160, 160, 175)
             };
             let resp = ui.add(
-                egui::ImageButton::new(crate::icons::img(icon.as_ref(), 18.0, tint)).frame(false)
+                egui::Button::image(crate::icons::img(icon.as_ref(), 18.0, tint)).frame(false)
             );
             if active {
                 ui.painter().rect_stroke(resp.rect.expand(1.0), 2.0, egui::Stroke::new(1.0, tint), egui::StrokeKind::Outside);
@@ -2110,7 +1917,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8
             );
             ui.add(
-                egui::ImageButton::new(crate::icons::img(icon.as_ref(), size as f32, tint)).frame(false)
+                egui::Button::image(crate::icons::img(icon.as_ref(), size as f32, tint)).frame(false)
             ).clicked()
         }).unwrap_or(false)
     }).build()?;
@@ -2195,16 +2002,16 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let btn = ui.button(&label_str);
             MENU_BTN_RECT.with(|c| c.set(btn.rect));
             if btn.clicked() {
-                ui.memory_mut(|m| m.toggle_popup(popup_id));
+                egui::Popup::toggle_id(ui.ctx(), popup_id);
                 // If we just opened the popup, suppress the close-outside
                 // check this frame so it doesn't immediately close again.
-                if ui.memory(|m| m.is_popup_open(popup_id)) {
+                if egui::Popup::is_id_open(ui.ctx(), popup_id) {
                     MENU_JUST_OPENED.with(|c| c.set(true));
                 }
             }
             // Return whether the popup is currently open so the Rune script
             // can conditionally call menu_item only while open.
-            ui.memory(|m| m.is_popup_open(popup_id))
+            egui::Popup::is_id_open(ui.ctx(), popup_id)
         }).unwrap_or(false)
     }).build()?;
 
@@ -2227,7 +2034,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
         let clicked = with_ui(|ui| {
             let popup_id = egui::Id::new(&label_str).with("__mnupop__");
-            if !ui.memory(|m| m.is_popup_open(popup_id)) {
+            if !egui::Popup::is_id_open(ui.ctx(), popup_id) {
                 return String::new();
             }
 
@@ -2257,7 +2064,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 });
 
             if !clicked_item.is_empty() {
-                ui.memory_mut(|m| m.close_popup(popup_id));
+                egui::Popup::close_id(ui.ctx(), popup_id);
             }
 
             // Close when clicking outside (but not the frame the popup just opened).
@@ -2272,7 +2079,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         _ => true,
                     };
                     if outside {
-                        ui.memory_mut(|m| m.close_popup(popup_id));
+                        egui::Popup::close_id(ui.ctx(), popup_id);
                     }
                 }
             }
@@ -2430,7 +2237,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 for item in &items {
                     if ui.button(item.as_str()).clicked() {
                         *action.borrow_mut() = item.clone();
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
             });
@@ -2467,7 +2274,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     for item in &items {
                         if ui.button(item.as_str()).clicked() {
                             *action.borrow_mut() = item.clone();
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                 });
@@ -2558,7 +2365,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }
         with_ui(|ui| {
             // Dim overlay behind the modal
-            let screen = ui.ctx().screen_rect();
+            let screen = ui.ctx().content_rect();
             ui.ctx().layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
                 egui::Id::new("modal_overlay"),
@@ -2619,7 +2426,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         };
         let mut keep_open = true;
         {
-            let screen = ctx.screen_rect();
+            let screen = ctx.content_rect();
             ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
                 egui::Id::new("proj_settings_v3_overlay"),
@@ -2671,8 +2478,8 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             let cats = ["Physics","Rendering","Audio","Input","Tags & Layers","Build"];
                             let counts: Vec<usize> = cats.iter().map(|c| sm::project_category_modified_count(c)).collect();
 
-                            egui::SidePanel::left("proj_settings_sidebar_v3")
-                                .exact_width(160.0)
+                            egui::Panel::left("proj_settings_sidebar_v3")
+                                .exact_size(160.0)
                                 .frame(egui::Frame::default()
                                     .fill(sc_sidebar())
                                     .inner_margin(egui::Margin::same(4))
@@ -2713,7 +2520,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         };
         let mut keep_open = true;
         {
-            let screen = ctx.screen_rect();
+            let screen = ctx.content_rect();
             ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
                 egui::Id::new("editor_prefs_v3_overlay"),
@@ -2764,8 +2571,8 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             let cats = ["General","Camera","Console"];
                             let counts: Vec<usize> = cats.iter().map(|c| sm::prefs_category_modified_count(c)).collect();
 
-                            egui::SidePanel::left("editor_prefs_sidebar_v3")
-                                .exact_width(140.0)
+                            egui::Panel::left("editor_prefs_sidebar_v3")
+                                .exact_size(140.0)
                                 .frame(egui::Frame::default()
                                     .fill(sc_sidebar())
                                     .inner_margin(egui::Margin::same(4))
@@ -3009,7 +2816,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     ui.add(
                         egui::Image::new(handle)
                             .fit_to_exact_size(egui::vec2(sz, sz))
-                            .rounding(4.0),
+                            .corner_radius(4.0),
                     );
                 }
             });
@@ -3271,7 +3078,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                         if ui.button(item).clicked() {
                                             *result.borrow_mut() = vec![
                                                 format!("ctx:{item}"), path.clone()];
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     }
                                 });
@@ -3299,44 +3106,6 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     );
                 });
         });
-    }).build()?;
-
-    // hierarchy_root_drop_zone() → i64
-    // Renders an invisible drop zone covering the remaining available area.
-    // Accepts Entity DnD payloads only. Returns the dropped entity's i64 ID,
-    // or -1 if nothing was dropped this frame. Shows a faint blue highlight
-    // while an entity is being dragged over it.
-    // Used by hierarchy.rn to implement "drag entity here to make it a root".
-    m.function("hierarchy_root_drop_zone", || -> i64 {
-        with_ui(|ui| {
-            let avail = ui.available_rect_before_wrap();
-            let drop_id = ui.make_persistent_id("hierarchy_root_drop");
-            let resp = ui.interact(avail, drop_id, egui::Sense::hover());
-
-            // Visual: show tinted background while an entity hovers over this zone
-            if let Some(payload) = resp.dnd_hover_payload::<DndPayload>() {
-                if matches!(payload.as_ref(), DndPayload::Entity { .. }) {
-                    ui.painter().rect_filled(
-                        avail,
-                        0.0,
-                        egui::Color32::from_rgba_unmultiplied(80, 150, 255, 15),
-                    );
-                    ui.painter().rect_stroke(
-                        avail,
-                        0.0,
-                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(80, 150, 255, 80)), egui::StrokeKind::Outside,
-                    );
-                }
-            }
-
-            // Return the dropped entity ID
-            if let Some(payload) = resp.dnd_release_payload::<DndPayload>() {
-                if let DndPayload::Entity { id } = payload.as_ref() {
-                    return *id;
-                }
-            }
-            -1_i64
-        }).unwrap_or(-1)
     }).build()?;
 
     // ── Phase A3: read-only DnD state queries ─────────────────────────────────
@@ -3746,7 +3515,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                     for item in ctx_items(t) {
                                         if ui.button(item).clicked() {
                                             *result.borrow_mut() = vec![format!("ctx:{item}"), path.clone()];
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     }
                                 });
@@ -3765,26 +3534,293 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         with_ui(|ui| {
             let prefix = dir_prefix.as_ref().to_string();
             let result: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
-            let popup_id = ui.make_persistent_id(("new_asset_popup", prefix.as_str()));
+            let _popup_id = ui.make_persistent_id(("new_asset_popup", prefix.as_str()));
 
             let btn = ui.add(egui::Button::new(
                 egui::RichText::new("+  New").size(12.0).color(egui::Color32::from_rgb(100, 200, 100)))
                 .frame(true));
-            if btn.clicked() {
-                ui.memory_mut(|m| m.toggle_popup(popup_id));
-            }
-
-            egui::popup_below_widget(ui, popup_id, &btn, egui::PopupCloseBehavior::CloseOnClickOutside, |ui: &mut egui::Ui| {
-                ui.set_min_width(130.0);
-                for item in &["New Folder", "New Script", "New Scene", "New Material", "New File"] {
-                    if ui.selectable_label(false, *item).clicked() {
-                        *result.borrow_mut() = item.to_string();
-                        ui.memory_mut(|m: &mut egui::Memory| m.close_popup(popup_id));
+            egui::Popup::from_toggle_button_response(&btn)
+                .show(|ui: &mut egui::Ui| {
+                    ui.set_min_width(130.0);
+                    for item in &["New Folder", "New Script", "New Scene", "New Material", "New File"] {
+                        if ui.selectable_label(false, *item).clicked() {
+                            *result.borrow_mut() = item.to_string();
+                            ui.close();
+                        }
                     }
+                });
+
+            result.into_inner()
+        }).unwrap_or_default()
+    }).build()?;
+
+    // ── ltreeview_hierarchy ───────────────────────────────────────────────────
+    // ltreeview_hierarchy(nodes: Vec<Vec<String>>) → Vec<String>
+    // Renders the entity hierarchy tree using egui_ltreeview.
+    // Input: flat list; each row = [id_str, parent_id_str, name, icon, is_selected_str]
+    // Returns action strings:
+    //   "select:<id>"            — selection changed
+    //   "reparent:<target>:<src>"— DnD drop (cycle-guarded)
+    //   "unparent:<id>"          — dropped outside tree (make root)
+    //   "ctx:<id>:<action>"      — context menu item clicked
+    m.function("ltreeview_hierarchy", |nodes: Vec<Vec<String>>| -> Vec<String> {
+        // Reset context action for this frame
+        LTREE_CTX_ACTION.with(|c| { let mut b = c.borrow_mut(); b.0 = -1; b.1.clear(); });
+
+        struct NodeInfo {
+            id: i64,
+            parent: i64,
+            name: String,
+            icon: String,
+            is_selected: bool,
+        }
+
+        let parsed: Vec<NodeInfo> = nodes.iter()
+            .filter_map(|row| {
+                if row.len() < 5 { return None; }
+                Some(NodeInfo {
+                    id:          row[0].parse().ok()?,
+                    parent:      row[1].parse().ok()?,
+                    name:        row[2].clone(),
+                    icon:        row[3].clone(),
+                    is_selected: row[4] == "true",
+                })
+            })
+            .collect();
+
+        // Build parent → children index map
+        let mut children: std::collections::HashMap<i64, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, n) in parsed.iter().enumerate() {
+            children.entry(n.parent).or_default().push(i);
+        }
+
+        with_ui(|ui| {
+            enum Visit { Enter(usize), CloseDir }
+
+            let (_, actions) =
+                egui_ltreeview::TreeView::new(egui::Id::new("ltreeview_hierarchy"))
+                    .show(ui, |builder| {
+                        let mut stack: Vec<Visit> = Vec::new();
+                        if let Some(roots) = children.get(&-1_i64) {
+                            for &idx in roots.iter().rev() {
+                                stack.push(Visit::Enter(idx));
+                            }
+                        }
+                        while let Some(visit) = stack.pop() {
+                            match visit {
+                                Visit::CloseDir => { builder.close_dir(); }
+                                Visit::Enter(idx) => {
+                                    let node   = &parsed[idx];
+                                    let has_ch = children.contains_key(&node.id);
+                                    let nid    = node.id;
+                                    let icon   = node.icon.clone();
+                                    let sel    = node.is_selected;
+                                    let name   = node.name.clone();
+
+                                    let nb = if has_ch {
+                                        egui_ltreeview::NodeBuilder::dir(nid)
+                                            .drop_allowed(true)
+                                    } else {
+                                        egui_ltreeview::NodeBuilder::leaf(nid)
+                                            .drop_allowed(true)
+                                    }
+                                    .icon(move |ui| {
+                                        if !icon.is_empty() {
+                                            let tint = if sel {
+                                                egui::Color32::from_rgb(200, 220, 255)
+                                            } else {
+                                                egui::Color32::from_rgb(160, 165, 185)
+                                            };
+                                            ui.add(crate::icons::img(&icon, 13.0, tint));
+                                        }
+                                    })
+                                    .label(name)
+                                    .context_menu(move |ui| {
+                                        ui.set_min_width(130.0);
+                                        for &item in &[
+                                            "Rename", "Duplicate",
+                                            "Create Prefab", "Delete", "Unparent",
+                                        ] {
+                                            if ui.button(item).clicked() {
+                                                LTREE_CTX_ACTION.with(|c| {
+                                                    let mut b = c.borrow_mut();
+                                                    b.0 = nid;
+                                                    b.1 = item.to_string();
+                                                });
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+
+                                    builder.node(nb);
+
+                                    if has_ch {
+                                        stack.push(Visit::CloseDir);
+                                        if let Some(ch) = children.get(&nid) {
+                                            for &ci in ch.iter().rev() {
+                                                stack.push(Visit::Enter(ci));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+            let mut results = Vec::new();
+
+            // Context menu action (may be set from this or previous frame)
+            LTREE_CTX_ACTION.with(|c| {
+                let b = c.borrow();
+                if b.0 >= 0 && !b.1.is_empty() {
+                    results.push(format!("ctx:{}:{}", b.0, b.1));
                 }
             });
 
-            result.into_inner()
+            for action in actions {
+                match action {
+                    egui_ltreeview::Action::SetSelected(ids) => {
+                        if let Some(&id) = ids.first() {
+                            results.push(format!("select:{id}"));
+                        }
+                    }
+                    egui_ltreeview::Action::Move(dnd) => {
+                        let target = dnd.target;
+                        let source = dnd.source.first().copied().unwrap_or(-1);
+                        if source >= 0 && target >= 0 && source != target {
+                            let is_cycle = crate::rune_bindings::world_module
+                                ::check_is_ancestor(source, target);
+                            if !is_cycle {
+                                results.push(format!("reparent:{target}:{source}"));
+                            }
+                        }
+                    }
+                    egui_ltreeview::Action::MoveExternal(dnd) => {
+                        if let Some(&src) = dnd.source.first() {
+                            if src >= 0 {
+                                results.push(format!("unparent:{src}"));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            results
+        }).unwrap_or_default()
+    }).build()?;
+
+    // ── ltreeview_assets ─────────────────────────────────────────────────────
+    // ltreeview_assets(dirs: Vec<String>, active_dir: String) → String
+    // Renders a folder tree for the asset browser using egui_ltreeview.
+    // Returns: "select:<path>" | "drop_move:<dest>:<src>" | ""
+    m.function("ltreeview_assets", |dirs: Vec<String>, active_dir: Ref<str>| -> String {
+        let _active = active_dir.as_ref().to_string();
+
+        fn path_hash(s: &str) -> i64 {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            s.hash(&mut h);
+            h.finish() as i64
+        }
+
+        // Build parent → children map keyed by parent path string
+        let mut path_children: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for dir in &dirs {
+            let parent = dir.rfind('/').map(|i| dir[..i].to_string())
+                            .unwrap_or_default();
+            path_children.entry(parent).or_default().push(dir.clone());
+        }
+
+        // Rebuild reverse hash map
+        LTREE_ASSET_PATHS.with(|m| {
+            let mut map = m.borrow_mut();
+            map.clear();
+            map.insert(0_i64, String::new());
+            for dir in &dirs {
+                map.insert(path_hash(dir), dir.clone());
+            }
+        });
+
+        with_ui(|ui| {
+            enum Visit { Enter(String), CloseDir }
+
+            let (_, actions) =
+                egui_ltreeview::TreeView::new(egui::Id::new("ltreeview_assets"))
+                    .show(ui, |builder| {
+                        let mut stack: Vec<Visit> = Vec::new();
+                        if let Some(roots) = path_children.get("") {
+                            let mut sorted = roots.clone();
+                            sorted.sort();
+                            for dir in sorted.iter().rev() {
+                                stack.push(Visit::Enter(dir.clone()));
+                            }
+                        }
+                        while let Some(visit) = stack.pop() {
+                            match visit {
+                                Visit::CloseDir => { builder.close_dir(); }
+                                Visit::Enter(path) => {
+                                    let has_ch = path_children.contains_key(&path);
+                                    let nid    = path_hash(&path);
+                                    let stem   = path.rfind('/')
+                                        .map(|i| path[i+1..].to_string())
+                                        .unwrap_or_else(|| path.clone());
+
+                                    let nb = if has_ch {
+                                        egui_ltreeview::NodeBuilder::dir(nid)
+                                            .drop_allowed(true)
+                                    } else {
+                                        egui_ltreeview::NodeBuilder::leaf(nid)
+                                            .drop_allowed(true)
+                                    }
+                                    .label(stem);
+
+                                    builder.node(nb);
+
+                                    if has_ch {
+                                        stack.push(Visit::CloseDir);
+                                        if let Some(ch) = path_children.get(&path) {
+                                            let mut sorted = ch.clone();
+                                            sorted.sort();
+                                            for child in sorted.iter().rev() {
+                                                stack.push(Visit::Enter(child.clone()));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+            let mut result = String::new();
+            for action in actions {
+                match action {
+                    egui_ltreeview::Action::SetSelected(ids) => {
+                        if let Some(&id) = ids.first() {
+                            let path = LTREE_ASSET_PATHS.with(|m| {
+                                m.borrow().get(&id).cloned().unwrap_or_default()
+                            });
+                            result = format!("select:{path}");
+                        }
+                    }
+                    egui_ltreeview::Action::Move(dnd) => {
+                        let dest_path = LTREE_ASSET_PATHS.with(|m| {
+                            m.borrow().get(&dnd.target).cloned().unwrap_or_default()
+                        });
+                        let src_path = LTREE_ASSET_PATHS.with(|m| {
+                            m.borrow().get(dnd.source.first().unwrap_or(&0))
+                                .cloned().unwrap_or_default()
+                        });
+                        if !src_path.is_empty() {
+                            result = format!("drop_move:{dest_path}:{src_path}");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            result
         }).unwrap_or_default()
     }).build()?;
 

@@ -50,7 +50,7 @@ pub fn apply_theme(ctx: &Context) {
     ctx.set_visuals(visuals);
 
     // Font sizes
-    let mut style = (*ctx.style()).clone();
+    let mut style = (*ctx.global_style()).clone();
     style.text_styles.insert(
         egui::TextStyle::Body,
         FontId::proportional(13.0),
@@ -71,7 +71,7 @@ pub fn apply_theme(ctx: &Context) {
         egui::TextStyle::Monospace,
         FontId::monospace(12.0),
     );
-    ctx.set_style(style);
+    ctx.set_global_style(style);
 }
 
 /// The editor accent color (Unity orange-yellow).

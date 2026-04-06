@@ -581,25 +581,26 @@ impl EditorInner {
         let mut do_load_scene: Option<std::path::PathBuf> = None;
 
         let result = self.renderer.render_ui_only(|device, queue, encoder, view| {
-            ui_shell.paint(&window, device, queue, encoder, view, w, h, |ctx| {
+            ui_shell.paint(&window, device, queue, encoder, view, w, h, |ui| {
+                let ctx = ui.ctx().clone();
                 // Cache ctx once per frame so settings window bindings can use it
                 // without requiring a live CURRENT_UI pointer.
-                crate::rune_bindings::set_egui_ctx(ctx);
+                crate::rune_bindings::set_egui_ctx(&ctx);
                 // Install SVG/image loaders (idempotent after first call).
-                crate::icons::install_loaders(ctx);
+                crate::icons::install_loaders(&ctx);
 
                 if !*theme_applied {
-                    theme::apply_theme(ctx);
+                    theme::apply_theme(&ctx);
                     *theme_applied = true;
                 }
 
                 // ── Menu bar (Rune-driven) ───────────────────────────────
-                egui::TopBottomPanel::top("editor_menu")
-                    .frame(egui::Frame::none()
+                egui::Panel::top("editor_menu")
+                    .frame(egui::Frame::NONE
                         .fill(crate::theme::MENU_BG)
                         .inner_margin(egui::Margin::symmetric(4, 2)))
-                    .show(ctx, |ui| {
-                        egui::menu::bar(ui, |ui| {
+                    .show_inside(ui, |ui| {
+                        egui::MenuBar::new().ui(ui, |ui| {
                             let _guard = crate::rune_bindings::set_current_ui(ui);
                             if let Err(e) = vm.call_fn(&["menubar", "panel"], ()) {
                                 log::error!("menubar::panel: {e:#}");
@@ -608,12 +609,12 @@ impl EditorInner {
                     });
 
                 // ── Toolbar (Rune-driven) ────────────────────────────────────
-                egui::TopBottomPanel::top("toolbar_panel")
-                    .exact_height(32.0)
-                    .frame(egui::Frame::none()
+                egui::Panel::top("toolbar_panel")
+                    .exact_size(32.0)
+                    .frame(egui::Frame::NONE
                         .fill(crate::theme::TOOLBAR_BG)
                         .inner_margin(egui::Margin::symmetric(6, 4)))
-                    .show(ctx, |ui| {
+                    .show_inside(ui, |ui| {
                         ui.horizontal(|ui| {
                             let _guard = crate::rune_bindings::set_current_ui(ui);
                             if let Err(e) = vm.call_fn(&["toolbar", "panel"], ()) {
@@ -623,7 +624,7 @@ impl EditorInner {
                     });
 
                 // ── Dock area ───────────────────────────────────────────────
-                show_dock(ctx, dock_state, vm);
+                show_dock(ui, dock_state, vm);
 
                 // ── Settings modals (run every frame, ctx-only, no UI pointer needed) ─
                 if let Err(e) = vm.call_fn(&["settings", "project_panel"], ()) {
@@ -663,7 +664,7 @@ impl EditorInner {
                                 egui::Area::new(egui::Id::new("gizmo_overlay"))
                                     .fixed_pos(vp_rect.min)
                                     .order(egui::Order::Foreground)
-                                    .show(ctx, |ui| {
+                                    .show(&ctx, |ui| {
                                         ui.set_clip_rect(vp_rect);
                                         viewport_gizmo::draw_box_and_interact(
                                             ui, vp_rect, world_pos, csg_size,
@@ -681,7 +682,7 @@ impl EditorInner {
                             egui::Area::new(egui::Id::new("gizmo_overlay"))
                                 .fixed_pos(vp_rect.min)
                                 .order(egui::Order::Foreground)
-                                .show(ctx, |ui| {
+                                .show(&ctx, |ui| {
                                     ui.set_clip_rect(vp_rect);
                                     viewport_gizmo::draw_and_interact(
                                         ui, vp_rect, world_pos,

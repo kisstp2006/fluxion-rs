@@ -1,9 +1,8 @@
 // ============================================================
 // hierarchy.rn — Hierarchy panel
 //
-// Lists entities as a parent/child tree.  Clicking selects.
-// Right-click for Rename / Duplicate / Delete / Unparent.
-// Entity IDs are i64 integers (Copy in Rune).
+// Uses egui_ltreeview via ltreeview_hierarchy binding.
+// Builds a flat node list and processes returned action strings.
 // ============================================================
 
 pub mod hierarchy {
@@ -20,80 +19,79 @@ fn entity_icon(id) {
     "circle"
 }
 
-fn draw_entity_row(id, sel) {
+// Recursively collect a flat node list for ltreeview_hierarchy.
+// Each entry: [id_str, parent_id_str, name, icon, is_selected_str]
+fn collect_nodes(id, parent_id, sel, out) {
     let name     = fluxion::world::entity_name(id);
-    let children = fluxion::world::entity_children(id);
     let icon     = entity_icon(id);
-    let is_primary  = sel == id;
-    let is_multi    = fluxion::world::is_multi_selected(id);
-    let is_selected = is_primary || is_multi;
-    let has_ch   = children.len() > 0;
+    let is_sel   = (sel == id) || fluxion::world::is_multi_selected(id);
+    out.push([`${id}`, `${parent_id}`, name, icon, if is_sel { "true" } else { "false" }]);
+    let children = fluxion::world::entity_children(id);
+    for child in children {
+        collect_nodes(child, id, sel, out);
+    }
+}
 
-    let ret     = fluxion::ui::tree_node_begin(
-        `${name}##ent_${id}`,
-        icon,
-        is_selected,
-        has_ch,
-        ["Rename", "Duplicate", "Create Prefab", "Delete", "Unparent"]
-    );
-    let is_open = ret[0] == "open";
-    let action  = ret[1].clone();
+fn dispatch_action(action, sel) {
+    // Collect split parts into a vec (avoids str-slice .find() missing method issue)
+    let parts = [];
+    for p in action.split(":") {
+        parts.push(p);
+    }
+    if parts.is_empty() { return; }
+    let tag = parts[0];
 
-    if action == "select" {
-        let ctrl = fluxion::input::key_down("ControlLeft") || fluxion::input::key_down("ControlRight");
-        if ctrl {
-            if is_multi {
-                fluxion::world::remove_from_selection(id);
+    if tag == "select" {
+        if parts.len() < 2 { return; }
+        let id = fluxion::world::parse_entity_id(parts[1]);
+        if id >= 0 {
+            let ctrl = fluxion::input::key_down("ControlLeft") || fluxion::input::key_down("ControlRight");
+            let is_multi = fluxion::world::is_multi_selected(id);
+            if ctrl {
+                if is_multi {
+                    fluxion::world::remove_from_selection(id);
+                } else {
+                    fluxion::world::add_to_selection(id);
+                }
             } else {
-                fluxion::world::add_to_selection(id);
+                fluxion::world::clear_multi_selection();
+                fluxion::world::set_selected(id);
+                fluxion::world::clear_selected_asset();
             }
-        } else {
-            fluxion::world::clear_multi_selection();
+        }
+    } else if tag == "reparent" {
+        if parts.len() < 3 { return; }
+        let target_id = fluxion::world::parse_entity_id(parts[1]);
+        let from_id   = fluxion::world::parse_entity_id(parts[2]);
+        let is_cycle  = fluxion::world::is_ancestor_of(from_id, target_id);
+        if target_id >= 0 && from_id >= 0 && from_id != target_id && !is_cycle {
+            fluxion::world::set_parent(from_id, target_id);
+        }
+    } else if tag == "unparent" {
+        if parts.len() < 2 { return; }
+        let id = fluxion::world::parse_entity_id(parts[1]);
+        if id >= 0 {
+            fluxion::world::set_parent(id, -1);
+        }
+    } else if tag == "ctx" {
+        if parts.len() < 3 { return; }
+        let id      = fluxion::world::parse_entity_id(parts[1]);
+        let ctx_act = parts[2];
+        if ctx_act == "Delete" {
+            fluxion::world::despawn(id);
+        } else if ctx_act == "Duplicate" {
+            fluxion::world::duplicate_entity(id);
+        } else if ctx_act == "Create Prefab" {
+            fluxion::world::set_selected(id);
+            let name_val = fluxion::world::entity_name(id);
+            fluxion::ui::input_dialog_open("Save Prefab As", `assets/prefabs/${name_val}.scene`);
+            fluxion::world::set_prefab_pending(id);
+        } else if ctx_act == "Rename" {
             fluxion::world::set_selected(id);
             fluxion::world::clear_selected_asset();
+        } else if ctx_act == "Unparent" {
+            fluxion::world::set_parent(id, -1);
         }
-    } else if action == "Delete" {
-        fluxion::world::despawn(id);
-    } else if action == "Duplicate" {
-        fluxion::world::duplicate_entity(id);
-    } else if action == "Create Prefab" {
-        fluxion::world::set_selected(id);
-        let name_val = fluxion::world::entity_name(id);
-        fluxion::ui::input_dialog_open("Save Prefab As", `assets/prefabs/${name_val}.scene`);
-        fluxion::world::set_prefab_pending(id);
-    } else if action == "Rename" {
-        fluxion::world::set_selected(id);
-        fluxion::world::clear_selected_asset();
-    } else if action == "Unparent" {
-        fluxion::world::set_parent(id, -1);
-    } else if action.starts_with("reparent:") {
-        let rest = action[9..];
-        let colon_pos = rest.find(":");
-        if let Some(pos) = colon_pos {
-            let target_str = rest[..pos];
-            let from_str   = rest[pos + 1..];
-            let target_id  = fluxion::world::parse_entity_id(target_str);
-            let from_id    = fluxion::world::parse_entity_id(from_str);
-            let is_cycle   = fluxion::world::is_ancestor_of(from_id, target_id);
-            if target_id >= 0 && from_id >= 0 && from_id != target_id && !is_cycle {
-                fluxion::world::set_parent(from_id, target_id);
-            }
-        } else {
-            let target_id = fluxion::world::parse_entity_id(rest);
-            if target_id >= 0 {
-                fluxion::world::set_parent(id, target_id);
-            }
-        }
-    } else if action.starts_with("spawn_asset:") {
-        let path = action[12..];
-        fluxion::world::instantiate_prefab(path);
-    }
-
-    if is_open {
-        for child in children {
-            draw_entity_row(child, sel);
-        }
-        fluxion::ui::tree_node_end();
     }
 }
 
@@ -112,18 +110,16 @@ pub fn panel() {
 
     fluxion::ui::separator();
 
-    if roots.is_empty() {
-        fluxion::ui::small("(empty scene)");
-    } else {
-        for id in roots {
-            draw_entity_row(id, sel);
-        }
+    // Build flat node list
+    let nodes = [];
+    for id in roots {
+        collect_nodes(id, -1, sel, nodes);
     }
 
-    // ── Root drop zone (make entity a root by dropping into empty space) ─────
-    let root_drop = fluxion::ui::hierarchy_root_drop_zone();
-    if root_drop >= 0 {
-        fluxion::world::set_parent(root_drop, -1);
+    // Render tree and process actions
+    let actions = fluxion::ui::ltreeview_hierarchy(nodes);
+    for action in actions {
+        dispatch_action(action, sel);
     }
 
     // ── Prefab save dialog ───────────────────────────────────────────────────
