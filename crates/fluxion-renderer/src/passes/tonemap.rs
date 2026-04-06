@@ -28,7 +28,7 @@ impl Default for TonemapConfig {
     fn default() -> Self {
         Self {
             exposure:             1.0,
-            vignette_intensity:   0.3,
+            vignette_intensity:   0.0,
             vignette_roundness:   0.8,
             chromatic_aberration: 0.5,
             film_grain:           0.02,

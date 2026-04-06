@@ -322,7 +322,7 @@ pub struct VignetteSettings {
 
 impl Default for VignetteSettings {
     fn default() -> Self {
-        Self { enabled: true, intensity: 0.3, roundness: 0.8 }
+        Self { enabled: false, intensity: 0.3, roundness: 0.8 }
     }
 }
 
