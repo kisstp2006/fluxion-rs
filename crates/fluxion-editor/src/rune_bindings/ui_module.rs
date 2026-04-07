@@ -155,6 +155,21 @@ thread_local! {
     static ADLG_INPUT:   RefCell<String> = RefCell::new(String::new());
     /// Poll result: "" = idle, "pending" = open, "confirmed:<name>" = done, "cancelled" = cancelled.
     static ADLG_RESULT:  RefCell<String> = RefCell::new(String::new());
+
+    // ── Asset reference hints (badge overlay) ────────────────────────────────────────────
+    /// Maps asset path → reference count string. Populated by set_asset_ref_hints each frame.
+    static ASSET_REF_HINTS: RefCell<std::collections::HashMap<String, i64>>
+        = RefCell::new(std::collections::HashMap::new());
+
+    // ── Asset delete confirmation modal ──────────────────────────────────────────────────
+    /// True when the delete confirm modal is currently shown.
+    static DEL_CONFIRM_OPEN:  Cell<bool>      = Cell::new(false);
+    /// Asset path being considered for deletion.
+    static DEL_CONFIRM_PATH:  RefCell<String> = RefCell::new(String::new());
+    /// Referencing entities: [[entity_id, entity_name, component, field], ...]
+    static DEL_CONFIRM_REFS:  RefCell<Vec<Vec<String>>> = RefCell::new(Vec::new());
+    /// Poll result: "" = idle / open, "confirmed:<path>" = user confirmed, "cancelled" = cancelled.
+    static DEL_CONFIRM_RESULT: RefCell<String> = RefCell::new(String::new());
 }
 
 /// Returns the last viewport image rect (set by `image_interactive`).
@@ -3030,6 +3045,155 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }
     }).build()?;
 
+    // ── Asset reference badges & delete-confirm modal ─────────────────────────
+
+    // set_asset_ref_hints(hints) — update the per-asset reference count table.
+    // hints is Vec<Vec<String>> where each inner vec is [path, count_str].
+    m.function("set_asset_ref_hints", |hints: Vec<Vec<String>>| {
+        ASSET_REF_HINTS.with(|h| {
+            let mut map = h.borrow_mut();
+            map.clear();
+            for pair in &hints {
+                if pair.len() >= 2 {
+                    if let Ok(count) = pair[1].parse::<i64>() {
+                        map.insert(pair[0].clone(), count);
+                    }
+                }
+            }
+        });
+    }).build()?;
+
+    // asset_delete_confirm_open(path, refs) — show the delete confirmation modal.
+    // refs: Vec<Vec<String>> = [[entity_id, entity_name, component, field], ...]
+    m.function("asset_delete_confirm_open", |path: String, refs: Vec<Vec<String>>| {
+        DEL_CONFIRM_PATH  .with(|p| *p.borrow_mut() = path);
+        DEL_CONFIRM_REFS  .with(|r| *r.borrow_mut() = refs);
+        DEL_CONFIRM_RESULT.with(|r| r.borrow_mut().clear());
+        DEL_CONFIRM_OPEN  .with(|o| o.set(true));
+    }).build()?;
+
+    // asset_delete_confirm_poll() → String
+    // Renders the modal window (must be called every frame while open).
+    // Returns "" while open/idle, "confirmed:<path>" on confirm, "cancelled" on cancel.
+    m.function("asset_delete_confirm_poll", || -> String {
+        if !DEL_CONFIRM_OPEN.with(|o| o.get()) {
+            let res = DEL_CONFIRM_RESULT.with(|r| r.borrow().clone());
+            if !res.is_empty() {
+                DEL_CONFIRM_RESULT.with(|r| r.borrow_mut().clear());
+            }
+            return res;
+        }
+
+        let ctx_opt = CURRENT_CTX.with(|c| c.borrow().clone());
+        let Some(ctx) = ctx_opt else { return String::new(); };
+
+        let path = DEL_CONFIRM_PATH .with(|p| p.borrow().clone());
+        let refs = DEL_CONFIRM_REFS .with(|r| r.borrow().clone());
+        let mut outcome = String::new();
+
+        egui::Window::new("Confirm Deletion")
+            .id(egui::Id::new("__del_confirm_modal__"))
+            .collapsible(false)
+            .resizable(true)
+            .min_width(360.0)
+            .max_height(420.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(&ctx, |ui| {
+                ui.add_space(4.0);
+
+                // Warning icon + message
+                ui.horizontal(|ui| {
+                    if let Some(bytes) = crate::icons::icon_bytes("alert-triangle") {
+                        egui::Image::from_bytes(crate::icons::icon_uri("alert-triangle"), bytes)
+                            .fit_to_exact_size(egui::vec2(22.0, 22.0))
+                            .tint(egui::Color32::from_rgb(240, 160, 40))
+                            .paint_at(ui, egui::Rect::from_min_size(
+                                ui.cursor().min + egui::vec2(0.0, 0.0),
+                                egui::vec2(22.0, 22.0)));
+                        ui.add_space(26.0);
+                    }
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("This asset is referenced!").strong()
+                            .color(egui::Color32::from_rgb(240, 200, 80)));
+                        // Show just the filename
+                        let name = path.rsplit('/').next().unwrap_or(path.as_str());
+                        ui.label(egui::RichText::new(format!("\"{}\"", name)).size(11.5)
+                            .color(egui::Color32::from_rgb(200, 200, 210)));
+                    });
+                });
+
+                ui.add_space(6.0);
+                ui.separator();
+
+                // Reference count label
+                ui.label(egui::RichText::new(
+                    format!("{} component field(s) will lose their reference:", refs.len()))
+                    .size(11.5)
+                    .color(egui::Color32::from_rgb(180, 180, 195)));
+                ui.add_space(4.0);
+
+                // Scrollable list of referencing entities
+                egui::ScrollArea::vertical()
+                    .id_salt("__del_confirm_refs_scroll__")
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        for entry in &refs {
+                            let entity_name = entry.get(1).map(|s| s.as_str()).unwrap_or("?");
+                            let component   = entry.get(2).map(|s| s.as_str()).unwrap_or("?");
+                            let field       = entry.get(3).map(|s| s.as_str()).unwrap_or("?");
+                            ui.horizontal(|ui| {
+                                if let Some(bytes) = crate::icons::icon_bytes("box") {
+                                    egui::Image::from_bytes(crate::icons::icon_uri("box"), bytes)
+                                        .fit_to_exact_size(egui::vec2(12.0, 12.0))
+                                        .tint(egui::Color32::from_rgb(195, 135, 60))
+                                        .paint_at(ui, egui::Rect::from_min_size(
+                                            ui.cursor().min, egui::vec2(12.0, 12.0)));
+                                    ui.add_space(14.0);
+                                }
+                                ui.label(egui::RichText::new(
+                                    format!("{entity_name}  ·  {component}.{field}"))
+                                    .size(11.0)
+                                    .color(egui::Color32::from_rgb(175, 195, 215)));
+                            });
+                        }
+                    });
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // Buttons
+                ui.horizontal(|ui| {
+                    let cancel_btn = egui::Button::new(
+                        egui::RichText::new("Cancel").size(12.5))
+                        .min_size(egui::vec2(90.0, 24.0));
+                    if ui.add(cancel_btn).clicked()
+                        || ui.input(|i| i.key_pressed(egui::Key::Escape))
+                    {
+                        outcome = "cancelled".to_string();
+                        DEL_CONFIRM_OPEN.with(|o| o.set(false));
+                        DEL_CONFIRM_RESULT.with(|r| *r.borrow_mut() = outcome.clone());
+                    }
+                    ui.add_space(8.0);
+                    let del_btn = egui::Button::new(
+                        egui::RichText::new("Delete anyway").size(12.5).strong()
+                            .color(egui::Color32::WHITE))
+                        .fill(egui::Color32::from_rgb(185, 48, 48))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 80, 80)))
+                        .min_size(egui::vec2(120.0, 24.0));
+                    if ui.add(del_btn).clicked() {
+                        outcome = format!("confirmed:{path}");
+                        DEL_CONFIRM_OPEN.with(|o| o.set(false));
+                        DEL_CONFIRM_RESULT.with(|r| *r.borrow_mut() = outcome.clone());
+                    }
+                });
+
+                ui.add_space(4.0);
+            });
+
+        outcome
+    }).build()?;
+
     // ── Directory header with context menu ────────────────────────────────────
 
     // dir_header_with_menu(label, menu_items)
@@ -4278,11 +4442,18 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 .show(ui, |ui| {
                     let spacing = 6.0_f32;
                     ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
-                    ui.with_layout(
-                        egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
-                        |ui| {
-                            for path in &paths {
-                                if !result.borrow()[0].is_empty() { break; }
+
+                    // Sample available_w INSIDE the scroll area so egui has already
+                    // reserved space for the scrollbar and any internal padding.
+                    let available_w = ui.available_width();
+                    let tile_total_w = tile_sz + spacing;
+                    let tiles_per_row = ((available_w + spacing) / tile_total_w).floor().max(1.0) as usize;
+
+                    for chunk in paths.chunks(tiles_per_row) {
+                        if !result.borrow()[0].is_empty() { break; }
+                        ui.horizontal(|ui| {
+                        for path in chunk {
+                            if !result.borrow()[0].is_empty() { return; }
 
                                 let is_folder  = path.ends_with('/');
                                 let clean_path = if is_folder { path[..path.len()-1].to_string() } else { path.clone() };
@@ -4400,6 +4571,43 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                                 egui::StrokeKind::Outside);
                                         }
 
+                                        // ── Reference count badge ─────────────────────
+                                        if !is_folder {
+                                            let ref_count = ASSET_REF_HINTS.with(|h| {
+                                                h.borrow().get(path.as_str()).copied().unwrap_or(-1)
+                                            });
+                                            if ref_count >= 0 {
+                                                let (badge_col, dot_col) = if ref_count == 0 {
+                                                    (egui::Color32::from_rgba_unmultiplied(30, 120, 30, 220),
+                                                     egui::Color32::from_rgb(80, 210, 80))
+                                                } else if ref_count < 50 {
+                                                    (egui::Color32::from_rgba_unmultiplied(150, 100, 0, 220),
+                                                     egui::Color32::from_rgb(240, 190, 40))
+                                                } else {
+                                                    (egui::Color32::from_rgba_unmultiplied(140, 30, 30, 220),
+                                                     egui::Color32::from_rgb(230, 70, 70))
+                                                };
+                                                let r = 5.5_f32;
+                                                let center = egui::pos2(tile_sq.max.x - r - 3.0, tile_sq.min.y + r + 3.0);
+                                                painter.circle_filled(center, r + 1.5, badge_col);
+                                                painter.circle_filled(center, r - 0.5, dot_col);
+                                                if ref_count > 0 {
+                                                    let label = if ref_count >= 100 {
+                                                        "99+".to_string()
+                                                    } else {
+                                                        ref_count.to_string()
+                                                    };
+                                                    painter.text(
+                                                        center,
+                                                        egui::Align2::CENTER_CENTER,
+                                                        &label,
+                                                        egui::FontId::proportional(6.5),
+                                                        egui::Color32::WHITE,
+                                                    );
+                                                }
+                                            }
+                                        }
+
                                         // ── Label ────────────────────────────────────
                                         let stem = if is_folder {
                                             filename.to_string()
@@ -4476,6 +4684,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                 } // tile block
                             } // for path
                         });
+                    } // for chunk
                 });
 
             result.into_inner()
@@ -4607,6 +4816,36 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                 egui::FontId::proportional(12.0),
                                 text_col,
                             );
+
+                            // Reference count dot badge (file assets only)
+                            if !is_folder {
+                                let ref_count = ASSET_REF_HINTS.with(|h| {
+                                    h.borrow().get(path.as_str()).copied().unwrap_or(-1)
+                                });
+                                if ref_count >= 0 {
+                                    let dot_col = if ref_count == 0 {
+                                        egui::Color32::from_rgb(80, 210, 80)
+                                    } else if ref_count < 50 {
+                                        egui::Color32::from_rgb(240, 190, 40)
+                                    } else {
+                                        egui::Color32::from_rgb(230, 70, 70)
+                                    };
+                                    let dot_x = row_rect.max.x - 62.0;
+                                    let dot_center = egui::pos2(dot_x, row_rect.center().y);
+                                    painter.circle_filled(dot_center, 4.0, dot_col);
+                                    if ref_count > 0 {
+                                        let lbl = if ref_count >= 100 { "99+".to_string() }
+                                                  else { ref_count.to_string() };
+                                        painter.text(
+                                            egui::pos2(dot_x + 7.0, row_rect.center().y),
+                                            egui::Align2::LEFT_CENTER,
+                                            &lbl,
+                                            egui::FontId::proportional(9.0),
+                                            dot_col,
+                                        );
+                                    }
+                                }
+                            }
 
                             // Type badge on the right
                             let badge_text = if is_folder { "folder" } else { t };

@@ -25,6 +25,7 @@ pub use world_module::{
     get_multi_selected,
     get_box_gizmo_mode_raw,
     set_editor_cam_entity, get_editor_cam_entity_id,
+    rescan_asset_refs, load_asset_refs, apply_path_rename, clear_asset_refs_by_guid,
 };
 pub use camera_module::{
     set_camera_snapshot, set_camera_world, clear_camera_world,

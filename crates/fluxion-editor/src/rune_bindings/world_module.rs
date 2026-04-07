@@ -179,6 +179,12 @@ thread_local! {
     /// When set, this entity is hidden from the hierarchy (unless show_editor_camera pref is on)
     /// and cannot be selected via normal editor tools.
     static EDITOR_CAM_ID: Cell<Option<EntityId>> = Cell::new(None);
+
+    // ── Asset reference registry ───────────────────────────────────────────────
+    /// GUID → (current_path, refs: [[entity_id, entity_name, component, field], ...])
+    /// Updated by rescan_asset_refs() / load_asset_refs(). Read by Rune bindings.
+    static ASSET_REF_CACHE: RefCell<HashMap<String, (String, Vec<Vec<String>>)>>
+        = RefCell::new(HashMap::new());
 }
 
 /// A deferred field mutation queued by Rune, applied after the panel call.
@@ -484,6 +490,200 @@ fn get_descriptor<'a>(
 
 fn queue_edit(entity: EntityId, component: String, field: String, value: ReflectValue) {
     PENDING.with(|p| p.borrow_mut().push(PendingEdit { entity, component, field, value }));
+}
+
+// ── Asset reference registry ──────────────────────────────────────────────────
+
+fn is_asset_field_type(ft: ReflectFieldType) -> bool {
+    matches!(ft,
+        ReflectFieldType::Texture  | ReflectFieldType::Material |
+        ReflectFieldType::Mesh     | ReflectFieldType::Audio    |
+        ReflectFieldType::Scene    | ReflectFieldType::OptionStr
+    )
+}
+
+/// Returns the asset path from a field value, with a heuristic that the string looks
+/// like a relative file path (contains a '.' indicating a file extension).
+fn asset_path_from_value(val: &ReflectValue) -> Option<&str> {
+    let s = match val {
+        ReflectValue::AssetPath(Some(p)) if !p.is_empty() => p.as_str(),
+        ReflectValue::OptionStr(Some(p)) if !p.is_empty() => p.as_str(),
+        ReflectValue::Str(p)             if !p.is_empty() => p.as_str(),
+        _ => return None,
+    };
+    // Must look like a file path (contains an extension dot) to avoid false positives.
+    if s.contains('.') || s.contains('/') { Some(s) } else { None }
+}
+
+fn save_asset_registry(
+    cache: &HashMap<String, (String, Vec<Vec<String>>)>,
+    root:  &std::path::Path,
+) {
+    let mut obj = serde_json::Map::new();
+    for (guid, (path, refs)) in cache {
+        let refs_json: Vec<serde_json::Value> = refs.iter().map(|r| {
+            let mut ro = serde_json::Map::new();
+            ro.insert("entity_id".into(),   serde_json::Value::String(r.get(0).cloned().unwrap_or_default()));
+            ro.insert("entity_name".into(), serde_json::Value::String(r.get(1).cloned().unwrap_or_default()));
+            ro.insert("component".into(),   serde_json::Value::String(r.get(2).cloned().unwrap_or_default()));
+            ro.insert("field".into(),       serde_json::Value::String(r.get(3).cloned().unwrap_or_default()));
+            serde_json::Value::Object(ro)
+        }).collect();
+        let mut entry = serde_json::Map::new();
+        entry.insert("path".into(), serde_json::Value::String(path.clone()));
+        entry.insert("refs".into(), serde_json::Value::Array(refs_json));
+        obj.insert(guid.clone(), serde_json::Value::Object(entry));
+    }
+    let registry_path = root.join("assets").join("asset_registry.json");
+    match serde_json::to_string_pretty(&serde_json::Value::Object(obj)) {
+        Ok(json) => { let _ = std::fs::write(&registry_path, json.as_bytes()); }
+        Err(e)   => log::warn!("[AssetRef] failed to serialize registry: {e}"),
+    }
+}
+
+/// Scan all ECS entities for asset-typed fields and rebuild the reference registry.
+/// Saves result to `{root}/assets/asset_registry.json` and updates the in-memory cache.
+pub fn rescan_asset_refs(
+    world:    &ECSWorld,
+    registry: &ComponentRegistry,
+    adb:      &AssetDatabase,
+    root:     &std::path::Path,
+) {
+    let mut new_cache: HashMap<String, (String, Vec<Vec<String>>)> = HashMap::new();
+    for entity in world.all_entities() {
+        let entity_name   = world.get_name(entity).to_string();
+        let entity_id_str = entity.to_bits().to_string();
+        for &comp_name in world.component_names(entity) {
+            let Some(fields)  = registry.component_fields(comp_name) else { continue };
+            let Some(reflect) = registry.get_reflect(comp_name, world, entity) else { continue };
+            for field in fields {
+                let Some(val) = reflect.get_field(field.name) else { continue };
+                // Include: explicit AssetPath values, OR asset-typed fields with path-like values
+                let is_asset_val = matches!(val, ReflectValue::AssetPath(Some(_)));
+                if !is_asset_val && !is_asset_field_type(field.field_type) { continue }
+                let Some(asset_path) = asset_path_from_value(&val) else { continue };
+                let guid = adb.get_by_path(asset_path)
+                    .map(|r| r.guid.clone())
+                    .unwrap_or_else(|| format!("path:{asset_path}"));
+                let entry = new_cache.entry(guid).or_insert_with(|| (asset_path.to_string(), Vec::new()));
+                entry.0 = asset_path.to_string();
+                entry.1.push(vec![
+                    entity_id_str.clone(),
+                    entity_name.clone(),
+                    comp_name.to_string(),
+                    field.name.to_string(),
+                ]);
+            }
+        }
+    }
+    save_asset_registry(&new_cache, root);
+    ASSET_REF_CACHE.with(|c| *c.borrow_mut() = new_cache);
+    log::debug!("[AssetRef] registry rescanned");
+}
+
+/// Load the asset reference registry from `{root}/assets/asset_registry.json`.
+pub fn load_asset_refs(root: &std::path::Path) {
+    let registry_path = root.join("assets").join("asset_registry.json");
+    let content = match std::fs::read_to_string(&registry_path) {
+        Ok(s)  => s,
+        Err(_) => return,
+    };
+    let json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v)  => v,
+        Err(e) => { log::warn!("[AssetRef] failed to parse registry: {e}"); return; }
+    };
+    let Some(obj) = json.as_object() else { return };
+    let mut cache: HashMap<String, (String, Vec<Vec<String>>)> = HashMap::new();
+    for (guid, entry) in obj {
+        let path_str = entry.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let refs = entry.get("refs")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|r| Some(vec![
+                r.get("entity_id")?.as_str()?.to_string(),
+                r.get("entity_name")?.as_str()?.to_string(),
+                r.get("component")?.as_str()?.to_string(),
+                r.get("field")?.as_str()?.to_string(),
+            ])).collect::<Vec<_>>())
+            .unwrap_or_default();
+        cache.insert(guid.clone(), (path_str, refs));
+    }
+    ASSET_REF_CACHE.with(|c| *c.borrow_mut() = cache);
+    log::debug!("[AssetRef] registry loaded from disk");
+}
+
+/// Update component fields that reference `old_path` → `new_path` after a rename/move.
+/// Called from main.rs on the `update_asset_paths:` signal.
+pub fn apply_path_rename(
+    old_path: &str,
+    new_path: &str,
+    world:    &ECSWorld,
+    registry: &ComponentRegistry,
+) -> usize {
+    let mut count = 0usize;
+    for entity in world.all_entities() {
+        for &comp_name in world.component_names(entity) {
+            let Some(fields)  = registry.component_fields(comp_name) else { continue };
+            let Some(reflect) = registry.get_reflect(comp_name, world, entity) else { continue };
+            for field in fields {
+                let Some(val) = reflect.get_field(field.name) else { continue };
+                let is_asset_val = matches!(val, ReflectValue::AssetPath(Some(_)));
+                if !is_asset_val && !is_asset_field_type(field.field_type) { continue }
+                if asset_path_from_value(&val) != Some(old_path) { continue }
+                let new_val = match val {
+                    ReflectValue::AssetPath(_) => ReflectValue::AssetPath(Some(new_path.to_string())),
+                    ReflectValue::OptionStr(_) => ReflectValue::OptionStr(Some(new_path.to_string())),
+                    ReflectValue::Str(_)       => ReflectValue::Str(new_path.to_string()),
+                    _ => continue,
+                };
+                if registry.set_reflect_field(comp_name, world, entity, field.name, new_val).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    ASSET_REF_CACHE.with(|c| {
+        for (path, _) in c.borrow_mut().values_mut() {
+            if path == old_path { *path = new_path.to_string(); }
+        }
+    });
+    if count > 0 { log::info!("[AssetRef] renamed {count} field(s): {old_path} → {new_path}"); }
+    count
+}
+
+/// Clear component fields referencing a deleted asset (looked up by GUID).
+/// Called from main.rs on the `clear_asset_refs:` signal.
+pub fn clear_asset_refs_by_guid(
+    guid:     &str,
+    world:    &ECSWorld,
+    registry: &ComponentRegistry,
+) -> usize {
+    let asset_path = ASSET_REF_CACHE.with(|c| c.borrow().get(guid).map(|(p, _)| p.clone()));
+    let Some(asset_path) = asset_path else { return 0 };
+    let mut count = 0usize;
+    for entity in world.all_entities() {
+        for &comp_name in world.component_names(entity) {
+            let Some(fields)  = registry.component_fields(comp_name) else { continue };
+            let Some(reflect) = registry.get_reflect(comp_name, world, entity) else { continue };
+            for field in fields {
+                let Some(val) = reflect.get_field(field.name) else { continue };
+                let is_asset_val = matches!(val, ReflectValue::AssetPath(Some(_)));
+                if !is_asset_val && !is_asset_field_type(field.field_type) { continue }
+                if asset_path_from_value(&val) != Some(asset_path.as_str()) { continue }
+                let new_val = match val {
+                    ReflectValue::AssetPath(_) => ReflectValue::AssetPath(None),
+                    ReflectValue::OptionStr(_) => ReflectValue::OptionStr(None),
+                    ReflectValue::Str(_)       => ReflectValue::Str(String::new()),
+                    _ => continue,
+                };
+                if registry.set_reflect_field(comp_name, world, entity, field.name, new_val).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    ASSET_REF_CACHE.with(|c| { c.borrow_mut().remove(guid); });
+    if count > 0 { log::info!("[AssetRef] cleared {count} field ref(s) after deleting GUID {guid}"); }
+    count
 }
 
 // ── Module builder ────────────────────────────────────────────────────────────
@@ -1422,7 +1622,11 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             if old_meta.is_file() {
                 let _ = std::fs::rename(&old_meta, &new_meta);
             }
-            ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+            ACTION_SIGNALS.with(|s| {
+                let mut v = s.borrow_mut();
+                v.push(format!("update_asset_paths:{old_path}\t{new_path}"));
+                v.push("rescan_assets".to_string());
+            });
             log::info!("[Assets] Renamed: {} → {}", old_full.display(), new_full.display());
         } else {
             log::error!("[Assets] Failed to rename: {}", old_full.display());
@@ -1468,6 +1672,8 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         let root = PROJECT_ROOT.with(|r| r.borrow().clone());
         if root == std::path::PathBuf::new() { return false; }
         let full = root.join("assets").join(&path);
+        // Get GUID before deletion so we can clear refs afterwards.
+        let guid = with_adb(|db| db.get_by_path(&path).map(|r| r.guid.clone())).flatten();
         let ok = if full.is_dir() {
             std::fs::remove_dir_all(&full).is_ok()
         } else {
@@ -1480,7 +1686,13 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             std::fs::remove_file(&full).is_ok()
         };
         if ok {
-            ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+            ACTION_SIGNALS.with(|s| {
+                let mut v = s.borrow_mut();
+                if let Some(g) = guid {
+                    v.push(format!("clear_asset_refs:{g}"));
+                }
+                v.push("rescan_assets".to_string());
+            });
             log::info!("[Assets] Deleted: {}", full.display());
         } else {
             log::error!("[Assets] Failed to delete: {}", full.display());
@@ -2927,6 +3139,47 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                 }
             }
         });
+    }).build()?;
+
+    // ── Asset reference query bindings ────────────────────────────────────────
+
+    // asset_ref_count(path) → i64 — number of entity component fields referencing this asset.
+    m.function("asset_ref_count", |path: Ref<str>| -> i64 {
+        let path_str = path.as_ref();
+        let guid = with_adb(|db| db.get_by_path(path_str).map(|r| r.guid.clone())).flatten();
+        ASSET_REF_CACHE.with(|c| {
+            let cache = c.borrow();
+            if let Some(g) = &guid {
+                if let Some((_, refs)) = cache.get(g.as_str()) {
+                    return refs.len() as i64;
+                }
+            }
+            let fallback = format!("path:{path_str}");
+            cache.get(fallback.as_str()).map(|(_, refs)| refs.len() as i64).unwrap_or(0)
+        })
+    }).build()?;
+
+    // asset_entity_refs(path) → Vec<Vec<String>> — list of [entity_id, name, component, field].
+    m.function("asset_entity_refs", |path: Ref<str>| -> Vec<Vec<String>> {
+        let path_str = path.as_ref();
+        let guid = with_adb(|db| db.get_by_path(path_str).map(|r| r.guid.clone())).flatten();
+        ASSET_REF_CACHE.with(|c| {
+            let cache = c.borrow();
+            if let Some(g) = &guid {
+                if let Some((_, refs)) = cache.get(g.as_str()) {
+                    return refs.clone();
+                }
+            }
+            let fallback = format!("path:{path_str}");
+            cache.get(fallback.as_str()).map(|(_, refs)| refs.clone()).unwrap_or_default()
+        })
+    }).build()?;
+
+    // asset_guid_for_path(path) → String — stable GUID for the given asset path.
+    m.function("asset_guid_for_path", |path: Ref<str>| -> String {
+        with_adb(|db| db.get_by_path(path.as_ref()).map(|r| r.guid.clone()))
+            .flatten()
+            .unwrap_or_default()
     }).build()?;
 
     m.function("mat_save", |path: String| {

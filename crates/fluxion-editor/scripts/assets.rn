@@ -25,6 +25,16 @@ pub mod assets {
 //   "cancelled"                  — user cancelled
 
 fn handle_dialog() {
+    // ── Delete confirmation modal poll ────────────────────────────────────────
+    let del_state = fluxion::ui::asset_delete_confirm_poll();
+    if del_state.starts_with("confirmed:") {
+        let del_path = del_state[10..];
+        fluxion::world::asset_delete(del_path.clone());
+        let sel = fluxion::world::get_selected_asset();
+        if sel == del_path { fluxion::world::clear_selected_asset(); }
+    }
+
+    // ── Asset creation dialog poll ────────────────────────────────────────────
     let state = fluxion::ui::asset_dialog_poll();
     if state == "" || state == "pending" {
         return;
@@ -111,8 +121,13 @@ fn handle_grid_action(action, path) {
     } else if action == "ctx:Show in Explorer" {
         fluxion::world::asset_show_in_explorer(path.clone());
     } else if action == "ctx:Delete" {
-        fluxion::world::asset_delete(path.clone());
-        if is_sel { fluxion::world::clear_selected_asset(); }
+        let refs = fluxion::world::asset_entity_refs(path.clone());
+        if refs.len() > 0 {
+            fluxion::ui::asset_delete_confirm_open(path.clone(), refs);
+        } else {
+            fluxion::world::asset_delete(path.clone());
+            if is_sel { fluxion::world::clear_selected_asset(); }
+        }
     }
 }
 
@@ -304,6 +319,17 @@ pub fn panel() {
         combined.push(files[fi]);
         fi += 1;
     }
+
+    // Push reference count hints so badges render correctly on tiles/rows
+    let hints = [];
+    let hi = 0;
+    while hi < files.len() {
+        let p = files[hi].clone();
+        let cnt = fluxion::world::asset_ref_count(p.clone());
+        hints.push([p, `${cnt}`]);
+        hi += 1;
+    }
+    fluxion::ui::set_asset_ref_hints(hints);
 
     let ret = if view_mode == "list" {
         fluxion::ui::asset_list_view(combined, selected.clone())

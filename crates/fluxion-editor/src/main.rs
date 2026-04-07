@@ -434,6 +434,7 @@ impl EditorApp {
         // Scan the asset database now that we know the project root.
         inner.host.asset_db.scan(&inner.project_root);
         log::info!("AssetDatabase: {} assets indexed", inner.host.asset_db.count());
+        crate::rune_bindings::load_asset_refs(&inner.project_root);
 
         // Load editor preferences and push settings context to Rune.
         let prefs = load_editor_prefs();
@@ -796,6 +797,32 @@ impl EditorInner {
                     self.host.asset_db.scan(&self.project_root);
                     self.host.physmat_cache.clear();
                     log::info!("AssetDatabase rescan: {} assets", self.host.asset_db.count());
+                    crate::rune_bindings::rescan_asset_refs(
+                        &self.host.world,
+                        &self.host.registry,
+                        &self.host.asset_db,
+                        &self.project_root,
+                    );
+                }
+                s if s.starts_with("update_asset_paths:") => {
+                    let rest = &s["update_asset_paths:".len()..];
+                    if let Some(tab) = rest.find('\t') {
+                        let old_path = &rest[..tab];
+                        let new_path = &rest[tab + 1..];
+                        crate::rune_bindings::apply_path_rename(
+                            old_path, new_path,
+                            &self.host.world,
+                            &self.host.registry,
+                        );
+                    }
+                }
+                s if s.starts_with("clear_asset_refs:") => {
+                    let guid = &s["clear_asset_refs:".len()..];
+                    crate::rune_bindings::clear_asset_refs_by_guid(
+                        guid,
+                        &self.host.world,
+                        &self.host.registry,
+                    );
                 }
                 "do_undo" => {
                     let world    = &self.host.world    as *const _;
@@ -1033,6 +1060,10 @@ impl EditorInner {
                     self.host.asset_db.scan(&self.project_root);
                     self.host.physmat_cache.clear();
                     log::info!("Asset watcher: rescan triggered ({} assets)", self.host.asset_db.count());
+                    crate::rune_bindings::rescan_asset_refs(
+                        &self.host.world, &self.host.registry,
+                        &self.host.asset_db, &self.project_root,
+                    );
                     self.file_watcher_cooldown = 0.5; // 500 ms debounce
 
                     // Hot-reload gameplay scripts if any .rn file changed while playing.
