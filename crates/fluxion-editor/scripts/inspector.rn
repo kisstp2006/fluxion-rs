@@ -468,16 +468,16 @@ fn draw_material_inspector(path) {
     fluxion::ui::separator();
     let alpha_mode = fluxion::world::mat_alpha_mode(path.clone());
     let alpha_options = ["Opaque", "Alpha Blend", "Alpha Mask"];
-    let alpha_idx = if alpha_mode == "blend" { 1 } else if alpha_mode.starts_with("mask:") { 2 } else { 0 };
-    let new_alpha_idx = fluxion::ui::combo_box("Alpha Mode##mat_am", alpha_idx, alpha_options.clone());
-    if new_alpha_idx != alpha_idx {
-        let new_mode = if new_alpha_idx == 1 { "blend" } else if new_alpha_idx == 2 { "mask:0.5" } else { "opaque" };
-        fluxion::world::mat_set_alpha_mode(path.clone(), new_mode.to_string());
+    let alpha_cur = if alpha_mode == "blend" { "Alpha Blend" } else if alpha_mode.starts_with("mask:") { "Alpha Mask" } else { "Opaque" };
+    let new_alpha = fluxion::ui::enum_combo("Alpha Mode##mat_am", alpha_cur, alpha_options);
+    if new_alpha != alpha_cur {
+        let new_mode = if new_alpha == "Alpha Blend" { "blend" } else if new_alpha == "Alpha Mask" { "mask:0.5" } else { "opaque" };
+        fluxion::world::mat_set_alpha_mode(path.clone(), new_mode);
         fluxion::world::mat_save(path.clone());
     }
     if alpha_mode.starts_with("mask:") {
-        let cutoff_str = alpha_mode[5..];
-        let cutoff = fluxion::world::parse_f64(cutoff_str.clone());
+        let cutoff_str = fluxion::world::str_strip_prefix(alpha_mode.clone(), "mask:");
+        let cutoff = fluxion::world::parse_f64(cutoff_str);
         let cv = if cutoff[0] == 1.0 { cutoff[1] } else { 0.5 };
         let ncv = fluxion::ui::drag_float("Alpha Cutoff##mat_ac", cv, 0.005, 0.0, 1.0);
         if ncv != cv {
@@ -501,18 +501,22 @@ fn draw_material_inspector(path) {
 
     // ── UV Tiling & Offset ───────────────────────────────────────────────
     if fluxion::ui::collapsing_begin("UV Transform##mat_uv") {
-        for slot in ["albedo", "normal", "roughness", "emissive"] {
-            let uv = fluxion::world::mat_uv_transform(path.clone(), slot.to_string());
+        let uv_slots = ["albedo", "normal", "roughness", "emissive"];
+        let usi = 0;
+        while usi < uv_slots.len() {
+            let slot = uv_slots[usi].clone();
+            let uv = fluxion::world::mat_uv_transform(path.clone(), slot.clone());
             let sx = uv[0]; let sy = uv[1]; let ox = uv[2]; let oy = uv[3];
             let nsx = fluxion::ui::drag_float(`${slot} Scale X##uv_sx_${slot}`, sx, 0.05, 0.01, 50.0);
             let nsy = fluxion::ui::drag_float(`${slot} Scale Y##uv_sy_${slot}`, sy, 0.05, 0.01, 50.0);
             let nox = fluxion::ui::drag_float(`${slot} Offset X##uv_ox_${slot}`, ox, 0.01, -10.0, 10.0);
             let noy = fluxion::ui::drag_float(`${slot} Offset Y##uv_oy_${slot}`, oy, 0.01, -10.0, 10.0);
             if nsx != sx || nsy != sy || nox != ox || noy != oy {
-                fluxion::world::mat_set_uv_transform(path.clone(), slot.to_string(), [nsx, nsy, nox, noy]);
+                fluxion::world::mat_set_uv_transform(path.clone(), slot, [nsx, nsy, nox, noy]);
                 fluxion::world::mat_save(path.clone());
             }
             fluxion::ui::separator();
+            usi += 1;
         }
         fluxion::ui::collapsing_end();
     }
@@ -539,19 +543,6 @@ fn draw_material_inspector(path) {
         }
         mat_drag(path.clone(), "Subsurface##mat_ss", "subsurface", 0.01, 0.0, 1.0);
 
-        fluxion::ui::collapsing_end();
-    }
-
-    // ── Material Presets ──────────────────────────────────────────────────
-    if fluxion::ui::collapsing_begin("Presets##mat_presets") {
-        fluxion::ui::small("Apply a preset to quickly set PBR values:");
-        fluxion::ui::space(4);
-        for preset in [["Metal", "metal"], ["Plastic", "plastic"], ["Glass", "glass"], ["Matte", "matte"], ["Emissive", "emissive"]] {
-            if fluxion::ui::small_button(`${preset[0]}##preset_${preset[1]}`) {
-                fluxion::world::mat_apply_preset(path.clone(), preset[1].clone());
-                fluxion::world::mat_save(path.clone());
-            }
-        }
         fluxion::ui::collapsing_end();
     }
 

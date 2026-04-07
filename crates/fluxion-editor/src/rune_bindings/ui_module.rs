@@ -132,7 +132,7 @@ thread_local! {
     /// Owned right child UI.
     static RIGHT_CHILD: RefCell<Option<Box<egui::Ui>>> = RefCell::new(None);
 
-    // ── Floating input dialog ────────────────────────────────────────────────────────────
+    // ── Floating input dialog (legacy, used by rename) ───────────────────────────────────
     /// True when the dialog window is currently shown.
     static DIALOG_OPEN:   Cell<bool>      = Cell::new(false);
     /// Title shown in the dialog window title bar.
@@ -141,6 +141,20 @@ thread_local! {
     static DIALOG_INPUT:  RefCell<String> = RefCell::new(String::new());
     /// The text the user confirmed; populated on OK / Enter.
     static DIALOG_RESULT: RefCell<String> = RefCell::new(String::new());
+
+    // ── Asset creation dialog (fully Rust-driven) ────────────────────────────────────────
+    /// True when the asset creation dialog is open.
+    static ADLG_OPEN:    Cell<bool>      = Cell::new(false);
+    /// Window title shown to the user.
+    static ADLG_TITLE:   RefCell<String> = RefCell::new(String::new());
+    /// Creation mode: "dir" | "file" | "scene" | "script" | "material" | "rename" | custom
+    static ADLG_MODE:    RefCell<String> = RefCell::new(String::new());
+    /// Directory prefix — prepended to the filename when building the full path.
+    static ADLG_DIR:     RefCell<String> = RefCell::new(String::new());
+    /// Live text-edit buffer.
+    static ADLG_INPUT:   RefCell<String> = RefCell::new(String::new());
+    /// Poll result: "" = idle, "pending" = open, "confirmed:<name>" = done, "cancelled" = cancelled.
+    static ADLG_RESULT:  RefCell<String> = RefCell::new(String::new());
 }
 
 /// Returns the last viewport image rect (set by `image_interactive`).
@@ -2843,6 +2857,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let text:   LC<String> = LC::new(DIALOG_INPUT.with(|i| i.borrow().clone()));
             let action: LC<String> = LC::new("pending".to_string());
 
+            let text_id = egui::Id::new("__input_dialog_text__");
             egui::Window::new(title.as_str())
                 .collapsible(false)
                 .resizable(false)
@@ -2850,10 +2865,13 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ui.ctx(), |ui| {
                     let mut v  = text.borrow().clone();
-                    let resp   = ui.text_edit_singleline(&mut v);
+                    let resp   = ui.add(egui::TextEdit::singleline(&mut v).id(text_id));
+                    if !resp.has_focus() {
+                        resp.request_focus();
+                    }
                     *text.borrow_mut() = v.clone();
 
-                    let enter  = resp.lost_focus()
+                    let enter  = resp.has_focus()
                         && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
                     let ok_on  = !v.is_empty();
@@ -2881,6 +2899,131 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     // input_dialog_result() — confirmed text; valid after update() → "confirmed".
     m.function("input_dialog_result", || -> String {
         DIALOG_RESULT.with(|r| r.borrow().clone())
+    }).build()?;
+
+    // ── Asset creation dialog (fully Rust-driven, ctx-based) ─────────────────
+    //
+    // asset_dialog_open(mode, dir, title, default_name)
+    //   mode  : "dir" | "file" | "scene" | "script" | "material" | "rename" | any custom string
+    //   dir   : directory prefix (prepended to filename on confirm), "" for root
+    //   title : window title string
+    //   default_name : initial text in the input field
+    //
+    // asset_dialog_poll() → String   (call every frame while open)
+    //   ""                  — dialog is not open (idle)
+    //   "pending"           — dialog is open, user hasn't confirmed yet
+    //   "confirmed:<mode>:<full_path>"  — user confirmed; full_path = dir/name or name
+    //   "cancelled"         — user cancelled or pressed Escape
+    //
+    // The dialog renders via CURRENT_CTX (not CURRENT_UI) so it is completely
+    // independent of which panel Ui is active.
+
+    m.function("asset_dialog_open", |mode: String, dir: String, title: String, default_name: String| {
+        ADLG_MODE .with(|m| *m.borrow_mut() = mode);
+        ADLG_DIR  .with(|d| *d.borrow_mut() = dir);
+        ADLG_TITLE.with(|t| *t.borrow_mut() = title);
+        ADLG_INPUT.with(|i| *i.borrow_mut() = default_name);
+        ADLG_RESULT.with(|r| *r.borrow_mut() = "pending".to_string());
+        ADLG_OPEN .with(|o| o.set(true));
+    }).build()?;
+
+    m.function("asset_dialog_poll", || -> String {
+        if !ADLG_OPEN.with(|o| o.get()) {
+            return ADLG_RESULT.with(|r| r.borrow().clone());
+        }
+
+        let ctx_opt = CURRENT_CTX.with(|c| c.borrow().clone());
+        let Some(ctx) = ctx_opt else {
+            return "pending".to_string();
+        };
+
+        let title  = ADLG_TITLE.with(|t| t.borrow().clone());
+        let mode   = ADLG_MODE .with(|m| m.borrow().clone());
+        let dir    = ADLG_DIR  .with(|d| d.borrow().clone());
+        let mut input = ADLG_INPUT.with(|i| i.borrow().clone());
+        let mut result = "pending".to_string();
+
+        let text_id = egui::Id::new("__adlg_text__");
+
+        egui::Window::new(title.as_str())
+            .id(egui::Id::new("__asset_creation_dialog__"))
+            .collapsible(false)
+            .resizable(false)
+            .min_width(300.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(&ctx, |ui| {
+                ui.add_space(4.0);
+
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut input)
+                        .id(text_id)
+                        .desired_width(f32::INFINITY)
+                );
+                if !resp.has_focus() {
+                    resp.request_focus();
+                }
+
+                let enter  = resp.has_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let ok_on  = !input.trim().is_empty();
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(ok_on, egui::Button::new("OK").min_size(egui::vec2(72.0, 0.0))).clicked()
+                        || (enter && ok_on)
+                    {
+                        // For "rename" mode: return only the input (new name), no dir prefix.
+                        // For all other modes: prepend dir if set.
+                        let full_path = if mode == "rename" || dir.is_empty() {
+                            input.trim().to_string()
+                        } else {
+                            format!("{}/{}", dir.trim_end_matches('/'), input.trim())
+                        };
+                        result = format!("confirmed:{}:{}", mode, full_path);
+                        ADLG_OPEN  .with(|o| o.set(false));
+                        ADLG_RESULT.with(|r| *r.borrow_mut() = result.clone());
+                    }
+                    ui.add_space(4.0);
+                    if ui.add(egui::Button::new("Cancel").min_size(egui::vec2(72.0, 0.0))).clicked()
+                        || escape
+                    {
+                        result = "cancelled".to_string();
+                        ADLG_OPEN  .with(|o| o.set(false));
+                        ADLG_RESULT.with(|r| *r.borrow_mut() = result.clone());
+                    }
+                });
+                ui.add_space(2.0);
+            });
+
+        ADLG_INPUT.with(|i| *i.borrow_mut() = input);
+        result
+    }).build()?;
+
+    // asset_dialog_get_dir() → String  — returns the dir/old_path stored when the dialog was opened.
+    m.function("asset_dialog_get_dir", || -> String {
+        ADLG_DIR.with(|d| d.borrow().clone())
+    }).build()?;
+
+    // asset_dialog_parse_result(state) → Vec<String>
+    // Splits "confirmed:<mode>:<full_path>" into ["<mode>", "<full_path>"].
+    // For "rename" mode the full_path IS just the new filename (dir = old path stored separately).
+    // Returns [] on invalid input.
+    m.function("asset_dialog_parse_result", |state: String| -> Vec<String> {
+        // strip "confirmed:" prefix (10 chars)
+        let rest = if state.starts_with("confirmed:") {
+            &state[10..]
+        } else {
+            return Vec::new();
+        };
+        // split on first ':'
+        if let Some(pos) = rest.find(':') {
+            let mode      = rest[..pos].to_string();
+            let full_path = rest[pos + 1..].to_string();
+            vec![mode, full_path]
+        } else {
+            Vec::new()
+        }
     }).build()?;
 
     // ── Directory header with context menu ────────────────────────────────────
@@ -4538,15 +4681,20 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         with_ui(|ui| {
             let result: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
 
-            let btn = ui.add(
-                egui::Button::new(egui::RichText::new("  + Add  ").size(12.5).strong()
-                    .color(egui::Color32::from_rgb(240, 240, 245)))
-                    .fill(egui::Color32::from_rgb(48, 115, 48))
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 160, 80)))
-                    .corner_radius(4.0)
-            );
-            egui::Popup::from_toggle_button_response(&btn)
-                .show(|ui: &mut egui::Ui| {
+            let btn_text = egui::RichText::new("  + Add  ")
+                .size(12.5)
+                .strong()
+                .color(egui::Color32::from_rgb(240, 240, 245));
+            let btn_widget = egui::Button::new(btn_text)
+                .fill(egui::Color32::from_rgb(48, 115, 48))
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 160, 80)))
+                .corner_radius(4.0);
+
+            #[allow(deprecated)]
+            egui::menu::menu_custom_button(
+                ui,
+                btn_widget,
+                |ui| {
                     ui.set_min_width(200.0);
                     ui.label(egui::RichText::new("CREATE").size(10.0)
                         .color(egui::Color32::from_rgb(140, 140, 150)));
@@ -4556,22 +4704,20 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         ("🎬  New Scene",    "New Scene"),
                         ("💧  New Material", "New Material"),
                         ("📄  New File",     "New File"),
+                        ("📝  New Script",   "New Script"),
                     ] {
-                        if ui.selectable_label(false, *label).clicked() {
+                        if ui.button(*label).clicked() {
                             *result.borrow_mut() = key.to_string();
                             ui.close();
                         }
                     }
-                    if ui.selectable_label(false, "📝  New Script").clicked() {
-                        *result.borrow_mut() = "New Script".to_string();
-                        ui.close();
-                    }
                     ui.separator();
-                    if ui.selectable_label(false, "📥  Import File...").clicked() {
+                    if ui.button("📥  Import File...").clicked() {
                         *result.borrow_mut() = "Import File...".to_string();
                         ui.close();
                     }
-                });
+                },
+            );
 
             result.into_inner()
         }).unwrap_or_default()

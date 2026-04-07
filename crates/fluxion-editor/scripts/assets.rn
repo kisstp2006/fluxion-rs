@@ -16,44 +16,53 @@
 
 pub mod assets {
 
-// ── Handle the input dialog result each frame ────────────────────────────────
+// ── Handle the asset creation dialog result each frame ───────────────────────
+//
+// asset_dialog_poll() returns:
+//   ""                           — idle, nothing to do
+//   "pending"                    — dialog is open, waiting
+//   "confirmed:<mode>:<path>"    — user confirmed
+//   "cancelled"                  — user cancelled
 
 fn handle_dialog() {
-    let state = fluxion::ui::input_dialog_update();
-    if state == "confirmed" {
-        let filename = fluxion::ui::input_dialog_result();
-        let mode     = fluxion::world::get_asset_create_mode();
+    let state = fluxion::ui::asset_dialog_poll();
+    if state == "" || state == "pending" {
+        return;
+    }
+    if state == "cancelled" {
+        return;
+    }
+    // "confirmed:<mode>:<full_path>" — split on first two colons
+    if state.starts_with("confirmed:") {
+        // Use asset_dialog_parse_result() to split safely on the Rust side
+        let parts = fluxion::ui::asset_dialog_parse_result(state.clone());
+        if parts.len() < 2 {
+            return;
+        }
+        let mode      = parts[0].clone();
+        let full_path = parts[1].clone();
+
         if mode == "rename" {
-            let old_path = fluxion::world::get_asset_create_input();
-            fluxion::world::asset_rename(old_path.clone(), filename.clone());
+            let old_path = fluxion::ui::asset_dialog_get_dir();
+            let new_name = full_path.clone();
+            fluxion::world::asset_rename(old_path.clone(), new_name.clone());
             let sel = fluxion::world::get_selected_asset();
             if sel == old_path {
-                fluxion::world::set_selected_asset(filename.clone());
+                fluxion::world::set_selected_asset(new_name.clone());
             }
-        } else {
-            // Build full path: prepend stored dir prefix (set by handle_new_asset)
-            let prefix = fluxion::world::get_asset_create_input();
-            let new_path = if prefix == "" {
-                filename.clone()
-            } else {
-                `${prefix}/${filename}`
-            };
-            if mode == "dir" {
-                fluxion::world::asset_create_dir(new_path.clone());
-            } else if mode == "file" {
-                fluxion::world::asset_create_file(new_path.clone(), "");
-            } else if mode == "scene" {
-                fluxion::world::asset_create_scene(new_path.clone());
-            } else if mode == "script" {
-                let tpl = "pub fn start() {\n}\n\npub fn update(dt) {\n    let id = fluxion::script::self_entity();\n}\n";
-                fluxion::world::asset_create_file(new_path.clone(), tpl);
-            } else if mode == "material" {
-                fluxion::world::create_material(new_path.clone());
-            }
+        } else if mode == "dir" {
+            fluxion::world::asset_create_dir(full_path.clone());
+        } else if mode == "file" {
+            fluxion::world::asset_create_file(full_path.clone(), "");
+        } else if mode == "scene" {
+            fluxion::world::asset_create_scene(full_path.clone());
+        } else if mode == "script" {
+            let tpl = "pub fn start() {\n}\n\npub fn update(dt) {\n    let id = fluxion::script::self_entity();\n}\n";
+            fluxion::world::asset_create_file(full_path.clone(), tpl);
+        } else if mode == "material" {
+            fluxion::world::create_material(full_path.clone());
         }
-        fluxion::world::set_asset_create_mode("");
-    } else if state == "cancelled" {
-        fluxion::world::set_asset_create_mode("");
+        // custom modes: extend this if-chain
     }
 }
 
@@ -92,9 +101,9 @@ fn handle_grid_action(action, path) {
         }
         fluxion::world::set_selected_asset(path.clone());
     } else if action == "ctx:Rename" {
-        fluxion::world::set_asset_create_mode("rename");
-        fluxion::world::set_asset_create_input(path.clone());
-        fluxion::ui::input_dialog_open("Rename Asset", path.clone());
+        // mode="rename", dir="" so full_path = just the new name typed by user
+        // We pass the old path as the default name so user can edit it
+        fluxion::ui::asset_dialog_open("rename", path.clone(), "Rename Asset", path.clone());
     } else if action == "ctx:Duplicate" {
         fluxion::world::asset_duplicate(path.clone());
     } else if action == "ctx:Copy Path" {
@@ -108,28 +117,19 @@ fn handle_grid_action(action, path) {
 }
 
 // ── Handle new-asset menu button result ──────────────────────────────────────
+// To add a new asset type: add an entry here + handle the mode in handle_dialog().
 
 fn handle_new_asset(choice, active_dir) {
     if choice == "New Folder" {
-        fluxion::world::set_asset_create_mode("dir");
-        fluxion::world::set_asset_create_input(active_dir.clone());
-        fluxion::ui::input_dialog_open("New Folder", "new_folder");
+        fluxion::ui::asset_dialog_open("dir", active_dir.clone(), "New Folder", "new_folder");
     } else if choice == "New File" {
-        fluxion::world::set_asset_create_mode("file");
-        fluxion::world::set_asset_create_input(active_dir.clone());
-        fluxion::ui::input_dialog_open("New File", "new_file.txt");
+        fluxion::ui::asset_dialog_open("file", active_dir.clone(), "New File", "new_file.txt");
     } else if choice == "New Scene" {
-        fluxion::world::set_asset_create_mode("scene");
-        fluxion::world::set_asset_create_input(active_dir.clone());
-        fluxion::ui::input_dialog_open("New Scene", "my_scene.scene");
+        fluxion::ui::asset_dialog_open("scene", active_dir.clone(), "New Scene", "my_scene.scene");
     } else if choice == "New Script" {
-        fluxion::world::set_asset_create_mode("script");
-        fluxion::world::set_asset_create_input(active_dir.clone());
-        fluxion::ui::input_dialog_open("New Script", "my_script.rn");
+        fluxion::ui::asset_dialog_open("script", active_dir.clone(), "New Script", "my_script.rn");
     } else if choice == "New Material" {
-        fluxion::world::set_asset_create_mode("material");
-        fluxion::world::set_asset_create_input(active_dir.clone());
-        fluxion::ui::input_dialog_open("New Material", "my_material.fluxmat");
+        fluxion::ui::asset_dialog_open("material", active_dir.clone(), "New Material", "my_material.fluxmat");
     } else if choice == "Import File..." {
         let src = fluxion::ui::open_file_dialog("Import Asset", "");
         if src != "" {

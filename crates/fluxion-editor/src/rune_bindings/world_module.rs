@@ -2193,6 +2193,11 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         })
     }).build()?;
 
+    // str_strip_prefix(s, prefix) → String: strips prefix from s if present, else returns s unchanged.
+    m.function("str_strip_prefix", |s: String, prefix: String| -> String {
+        s.strip_prefix(prefix.as_str()).unwrap_or(&s).to_string()
+    }).build()?;
+
     // parse_f64(s) → [ok, value]: ok=1.0 if s is a valid f64, 0.0 otherwise.
     // Used by inspector.rn to decide between drag-widget and text-input for script fields.
     m.function("parse_f64", |s: String| -> Vec<f64> {
@@ -2524,12 +2529,31 @@ pub fn build_world_module() -> anyhow::Result<Module> {
     }).build()?;
 
     m.function("create_material", |path: String| {
-        PENDING.with(|p| p.borrow_mut().push(PendingEdit {
-            entity:    fluxion_core::EntityId::INVALID,
-            component: "__create_material__".to_string(),
-            field:     path,
-            value:     ReflectValue::Bool(true),
-        }));
+        let root = PROJECT_ROOT.with(|r| r.borrow().clone());
+        if root == std::path::PathBuf::new() {
+            log::warn!("[create_material] PROJECT_ROOT not set");
+            return;
+        }
+        let full = root.join("assets").join(&path);
+        if full.exists() {
+            log::warn!("[create_material] already exists: {}", full.display());
+            return;
+        }
+        if let Some(parent) = full.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let default_asset = fluxion_renderer::material::MaterialAsset::default();
+        match serde_json::to_vec_pretty(&default_asset) {
+            Ok(bytes) => {
+                if let Err(e) = std::fs::write(&full, &bytes) {
+                    log::error!("[create_material] failed to write {}: {e}", full.display());
+                } else {
+                    log::info!("[create_material] created: {}", full.display());
+                    ACTION_SIGNALS.with(|s| s.borrow_mut().push("rescan_assets".to_string()));
+                }
+            }
+            Err(e) => log::error!("[create_material] serialize failed: {e}"),
+        }
     }).build()?;
 
     m.function("material_slots", |entity_id: i64| -> Vec<Vec<String>> {
