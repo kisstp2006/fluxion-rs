@@ -1449,11 +1449,13 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let is_open = ui.memory_mut(|m| {
                 m.data.get_persisted::<bool>(id).unwrap_or(true)
             });
-            let clicked = ui.horizontal(|ui| {
-                let chev = if is_open { "chevron-down" } else { "chevron-right" };
-                let resp = ui.add(crate::icons::img(chev, 12.0, ui.visuals().text_color()).sense(egui::Sense::click()));
-                ui.label(display);
-                resp.clicked()
+            let clicked = ui.push_id(id.with("__hdr__"), |ui| {
+                ui.horizontal(|ui| {
+                    let chev = if is_open { "chevron-down" } else { "chevron-right" };
+                    let resp = ui.add(crate::icons::img(chev, 12.0, ui.visuals().text_color()).sense(egui::Sense::click()));
+                    ui.label(display);
+                    resp.clicked()
+                }).inner
             }).inner;
             if clicked {
                 let toggled = !is_open;
@@ -1481,21 +1483,23 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let is_open = ui.memory_mut(|m| {
                 m.data.get_persisted::<bool>(id).unwrap_or(true)
             });
-            let clicked = ui.horizontal(|ui| {
-                let sz   = 14.0f32;
-                let tint = ui.visuals().text_color();
-                if let Some(bytes) = crate::icons::icon_bytes(icon.as_ref()) {
-                    let uri = crate::icons::icon_uri(icon.as_ref());
-                    ui.add(
-                        egui::Image::from_bytes(uri, bytes)
-                            .fit_to_exact_size(egui::vec2(sz, sz))
-                            .tint(tint),
-                    );
-                }
-                let chev = if is_open { "chevron-down" } else { "chevron-right" };
-                let resp = ui.add(crate::icons::img(chev, 12.0, ui.visuals().text_color()).sense(egui::Sense::click()));
-                ui.label(display);
-                resp.clicked()
+            let clicked = ui.push_id(id.with("__hdr__"), |ui| {
+                ui.horizontal(|ui| {
+                    let sz   = 14.0f32;
+                    let tint = ui.visuals().text_color();
+                    if let Some(bytes) = crate::icons::icon_bytes(icon.as_ref()) {
+                        let uri = crate::icons::icon_uri(icon.as_ref());
+                        ui.add(
+                            egui::Image::from_bytes(uri, bytes)
+                                .fit_to_exact_size(egui::vec2(sz, sz))
+                                .tint(tint),
+                        );
+                    }
+                    let chev = if is_open { "chevron-down" } else { "chevron-right" };
+                    let resp = ui.add(crate::icons::img(chev, 12.0, ui.visuals().text_color()).sense(egui::Sense::click()));
+                    ui.label(display);
+                    resp.clicked()
+                }).inner
             }).inner;
             if clicked {
                 let toggled = !is_open;

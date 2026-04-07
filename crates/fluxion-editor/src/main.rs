@@ -807,7 +807,14 @@ impl EditorInner {
                     let path = if std::path::Path::new(rel).is_absolute() {
                         std::path::PathBuf::from(rel)
                     } else {
-                        self.project_root.join(rel)
+                        // Asset-panel paths are relative to assets/ — try that first.
+                        let with_assets = self.project_root.join("assets").join(rel);
+                        if with_assets.exists() {
+                            with_assets
+                        } else {
+                            let direct = self.project_root.join(rel);
+                            direct // fall back; load_scene_from_path will log the error
+                        }
                     };
                     do_load_scene = Some(path);
                 }
