@@ -38,6 +38,9 @@ pub struct EditorPrefs {
     /// Asset browser view mode: "tile" | "list". Default "tile".
     #[serde(default = "default_asset_view_mode")]
     pub asset_view_mode: String,
+    /// External script editor: "vscode" | "vscodium" | "default".
+    #[serde(default = "default_script_editor")]
+    pub script_editor: String,
 }
 
 fn default_theme()            -> String { "dark".to_string() }
@@ -48,6 +51,7 @@ fn default_log_max()          -> u32    { 10_000 }
 fn default_camera_speed()     -> f32    { 5.0 }
 fn default_camera_sensitivity() -> f32  { 1.0 }
 fn default_asset_view_mode()  -> String { "tile".to_string() }
+fn default_script_editor()    -> String { "default".to_string() }
 
 impl Default for EditorPrefs {
     fn default() -> Self {
@@ -61,6 +65,7 @@ impl Default for EditorPrefs {
             camera_sensitivity:     default_camera_sensitivity(),
             show_editor_camera:     false,
             asset_view_mode:        default_asset_view_mode(),
+            script_editor:          default_script_editor(),
         }
     }
 }

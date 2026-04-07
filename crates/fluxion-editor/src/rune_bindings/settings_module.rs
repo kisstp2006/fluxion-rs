@@ -175,6 +175,13 @@ pub fn get_show_editor_camera() -> bool {
     })
 }
 
+/// Called by world_module::open_in_external_editor — does NOT require Rune context.
+pub fn get_script_editor() -> String {
+    SETTINGS_PREFS.with(|p| {
+        p.borrow().as_ref().map(|pr| pr.script_editor.clone()).unwrap_or_else(|| "default".to_string())
+    })
+}
+
 pub fn modify_prefs<F>(f: F)
 where F: FnOnce(&mut EditorPrefs)
 {
@@ -278,7 +285,12 @@ pub fn prefs_category_modified_count(cat: &str) -> usize {
             n
         }
         "Console" => { if cur.log_max_entries != def.log_max_entries { 1 } else { 0 } }
-        "Asset Browser" => { if cur.asset_view_mode != def.asset_view_mode { 1 } else { 0 } }
+        "Asset Browser" => {
+            let mut n = 0usize;
+            if cur.asset_view_mode != def.asset_view_mode { n += 1; }
+            if cur.script_editor   != def.script_editor   { n += 1; }
+            n
+        }
         _ => 0,
     }
 }
@@ -704,6 +716,17 @@ pub fn build_settings_module() -> anyhow::Result<Module> {
     }).build()?;
     m.function("set_show_editor_camera", |v: bool| {
         set_prefs_field!(show_editor_camera, v);
+    }).build()?;
+
+    m.function("get_script_editor", || -> String {
+        get_prefs_field!(script_editor, "default".to_string())
+    }).build()?;
+    m.function("set_script_editor", |v: String| {
+        let clamped = match v.as_str() {
+            "vscode" | "vscodium" => v,
+            _ => "default".to_string(),
+        };
+        set_prefs_field!(script_editor, clamped);
     }).build()?;
 
     m.function("editor_prefs_dirty", || -> bool {

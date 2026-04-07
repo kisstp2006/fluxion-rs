@@ -120,6 +120,8 @@ fn handle_grid_action(action, path) {
         fluxion::ui::clipboard_set(path.clone());
     } else if action == "ctx:Show in Explorer" {
         fluxion::world::asset_show_in_explorer(path.clone());
+    } else if action == "ctx:Open in Editor" {
+        fluxion::world::open_in_external_editor(path.clone());
     } else if action == "ctx:Delete" {
         let refs = fluxion::world::asset_entity_refs(path.clone());
         if refs.len() > 0 {

@@ -313,6 +313,16 @@ pub fn set_project_root(root: &std::path::Path) {
     PROJECT_ROOT.with(|p| *p.borrow_mut() = root.to_path_buf());
 }
 
+/// Open a file using the OS default associated program.
+fn open_with_default(path: &std::path::Path) {
+    #[cfg(target_os = "windows")]
+    { let _ = std::process::Command::new("cmd").args(["/c", "start", "", &path.to_string_lossy()]).spawn(); }
+    #[cfg(target_os = "macos")]
+    { let _ = std::process::Command::new("open").arg(path).spawn(); }
+    #[cfg(target_os = "linux")]
+    { let _ = std::process::Command::new("xdg-open").arg(path).spawn(); }
+}
+
 /// Get the current project root (used by ui_module for texture preview loading).
 pub fn get_project_root() -> std::path::PathBuf {
     PROJECT_ROOT.with(|p| p.borrow().clone())
@@ -1353,6 +1363,32 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         { let _ = std::process::Command::new("open").arg(target).spawn(); }
         #[cfg(target_os = "linux")]
         { let _ = std::process::Command::new("xdg-open").arg(target).spawn(); }
+    }).build()?;
+
+    // open_in_external_editor(path) — opens a script/text file in the configured external editor.
+    // Reads the "script_editor" pref: "vscode" | "vscodium" | "default".
+    m.function("open_in_external_editor", |path: String| {
+        let abs = PROJECT_ROOT.with(|r| {
+            let root = r.borrow().clone();
+            if root == std::path::PathBuf::new() { return std::path::PathBuf::from(&path); }
+            root.join("assets").join(&path)
+        });
+        let editor = crate::rune_bindings::settings_module::get_script_editor();
+        match editor.as_str() {
+            "vscode" => {
+                if std::process::Command::new("code").arg(&abs).spawn().is_err() {
+                    log::warn!("[Editor] 'code' not found in PATH, falling back to default");
+                    open_with_default(&abs);
+                }
+            }
+            "vscodium" => {
+                if std::process::Command::new("codium").arg(&abs).spawn().is_err() {
+                    log::warn!("[Editor] 'codium' not found in PATH, falling back to default");
+                    open_with_default(&abs);
+                }
+            }
+            _ => open_with_default(&abs),
+        }
     }).build()?;
 
     // asset_get_type_filter / asset_set_type_filter — "" = All.

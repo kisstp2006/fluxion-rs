@@ -1012,6 +1012,12 @@ fn render_prefs_content_v3(ui: &mut egui::Ui, tab: &str) {
                 crate::rune_bindings::world_module::set_asset_view_mode(&v);
                 sm::modify_prefs(|p| p.asset_view_mode = v);
             }
+            v3_section(ui, "Script Editor");
+            let se  = sm::with_prefs(|p| p.script_editor.clone()).unwrap_or_else(|| "default".to_string());
+            let sed = sm::with_prefs_defaults(|p| p.script_editor.clone()).unwrap_or_else(|| "default".to_string());
+            if let Some(v) = v3_select(ui, "Open Scripts In", "Program used to open .rn and .js files from the asset browser", &se, &sed, &["default", "vscode", "vscodium"]) {
+                sm::modify_prefs(|p| p.script_editor = v);
+            }
         }
         _ => {}
     }
@@ -4414,7 +4420,8 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let ctx_items = |t: &str| -> Vec<&'static str> {
                 match t {
                     "scene"    => vec!["Open Scene",        "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
-                    "script"   => vec!["Attach to Selected","Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    "script"   => vec!["Attach to Selected","Open in Editor", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    "shader"   => vec!["Open in Editor",    "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
                     "material" => vec!["Edit Material", "Assign to Selected", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
                     "prefab"   => vec!["Instantiate",       "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
                     _          => vec!["Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
@@ -4720,7 +4727,8 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let ctx_items = |t: &str| -> Vec<&'static str> {
                 match t {
                     "scene"    => vec!["Open Scene",         "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
-                    "script"   => vec!["Attach to Selected", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    "script"   => vec!["Attach to Selected", "Open in Editor", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
+                    "shader"   => vec!["Open in Editor",     "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
                     "material" => vec!["Edit Material", "Assign to Selected", "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
                     "prefab"   => vec!["Instantiate",        "Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
                     _          => vec!["Rename", "Duplicate", "Copy Path", "Show in Explorer", "Delete"],
