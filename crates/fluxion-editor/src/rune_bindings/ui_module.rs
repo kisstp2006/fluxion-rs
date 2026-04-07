@@ -4788,6 +4788,9 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         with_ui(|ui| {
             enum Visit { Enter(String), CloseDir }
 
+            // Disable text selection globally for this tree — labels must not be selectable.
+            ui.style_mut().interaction.selectable_labels = false;
+
             let is_root_active = active.is_empty();
             let (_, actions) =
                 egui_ltreeview::TreeView::new(egui::Id::new("ltreeview_assets"))
@@ -4827,7 +4830,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                             }
                                         }
                                     }
-                                    ui.add(egui::Label::new("assets").sense(egui::Sense::empty()));
+                                    ui.add(egui::Label::new("assets").sense(egui::Sense::empty()).selectable(false));
                                 })
                         );
 
@@ -4889,7 +4892,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                                 }
                                             }
                                         }
-                                        ui.add(egui::Label::new(stem.as_str()).sense(egui::Sense::empty()));
+                                        ui.add(egui::Label::new(stem.as_str()).sense(egui::Sense::empty()).selectable(false));
                                     });
 
                                     builder.node(nb);
