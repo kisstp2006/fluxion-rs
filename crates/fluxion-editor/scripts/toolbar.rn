@@ -15,19 +15,6 @@ pub fn panel() {
     // Polling script_hotreload_pending() here sets the Rust-side 3s toast timer.
     fluxion::world::script_hotreload_pending();
 
-    // ── Transform tool selector ──────────────────────────────────────────────
-    if fluxion::ui::icon_tool_button("move",      tool == "Translate") {
-        fluxion::world::set_transform_tool("Translate");
-    }
-    if fluxion::ui::icon_tool_button("rotate-cw",  tool == "Rotate") {
-        fluxion::world::set_transform_tool("Rotate");
-    }
-    if fluxion::ui::icon_tool_button("maximize-2", tool == "Scale") {
-        fluxion::world::set_transform_tool("Scale");
-    }
-
-    fluxion::ui::toolbar_separator();
-
     // ── Play / Pause / Stop ──────────────────────────────────────────────────
     if fluxion::ui::icon_tool_button("play", mode == "Playing") {
         if mode == "Playing" {

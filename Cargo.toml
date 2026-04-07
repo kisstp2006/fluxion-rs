@@ -35,7 +35,6 @@ egui-wgpu   = "0.34"
 egui-winit  = "0.34"
 egui_dock   = "0.19.1"
 egui_extras = { version = "0.34", features = ["svg"] }
-egui_dnd    = "0.13"
 dirs-next   = "2.0"
 chrono      = { version = "0.4", features = ["clock"] }
 rfd         = "0.15"

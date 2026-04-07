@@ -27,6 +27,42 @@ pub(crate) enum DndPayload {
     Entity { id: i64 },
 }
 
+/// State for detecting drag vs click operations
+#[derive(Default)]
+struct DragDetectionState {
+    mouse_start_pos: Option<egui::Pos2>,
+    is_dragging: bool,
+    drag_threshold: f32,
+}
+
+impl DragDetectionState {
+    fn start_drag(&mut self, pos: egui::Pos2) {
+        self.mouse_start_pos = Some(pos);
+        self.is_dragging = false;
+        self.drag_threshold = 5.0; // 5 pixel threshold
+    }
+    
+    fn update(&mut self, current_pos: egui::Pos2) -> bool {
+        if let Some(start_pos) = self.mouse_start_pos {
+            let distance = start_pos.distance(current_pos);
+            if distance > self.drag_threshold {
+                self.is_dragging = true;
+                return true;
+            }
+        }
+        false
+    }
+    
+    fn is_dragging(&self) -> bool {
+        self.is_dragging
+    }
+    
+    fn reset(&mut self) {
+        self.mouse_start_pos = None;
+        self.is_dragging = false;
+    }
+}
+
 thread_local! {
     static CURRENT_UI: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
     /// Stored response from the last `image_interactive` call.
@@ -77,6 +113,9 @@ thread_local! {
     /// Maps asset-path → loaded egui TextureHandle so we don't re-upload every frame.
     static TEXTURE_CACHE: RefCell<std::collections::HashMap<String, egui::TextureHandle>>
         = RefCell::new(std::collections::HashMap::new());
+    
+    /// Drag detection state - tracks mouse position and drag threshold
+    static DRAG_STATE: RefCell<DragDetectionState> = RefCell::new(DragDetectionState::default());
 
     // ── ltreeview context menu result ───────────────────────────────────────────────────
     /// Written by context_menu closures inside ltreeview_hierarchy; read after show().
@@ -3299,13 +3338,41 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                         tile_resp
                                     });
                                 let tile_resp = dnd_inner.inner;
-
-                                // Click / double-click
-                                if tile_resp.clicked() {
+                                
+                                // Custom drag detection - check if this is a click or drag
+                                let is_drag_click = DRAG_STATE.with(|state| {
+                                    let mut state = state.borrow_mut();
+                                    if tile_resp.clicked() {
+                                        // Start tracking on click
+                                        if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                            state.start_drag(mouse_pos);
+                                        }
+                                        false // Don't consider click as drag yet
+                                    } else if tile_resp.dragged() {
+                                        // Check if we've exceeded the drag threshold
+                                        if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                            state.update(mouse_pos)
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                });
+                                
+                                // Only process as click if not dragged and not currently dragging
+                                let should_process_click = tile_resp.clicked() && !is_drag_click && !DRAG_STATE.with(|s| s.borrow().is_dragging());
+                                
+                                if should_process_click {
                                     *result.borrow_mut() = vec!["select".to_string(), path.clone()];
                                 }
-                                if tile_resp.double_clicked() {
+                                if tile_resp.double_clicked() && !is_drag_click && !DRAG_STATE.with(|s| s.borrow().is_dragging()) {
                                     *result.borrow_mut() = vec!["open".to_string(), path.clone()];
+                                }
+                                
+                                // Reset drag state when interaction ends
+                                if tile_resp.clicked() || tile_resp.dragged() {
+                                    DRAG_STATE.with(|s| s.borrow_mut().reset());
                                 }
 
                                 // Context menu
@@ -3821,20 +3888,49 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                         tile_resp
                                     });
                                 let tile_resp = dnd.inner;
-
-                                if tile_resp.clicked() {
+                                
+                                // Custom drag detection - check if this is a click or drag
+                                let is_drag_click = DRAG_STATE.with(|state| {
+                                    let mut state = state.borrow_mut();
+                                    if tile_resp.clicked() {
+                                        // Start tracking on click
+                                        if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                            state.start_drag(mouse_pos);
+                                        }
+                                        false // Don't consider click as drag yet
+                                    } else if tile_resp.dragged() {
+                                        // Check if we've exceeded the drag threshold
+                                        if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                            state.update(mouse_pos)
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                });
+                                
+                                // Only process as click if not dragged and not currently dragging
+                                let should_process_click = tile_resp.clicked() && !is_drag_click && !DRAG_STATE.with(|s| s.borrow().is_dragging());
+                                
+                                if should_process_click {
                                     *result.borrow_mut() = if is_folder {
                                         vec!["folder_select".to_string(), clean_path.clone()]
                                     } else {
                                         vec!["select".to_string(), path.clone()]
                                     };
                                 }
-                                if tile_resp.double_clicked() {
+                                if tile_resp.double_clicked() && !is_drag_click && !DRAG_STATE.with(|s| s.borrow().is_dragging()) {
                                     *result.borrow_mut() = if is_folder {
                                         vec!["folder_open".to_string(), clean_path.clone()]
                                     } else {
                                         vec!["open".to_string(), path.clone()]
                                     };
+                                }
+                                
+                                // Reset drag state when interaction ends
+                                if tile_resp.clicked() || tile_resp.dragged() {
+                                    DRAG_STATE.with(|s| s.borrow_mut().reset());
                                 }
                                 tile_resp.context_menu(|ui| {
                                     if is_folder {

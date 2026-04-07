@@ -163,7 +163,6 @@ fn draw_left_toolbar() {
         if fluxion::ui::icon_tool_button("maximize-2", tool == "Scale") {
             fluxion::world::set_transform_tool("Scale");
         }
-        fluxion::ui::separator();
     }
 
     fluxion::ui::vertical_end();
@@ -197,7 +196,7 @@ pub fn panel() {
     let stats = fluxion::world::frame_stats();
     let ft    = stats[2];
     let fps   = if ft > 0.0 { 1000.0 / ft } else { 0.0 };
-    fluxion::ui::viewport_overlay_text(`Draw: ${stats[0]} | Ent: ${stats[1]} | ${ft}ms (${fps}fps)`);
+    fluxion::ui::viewport_overlay_text(`Draw: ${stats[0]} | Ent: ${stats[1]} | FPS: (${fps}fps)`);
 }
 
 } // pub mod viewport

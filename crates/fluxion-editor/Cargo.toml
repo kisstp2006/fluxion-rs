@@ -27,7 +27,6 @@ egui-wgpu   = { workspace = true }
 egui-winit  = { workspace = true }
 egui_dock   = { workspace = true }
 egui_extras = { workspace = true }
-egui_dnd    = { workspace = true }
 rune                  = "0.14"
 egui_ltreeview        = "0.7"
 transform-gizmo-egui  = "0.9"
