@@ -547,7 +547,8 @@ impl EditorInner {
             } else {
                 0
             };
-            if let Err(e) = self.renderer.render_to_pane(&self.host.world, &self.host.time, pane, cam_override, dbg) {
+            let prefer_main = pane == 0 && self.editor_mode == crate::toolbar::EditorMode::Playing;
+            if let Err(e) = self.renderer.render_to_pane(&self.host.world, &self.host.time, pane, cam_override, prefer_main, dbg) {
                 log::error!("render_to_pane({pane}): {e}");
             }
         }
@@ -902,7 +903,21 @@ impl EditorInner {
         if *editor_mode == crate::toolbar::EditorMode::Playing
             && prev_mode != crate::toolbar::EditorMode::Playing
         {
-            self.host.rebuild_gameplay_scripts();
+            use fluxion_core::Camera;
+            let cam_count = {
+                let mut n = 0usize;
+                self.host.world.query_active::<&Camera, _>(|_, c| {
+                    if c.is_active { n += 1; }
+                });
+                n
+            };
+            if cam_count == 0 {
+                log::error!("[Editor] Cannot start Play mode: no active Camera in the scene.");
+                *editor_mode = crate::toolbar::EditorMode::Editing;
+                crate::rune_bindings::force_editor_mode("Editing");
+            } else {
+                self.host.rebuild_gameplay_scripts();
+            }
         }
         let tool_str = crate::rune_bindings::get_transform_tool_str();
         *transform_tool = match tool_str.as_str() {

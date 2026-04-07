@@ -197,6 +197,7 @@ fn camera_fields() -> &'static [FieldDescriptor] {
             .with_visible_if(|c| matches!(c.get_field("projection"),
                 Some(ReflectValue::Enum(ref s)) if s == "Orthographic")),
         FieldDescriptor::new("is_active",    "Is Active",    ReflectFieldType::Bool),
+        FieldDescriptor::new("is_main",      "Is Main Camera", ReflectFieldType::Bool),
         FieldDescriptor::new("depth",        "Depth",        ReflectFieldType::F32),
         FieldDescriptor::new("culling_mask", "Culling Mask", ReflectFieldType::U32),
         FieldDescriptor::new("clear_flags", "Clear Flags", ReflectFieldType::Enum)
@@ -229,6 +230,7 @@ impl Reflect for Camera {
             })),
             "ortho_size"       => Some(ReflectValue::F32(self.ortho_size)),
             "is_active"        => Some(ReflectValue::Bool(self.is_active)),
+            "is_main"          => Some(ReflectValue::Bool(self.is_main)),
             "depth"            => Some(ReflectValue::F32(self.depth as f32)),
             "culling_mask"     => Some(ReflectValue::U32(self.culling_mask)),
             "clear_flags"      => Some(ReflectValue::Enum(self.clear_flags.as_str().into())),
@@ -248,6 +250,7 @@ impl Reflect for Camera {
             ("far",              ReflectValue::F32(f))     => self.far = f.max(self.near + 0.1),
             ("ortho_size",       ReflectValue::F32(f))     => self.ortho_size = f.max(0.01),
             ("is_active",        ReflectValue::Bool(b))    => self.is_active = b,
+            ("is_main",          ReflectValue::Bool(b))    => self.is_main = b,
             ("depth",            ReflectValue::F32(f))     => self.depth = f as i32,
             ("culling_mask",     ReflectValue::U32(u))     => self.culling_mask = u,
             ("allow_hdr",        ReflectValue::Bool(b))    => self.allow_hdr = b,
@@ -278,6 +281,7 @@ impl Reflect for Camera {
             "isOrthographic": self.projection_mode == ProjectionMode::Orthographic,
             "orthoSize":      self.ortho_size,
             "isMain":         self.is_active,
+            "isMainCamera":   self.is_main,
         })
     }
 }

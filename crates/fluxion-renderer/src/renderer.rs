@@ -1301,7 +1301,7 @@ impl FluxionRenderer {
             ));
         }
 
-        let mut frame = self.extract_frame_data(world, time);
+        let mut frame = self.extract_frame_data(world, time, false);
         self.last_draw_call_count = frame.draw_calls.len() as u32;
 
         // ── Apply Environment component overrides ─────────────────────────────
@@ -1398,12 +1398,14 @@ impl FluxionRenderer {
     /// Render the 3-D scene to a specific viewport pane texture.
     /// `pane` 0 = Perspective (uses `viewport_texture`), 1-3 = ortho panes.
     /// `cam_override` replaces the ECS-derived camera matrices when `Some`.
+    /// `prefer_main` — when true (play mode), prefer the Camera with `is_main=true`.
     pub fn render_to_pane(
         &mut self,
         world: &ECSWorld,
         time:  &Time,
         pane:  usize,
         cam_override: Option<CameraOverride>,
+        prefer_main: bool,
         debug_view: u32,
     ) -> anyhow::Result<()> {
         if self.width == 0 || self.height == 0 { return Ok(()); }
@@ -1427,7 +1429,7 @@ impl FluxionRenderer {
             *target = Some(GpuTexture::render_target(&self.device, &label, w, h, format));
         }
 
-        let mut frame = self.extract_frame_data(world, time);
+        let mut frame = self.extract_frame_data(world, time, prefer_main);
         frame.debug_view = debug_view;
         if pane == 0 { self.last_draw_call_count = frame.draw_calls.len() as u32; }
 
@@ -1609,7 +1611,7 @@ impl FluxionRenderer {
         };
         let surface_view = surface_texture.texture.create_view(&Default::default());
 
-        let mut frame = self.extract_frame_data(world, time);
+        let mut frame = self.extract_frame_data(world, time, false);
 
         // ── Apply Environment component overrides ─────────────────────────────
         let mut env_override: Option<Environment> = None;
@@ -1701,9 +1703,9 @@ impl FluxionRenderer {
 
     // ── Private: ECS → FrameData ──────────────────────────────────────────────
 
-    fn extract_frame_data(&mut self, world: &ECSWorld, time: &Time) -> FrameData {
+    fn extract_frame_data(&mut self, world: &ECSWorld, time: &Time, prefer_main: bool) -> FrameData {
         // ── Camera ────────────────────────────────────────────────────────────
-        let camera = self.extract_camera(world);
+        let camera = self.extract_camera(world, prefer_main);
         // Cache for editor gizmo overlay.
         self.last_view_matrix = camera.view;
         self.last_proj_matrix = camera.projection;
@@ -1976,11 +1978,11 @@ impl FluxionRenderer {
         sky
     }
 
-    fn extract_camera(&self, world: &ECSWorld) -> CameraData {
+    fn extract_camera(&self, world: &ECSWorld, prefer_main: bool) -> CameraData {
         let (w, h) = (self.width, self.height);
 
-        // Collect all active cameras with their depth, then pick the lowest depth.
-        let mut candidates: Vec<(i32, CameraData)> = Vec::new();
+        // Collect all active cameras with their depth and is_main flag.
+        let mut candidates: Vec<(i32, bool, CameraData)> = Vec::new();
 
         world.query_active::<(&Transform, &Camera), _>(|_id, (transform, camera)| {
             if !camera.is_active { return; }
@@ -1995,7 +1997,7 @@ impl FluxionRenderer {
             let inv_vp      = view_proj.inverse();
             let inv_proj    = proj.inverse();
 
-            candidates.push((camera.depth, CameraData {
+            candidates.push((camera.depth, camera.is_main, CameraData {
                 view,
                 projection:       proj,
                 view_proj,
@@ -2010,10 +2012,17 @@ impl FluxionRenderer {
             }));
         });
 
-        // Sort by depth ascending; lowest depth renders first / is "primary".
-        candidates.sort_by_key(|(d, _)| *d);
+        // Sort by depth ascending.
+        candidates.sort_by_key(|(d, _, _)| *d);
 
-        candidates.into_iter().next().map(|(_, data)| data).unwrap_or_else(|| {
+        if prefer_main {
+            // In play mode: prefer is_main=true camera; fall back to any active camera.
+            if let Some((_, _, data)) = candidates.iter().find(|(_, main, _)| *main) {
+                return data.clone();
+            }
+        }
+
+        candidates.into_iter().next().map(|(_, _, data)| data).unwrap_or_else(|| {
             log::warn!("No active camera found in the scene");
             CameraData::identity()
         })

@@ -16,7 +16,7 @@ pub use world_module::{
     set_world_context, WorldContextGuard,
     drain_pending_edits, PendingEdit,
     get_selected_id, set_selected_id, set_project_root, set_undo_state, set_frame_time, set_time_elapsed,
-    set_editor_shell_state, drain_action_signals, get_editor_mode_str, get_transform_tool_str,
+    set_editor_shell_state, drain_action_signals, get_editor_mode_str, force_editor_mode, get_transform_tool_str,
     get_editor_cam_pos, get_editor_cam_yaw, get_editor_cam_pitch,
     init_editor_cam, take_editor_cam_dirty,
     set_asset_db_context, clear_asset_db_context,

@@ -400,6 +400,11 @@ pub fn get_editor_mode_str() -> String {
     EDITOR_MODE.with(|c| c.borrow().clone())
 }
 
+/// Force-set the editor mode from Rust host code (used to reject invalid transitions).
+pub fn force_editor_mode(mode: &str) {
+    EDITOR_MODE.with(|c| *c.borrow_mut() = mode.to_string());
+}
+
 /// Read the transform tool as set by Rune.
 pub fn get_transform_tool_str() -> String {
     TRANSFORM_TOOL.with(|c| c.borrow().clone())

@@ -152,9 +152,17 @@ pub struct Camera {
     /// If `true`, this camera renders the scene this frame.
     pub is_active: bool,
 
+    /// If `true`, this is the primary gameplay camera.
+    /// The renderer prefers this camera in play mode over depth order.
+    /// When only one scene camera exists, it is used automatically.
+    #[serde(default = "default_true")]
+    pub is_main: bool,
+
     /// If set, render to a named render-texture instead of the screen.
     pub render_to_texture: Option<String>,
 }
+
+fn default_true() -> bool { true }
 
 impl Camera {
     /// Create a standard perspective camera with sensible defaults.
@@ -178,6 +186,7 @@ impl Camera {
             lens_shift:       [0.0, 0.0],
             custom_projection: None,
             is_active:        true,
+            is_main:          true,
             render_to_texture: None,
         }
     }

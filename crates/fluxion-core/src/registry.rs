@@ -409,6 +409,7 @@ impl ComponentRegistry {
             c.far        = data.get("far").and_then(|v| v.as_f64()).unwrap_or(1000.0) as f32;
             c.ortho_size = data.get("orthoSize").and_then(|v| v.as_f64()).unwrap_or(10.0) as f32;
             c.is_active  = data.get("isMain").and_then(|v| v.as_bool()).unwrap_or(false);
+            c.is_main    = data.get("isMainCamera").and_then(|v| v.as_bool()).unwrap_or(true);
             if data.get("isOrthographic").and_then(|v| v.as_bool()).unwrap_or(false) {
                 c.projection_mode = ProjectionMode::Orthographic;
             }
