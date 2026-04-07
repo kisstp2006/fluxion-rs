@@ -218,6 +218,25 @@ fn with_ui<R>(f: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
     })
 }
 
+/// Returns the label column width for inspector property rows:
+/// ~40 % of the available panel width, clamped to [80, 150] px.
+#[inline]
+fn prop_lbl_w(ui: &egui::Ui) -> f32 {
+    (ui.available_width() * 0.40).max(80.0).min(150.0)
+}
+
+/// Muted label colour used for all inspector property labels.
+#[inline]
+fn prop_lbl_color() -> egui::Color32 {
+    egui::Color32::from_rgb(180, 180, 190)
+}
+
+/// Strip the `##id` suffix from an egui label string and return the display part.
+#[inline]
+fn prop_display<'a>(label: &'a str) -> &'a str {
+    label.split("##").next().unwrap_or(label)
+}
+
 fn split_menu_path(path: &str) -> Vec<&str> {
     path
         .split('.')
@@ -1032,8 +1051,19 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("checkbox", |label: Ref<str>, value: bool| -> bool {
         with_ui(|ui| {
-            let mut v = value;
-            let resp = ui.checkbox(&mut v, label.as_ref());
+            let mut v  = value;
+            let lbl_w  = prop_lbl_w(ui);
+            let display = prop_display(label.as_ref()).to_string();
+            let resp = ui.horizontal(|ui| {
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
+                ui.checkbox(&mut v, "")
+            }).inner;
             LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
             v
         }).unwrap_or(value)
@@ -1041,22 +1071,49 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("drag_float", |label: Ref<str>, value: f64, speed: f64, min: f64, max: f64| -> f64 {
         with_ui(|ui| {
-            let mut v = value as f32;
-            let resp = ui.add(
-                egui::DragValue::new(&mut v)
-                    .speed(speed as f32)
-                    .range(min as f32..=max as f32)
-                    .prefix(format!("{}: ", label.as_ref())),
-            );
-            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
+            let mut v   = value as f32;
+            let lbl_w   = prop_lbl_w(ui);
+            let display = prop_display(label.as_ref()).to_string();
+            let hresp = ui.horizontal(|ui| {
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
+                ui.add_sized(
+                    [ui.available_width(), 16.0],
+                    egui::DragValue::new(&mut v)
+                        .speed(speed as f32)
+                        .range(min as f32..=max as f32)
+                        .max_decimals(4),
+                )
+            }).inner;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             v as f64
         }).unwrap_or(value)
     }).build()?;
 
     m.function("drag_int", |label: Ref<str>, value: i64| -> i64 {
         with_ui(|ui| {
-            let mut v = value as i32;
-            ui.add(egui::DragValue::new(&mut v).prefix(format!("{}: ", label.as_ref())));
+            let mut v   = value as i32;
+            let lbl_w   = prop_lbl_w(ui);
+            let display = prop_display(label.as_ref()).to_string();
+            let hresp = ui.horizontal(|ui| {
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
+                ui.add_sized(
+                    [ui.available_width(), 16.0],
+                    egui::DragValue::new(&mut v),
+                )
+            }).inner;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             v as i64
         }).unwrap_or(value)
     }).build()?;
@@ -1078,14 +1135,13 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("slider", |label: Ref<str>, value: f64, min: f64, max: f64, step: f64| -> f64 {
         with_ui(|ui| {
             let mut v = value as f32;
-            let lbl_w = 100.0_f32;
             let rw     = if (v - min as f32).abs() > 1e-5 { 20.0_f32 } else { 0.0_f32 };
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
-                let lbl_color = egui::Color32::from_rgb(180, 180, 190);
-                let display_lbl = label.as_ref().split("##").next().unwrap_or(label.as_ref());
+                let lbl_w = prop_lbl_w(ui);
+                let display_lbl = prop_display(label.as_ref());
                 ui.add_sized([lbl_w, 16.0],
-                    egui::Label::new(egui::RichText::new(display_lbl).color(lbl_color).size(11.5)));
+                    egui::Label::new(egui::RichText::new(display_lbl).color(prop_lbl_color()).size(11.5)).truncate());
                 let avail = (ui.available_width() - rw).max(40.0);
                 let mut sl = egui::Slider::new(&mut v, min as f32..=max as f32)
                     .show_value(true)
@@ -1123,10 +1179,21 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("input_text", |label: Ref<str>, value: Ref<str>| -> String {
         with_ui(|ui| {
-            let mut v = value.as_ref().to_string();
+            let mut v   = value.as_ref().to_string();
+            let lbl_w   = prop_lbl_w(ui);
+            let display = prop_display(label.as_ref()).to_string();
             let hresp = ui.horizontal(|ui| {
-                ui.label(label.as_ref());
-                ui.text_edit_singleline(&mut v);
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
+                ui.add_sized(
+                    [ui.available_width(), 16.0],
+                    egui::TextEdit::singleline(&mut v),
+                );
             }).response;
             LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             v
@@ -1305,9 +1372,17 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("color3", |label: Ref<str>, r: f64, g: f64, b: f64| -> Vec<f64> {
         with_ui(|ui| {
-            let mut c = [r as f32, g as f32, b as f32];
+            let mut c   = [r as f32, g as f32, b as f32];
+            let lbl_w   = prop_lbl_w(ui);
+            let display = prop_display(label.as_ref()).to_string();
             ui.horizontal(|ui| {
-                ui.label(label.as_ref());
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
                 ui.color_edit_button_rgb(&mut c);
             });
             vec![c[0] as f64, c[1] as f64, c[2] as f64]
@@ -1316,9 +1391,17 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("color4", |label: Ref<str>, r: f64, g: f64, b: f64, a: f64| -> Vec<f64> {
         with_ui(|ui| {
-            let mut c = [r as f32, g as f32, b as f32, a as f32];
+            let mut c   = [r as f32, g as f32, b as f32, a as f32];
+            let lbl_w   = prop_lbl_w(ui);
+            let display = prop_display(label.as_ref()).to_string();
             ui.horizontal(|ui| {
-                ui.label(label.as_ref());
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
                 ui.color_edit_button_rgba_unmultiplied(&mut c);
             });
             vec![c[0] as f64, c[1] as f64, c[2] as f64, c[3] as f64]
@@ -1846,32 +1929,60 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("vec3_inline", |label: Ref<str>, x: f64, y: f64, z: f64, speed: f64| -> Vec<f64> {
         with_ui(|ui| {
-            let mut v = [x as f32, y as f32, z as f32];
-            ui.horizontal(|ui| {
-                ui.label(label.as_ref());
-                ui.colored_label(egui::Color32::from_rgb(220, 80, 80),   "X");
-                let resp = ui.add(egui::DragValue::new(&mut v[0]).speed(speed as f32));
-                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
-                ui.colored_label(egui::Color32::from_rgb(80, 200, 80),   "Y");
-                ui.add(egui::DragValue::new(&mut v[1]).speed(speed as f32));
-                ui.colored_label(egui::Color32::from_rgb(80, 120, 220),  "Z");
-                ui.add(egui::DragValue::new(&mut v[2]).speed(speed as f32));
-            });
+            let mut v   = [x as f32, y as f32, z as f32];
+            let lbl_w   = prop_lbl_w(ui);
+            let display = prop_display(label.as_ref()).to_string();
+            let hresp = ui.horizontal(|ui| {
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
+                let avail = ui.available_width();
+                let col_w = (avail / 3.0 - 16.0).max(20.0);
+                let resp = ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80),  "X");
+                    let r = ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(speed as f32));
+                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80),  "Y");
+                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(speed as f32));
+                    ui.colored_label(egui::Color32::from_rgb(80, 120, 220), "Z");
+                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[2]).speed(speed as f32));
+                    r
+                }).inner;
+                resp
+            }).inner;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             vec![v[0] as f64, v[1] as f64, v[2] as f64]
         }).unwrap_or_else(|| vec![x, y, z])
     }).build()?;
 
     m.function("vec2_inline", |label: Ref<str>, x: f64, y: f64, speed: f64| -> Vec<f64> {
         with_ui(|ui| {
-            let mut v = [x as f32, y as f32];
-            ui.horizontal(|ui| {
-                ui.label(label.as_ref());
-                ui.colored_label(egui::Color32::from_rgb(220, 80, 80),  "X");
-                let resp = ui.add(egui::DragValue::new(&mut v[0]).speed(speed as f32));
-                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
-                ui.colored_label(egui::Color32::from_rgb(80, 200, 80),  "Y");
-                ui.add(egui::DragValue::new(&mut v[1]).speed(speed as f32));
-            });
+            let mut v   = [x as f32, y as f32];
+            let lbl_w   = prop_lbl_w(ui);
+            let display = prop_display(label.as_ref()).to_string();
+            let hresp = ui.horizontal(|ui| {
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
+                let avail = ui.available_width();
+                let col_w = (avail / 2.0 - 16.0).max(20.0);
+                let resp = ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80), "X");
+                    let r = ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(speed as f32));
+                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "Y");
+                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(speed as f32));
+                    r
+                }).inner;
+                resp
+            }).inner;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             vec![v[0] as f64, v[1] as f64]
         }).unwrap_or_else(|| vec![x, y])
     }).build()?;
@@ -1883,36 +1994,64 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             (0.0, 0.0, 0.0, 0.0)
         };
         with_ui(|ui| {
-            let mut v = [x as f32, y as f32, z as f32, w as f32];
-            ui.horizontal(|ui| {
-                ui.label(label.as_ref());
-                ui.colored_label(egui::Color32::from_rgb(220, 80, 80),   "X");
-                let resp = ui.add(egui::DragValue::new(&mut v[0]).speed(speed as f32));
-                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
-                ui.colored_label(egui::Color32::from_rgb(80, 200, 80),   "Y");
-                ui.add(egui::DragValue::new(&mut v[1]).speed(speed as f32));
-                ui.colored_label(egui::Color32::from_rgb(80, 120, 220),  "Z");
-                ui.add(egui::DragValue::new(&mut v[2]).speed(speed as f32));
-                ui.colored_label(egui::Color32::from_rgb(160, 160, 160), "W");
-                ui.add(egui::DragValue::new(&mut v[3]).speed(speed as f32));
-            });
+            let mut v   = [x as f32, y as f32, z as f32, w as f32];
+            let lbl_w   = prop_lbl_w(ui);
+            let display = prop_display(label.as_ref()).to_string();
+            let hresp = ui.horizontal(|ui| {
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
+                let avail = ui.available_width();
+                let col_w = (avail / 4.0 - 16.0).max(16.0);
+                let resp = ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80),   "X");
+                    let r = ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(speed as f32));
+                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80),   "Y");
+                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(speed as f32));
+                    ui.colored_label(egui::Color32::from_rgb(80, 120, 220),  "Z");
+                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[2]).speed(speed as f32));
+                    ui.colored_label(egui::Color32::from_rgb(160, 160, 160), "W");
+                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[3]).speed(speed as f32));
+                    r
+                }).inner;
+                resp
+            }).inner;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             vec![v[0] as f64, v[1] as f64, v[2] as f64, v[3] as f64]
         }).unwrap_or_else(|| vec![x, y, z, w])
     }).build()?;
 
     m.function("quat_euler_inline", |label: Ref<str>, pitch: f64, yaw: f64, roll: f64| -> Vec<f64> {
         with_ui(|ui| {
-            let mut v = [pitch as f32, yaw as f32, roll as f32];
-            ui.horizontal(|ui| {
-                ui.label(label.as_ref());
-                ui.colored_label(egui::Color32::from_rgb(220, 80, 80),   "P");
-                let resp = ui.add(egui::DragValue::new(&mut v[0]).speed(0.5f32).range(-360.0f32..=360.0f32));
-                LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp));
-                ui.colored_label(egui::Color32::from_rgb(80, 200, 80),   "Y");
-                ui.add(egui::DragValue::new(&mut v[1]).speed(0.5f32).range(-360.0f32..=360.0f32));
-                ui.colored_label(egui::Color32::from_rgb(80, 120, 220),  "R");
-                ui.add(egui::DragValue::new(&mut v[2]).speed(0.5f32).range(-360.0f32..=360.0f32));
-            });
+            let mut v   = [pitch as f32, yaw as f32, roll as f32];
+            let lbl_w   = prop_lbl_w(ui);
+            let display = prop_display(label.as_ref()).to_string();
+            let hresp = ui.horizontal(|ui| {
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
+                let avail = ui.available_width();
+                let col_w = (avail / 3.0 - 16.0).max(20.0);
+                let resp = ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80),  "P");
+                    let r = ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(0.5f32).range(-360.0f32..=360.0f32));
+                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80),  "Y");
+                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(0.5f32).range(-360.0f32..=360.0f32));
+                    ui.colored_label(egui::Color32::from_rgb(80, 120, 220), "R");
+                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[2]).speed(0.5f32).range(-360.0f32..=360.0f32));
+                    r
+                }).inner;
+                resp
+            }).inner;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             vec![v[0] as f64, v[1] as f64, v[2] as f64]
         }).unwrap_or_else(|| vec![pitch, yaw, roll])
     }).build()?;
@@ -1999,16 +2138,28 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             } else {
                 (raw, raw)
             };
+            let lbl_w   = prop_lbl_w(ui);
             let mut chosen = current.as_ref().to_string();
-            let resp = egui::ComboBox::from_id_salt(ui.auto_id_with(id_str))
-                .selected_text(current.as_ref())
-                .show_ui(ui, |ui| {
-                    ui.label(display);
-                    for opt in &options {
-                        ui.selectable_value(&mut chosen, opt.clone(), opt.as_str());
-                    }
-                });
-            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(resp.response));
+            let hresp = ui.horizontal(|ui| {
+                ui.set_min_height(18.0);
+                ui.add_sized(
+                    [lbl_w, 16.0],
+                    egui::Label::new(
+                        egui::RichText::new(display).color(prop_lbl_color()).size(11.5)
+                    ).truncate(),
+                );
+                let avail = ui.available_width();
+                let resp = egui::ComboBox::from_id_salt(ui.auto_id_with(id_str))
+                    .selected_text(current.as_ref())
+                    .width(avail)
+                    .show_ui(ui, |ui| {
+                        for opt in &options {
+                            ui.selectable_value(&mut chosen, opt.clone(), opt.as_str());
+                        }
+                    });
+                resp.response
+            }).inner;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             chosen
         }).unwrap_or_else(|| current.as_ref().to_string())
     }).build()?;
@@ -2033,13 +2184,12 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 _          => ("file",     egui::Color32::from_rgb(160, 160, 175)),
             };
 
-            let label_color = egui::Color32::from_rgb(180, 180, 190);
-            let lbl_w = 100.0_f32;
-
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(20.0);
+                let lbl_w = prop_lbl_w(ui);
+                let display = prop_display(label.as_ref());
                 ui.add_sized([lbl_w, 16.0],
-                    egui::Label::new(egui::RichText::new(label.as_ref()).color(label_color).size(11.5)));
+                    egui::Label::new(egui::RichText::new(display).color(prop_lbl_color()).size(11.5)).truncate());
 
                 // dark background box for the asset path
                 let avail = ui.available_width() - 18.0;
@@ -2122,13 +2272,13 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("entity_picker", |label: Ref<str>, entity_id: i64| -> i64 {
         let lbl = label.as_ref().to_string();
         with_ui(|ui| {
-            let lbl_w = 100.0_f32;
-            let label_color = egui::Color32::from_rgb(180, 180, 190);
             let mut result = entity_id;
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(20.0);
+                let lbl_w   = prop_lbl_w(ui);
+                let display = prop_display(lbl.as_str());
                 ui.add_sized([lbl_w, 16.0],
-                    egui::Label::new(egui::RichText::new(lbl.as_str()).color(label_color).size(11.5)));
+                    egui::Label::new(egui::RichText::new(display).color(prop_lbl_color()).size(11.5)).truncate());
 
                 let entity_name = crate::rune_bindings::world_module::entity_name_for_id(entity_id);
 
@@ -2178,9 +2328,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let lbl_id = egui::Id::new((lbl.clone(), "scale_lock"));
             let locked: bool = ui.data_mut(|d| *d.get_temp_mut_or(lbl_id, false));
 
-            let lbl_w   = 100.0_f32;
             let col_w   = 18.0_f32;
-            let lbl_color = egui::Color32::from_rgb(180, 180, 190);
 
             let mut vx = x as f32;
             let mut vy = y as f32;
@@ -2195,8 +2343,10 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
             ui.horizontal(|ui| {
                 ui.set_min_height(20.0);
+                let lbl_w = prop_lbl_w(ui);
+                let display = prop_display(lbl.as_str());
                 ui.add_sized([lbl_w, 16.0],
-                    egui::Label::new(egui::RichText::new(lbl.as_str()).color(lbl_color).size(11.5)));
+                    egui::Label::new(egui::RichText::new(display).color(prop_lbl_color()).size(11.5)).truncate());
 
                 let field_w = ((ui.available_width() - col_w - 4.0) / 3.0).max(30.0);
 
