@@ -2375,7 +2375,15 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
     m.function("menu_clear", |menu: Ref<str>| {
         with_menu_registry(|reg| {
-            reg.menus.remove(menu.as_ref());
+            let segments = split_menu_path(menu.as_ref());
+            if segments.is_empty() {
+                return;
+            }
+            if segments.len() == 1 {
+                reg.menus.remove(segments[0]);
+            } else if let Some(entries) = get_container_mut(reg, menu.as_ref()) {
+                entries.clear();
+            }
         });
     }).build()?;
 
@@ -2468,7 +2476,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("menu_render", |menu: Ref<str>| -> String {
         let menu_key = menu.as_ref().to_string();
         let entries = with_menu_registry(|reg| {
-            reg.menus.get(&menu_key).cloned().unwrap_or_default()
+            get_container_mut(reg, &menu_key).cloned().unwrap_or_default()
         });
 
         with_ui(|ui| {
@@ -2480,7 +2488,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         let menu_key = menu.as_ref().to_string();
         let button   = button_label.as_ref().to_string();
         let entries = with_menu_registry(|reg| {
-            reg.menus.get(&menu_key).cloned().unwrap_or_default()
+            get_container_mut(reg, &menu_key).cloned().unwrap_or_default()
         });
 
         with_ui(|ui| {
