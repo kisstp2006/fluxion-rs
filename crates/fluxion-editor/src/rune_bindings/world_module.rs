@@ -2638,9 +2638,16 @@ pub fn build_world_module() -> anyhow::Result<Module> {
     // ── Material editor (in-memory JSON cache) ────────────────────────────────
 
     m.function("mat_load", |path: String| -> bool {
+        // If already cached, do NOT reload from disk — that would discard unsaved edits.
+        let already = MATERIAL_CACHE.with(|c| c.borrow().contains_key(&path));
+        if already { return true; }
         let json = PROJECT_ROOT.with(|root| {
             let full = root.borrow().join(&path);
             std::fs::read_to_string(&full)
+                .or_else(|_| {
+                    let with_assets = root.borrow().join("assets").join(&path);
+                    std::fs::read_to_string(&with_assets)
+                })
                 .or_else(|_| std::fs::read_to_string(&path))
                 .ok()
         });
@@ -2651,6 +2658,11 @@ pub fn build_world_module() -> anyhow::Result<Module> {
             }
         }
         false
+    }).build()?;
+
+    // mat_unload(path) — evict a material from the cache (forces reload on next mat_load).
+    m.function("mat_unload", |path: String| {
+        MATERIAL_CACHE.with(|c| c.borrow_mut().remove(&path));
     }).build()?;
 
     m.function("mat_f32", |path: String, field: String| -> f64 {
