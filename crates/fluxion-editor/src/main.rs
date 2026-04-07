@@ -439,6 +439,7 @@ impl EditorApp {
         let prefs = load_editor_prefs();
         // Apply prefs immediately
         crate::rune_bindings::world_module::set_editor_cam_speed(prefs.camera_speed as f64);
+        crate::rune_bindings::world_module::set_asset_view_mode(&prefs.asset_view_mode);
         crate::rune_bindings::set_settings_context(
             inner.project.clone(),
             prefs.clone(),
@@ -1079,6 +1080,7 @@ impl EditorInner {
             if let Some(prefs) = prefs_save {
                 // Apply live camera speed
                 crate::rune_bindings::world_module::set_editor_cam_speed(prefs.camera_speed as f64);
+                crate::rune_bindings::world_module::set_asset_view_mode(&prefs.asset_view_mode);
                 match save_editor_prefs(&prefs) {
                     Ok(()) => log::info!("Editor preferences saved."),
                     Err(e) => log::error!("Failed to save editor prefs: {e}"),

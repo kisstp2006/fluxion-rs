@@ -132,6 +132,8 @@ thread_local! {
     static SCENE_NAME: RefCell<String> = RefCell::new(String::new());
     /// Signals queued by Rune scripts for main.rs to consume.
     static ACTION_SIGNALS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    /// Asset browser view mode: "tile" | "list".
+    static ASSET_VIEW_MODE: RefCell<String> = RefCell::new(String::from("tile"));
 
     // ── Editor camera state (persisted between frames, mutated by editor_camera.rn) ──
     static EDITOR_CAM_POS:    RefCell<[f64; 3]> = RefCell::new([0.0, 2.0, 8.0]);
@@ -346,6 +348,12 @@ pub fn set_snap_scale_value(v: f64)     { SNAP_SCALE    .with(|c| c.set(v)); }
 
 /// Live-set editor camera speed from settings_module.
 pub fn set_editor_cam_speed(v: f64) { EDITOR_CAM_SPEED.with(|c| c.set(v)); }
+
+/// Initialize asset view mode from EditorPrefs (called on project open and prefs save).
+pub fn set_asset_view_mode(mode: &str) {
+    let v = if mode == "list" { "list" } else { "tile" };
+    ASSET_VIEW_MODE.with(|m| *m.borrow_mut() = v.to_string());
+}
 
 /// Read the current CSG box gizmo mode (0=none, 1=FaceHandles, 2=AxisArrows).
 pub fn get_box_gizmo_mode_raw() -> u8 { BOX_GIZMO_MODE.with(|c| c.get()) }
@@ -1161,6 +1169,15 @@ pub fn build_world_module() -> anyhow::Result<Module> {
     }).build()?;
     m.function("asset_set_zoom", |z: f64| {
         ASSET_ZOOM.with(|zoom| zoom.set(z.clamp(0.5, 2.0)));
+    }).build()?;
+
+    // asset_get_view_mode / asset_set_view_mode — "tile" | "list".
+    m.function("asset_get_view_mode", || -> String {
+        ASSET_VIEW_MODE.with(|v| v.borrow().clone())
+    }).build()?;
+    m.function("asset_set_view_mode", |mode: String| {
+        let clamped = if mode == "list" { "list" } else { "tile" };
+        ASSET_VIEW_MODE.with(|v| *v.borrow_mut() = clamped.to_string());
     }).build()?;
 
     // asset_guid(path) — stable GUID from .fluxmeta sidecar.

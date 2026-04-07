@@ -254,22 +254,31 @@ pub fn panel() {
         fluxion::world::asset_set_active_dir(new_dir.clone());
     }
 
-    // Rescan button on the right
+    // View mode toggle + rescan on the right
+    let view_mode = fluxion::world::asset_get_view_mode();
+    if fluxion::ui::icon_button("list", 14.0, if view_mode == "list" { 1.0 } else { 0.5 }, if view_mode == "list" { 0.8 } else { 0.5 }, if view_mode == "list" { 0.3 } else { 0.5 }) {
+        fluxion::world::asset_set_view_mode("list");
+    }
+    if fluxion::ui::icon_button("grid", 14.0, if view_mode == "tile" { 1.0 } else { 0.5 }, if view_mode == "tile" { 0.8 } else { 0.5 }, if view_mode == "tile" { 0.3 } else { 0.5 }) {
+        fluxion::world::asset_set_view_mode("tile");
+    }
     if fluxion::ui::icon_button("refresh-cw", 13.0, 0.6, 0.6, 0.7) {
         fluxion::world::asset_rescan();
     }
     fluxion::ui::horizontal_end();
 
-    // New asset popup menu + zoom slider on same row
+    // New asset popup menu + zoom slider on same row (zoom only shown in tile mode)
     fluxion::ui::horizontal_begin();
     let dir_prefix = if active_dir == "" { "" } else { active_dir.clone() };
     let new_choice = fluxion::ui::new_asset_menu_button(dir_prefix.clone());
     if new_choice != "" {
         handle_new_asset(new_choice.clone(), active_dir.clone());
     }
-    let new_zoom = fluxion::ui::slider("##asset_zoom", zoom, 0.5, 2.0, 0.0);
-    if new_zoom != zoom {
-        fluxion::world::asset_set_zoom(new_zoom);
+    if view_mode == "tile" {
+        let new_zoom = fluxion::ui::slider("##asset_zoom", zoom, 0.5, 2.0, 0.0);
+        if new_zoom != zoom {
+            fluxion::world::asset_set_zoom(new_zoom);
+        }
     }
     fluxion::ui::horizontal_end();
 
@@ -296,7 +305,11 @@ pub fn panel() {
         fi += 1;
     }
 
-    let ret = fluxion::ui::asset_grid_v2(combined, selected.clone(), fluxion::world::asset_get_zoom());
+    let ret = if view_mode == "list" {
+        fluxion::ui::asset_list_view(combined, selected.clone())
+    } else {
+        fluxion::ui::asset_grid_v2(combined, selected.clone(), fluxion::world::asset_get_zoom())
+    };
     if ret[0] != "" {
         handle_grid_action(ret[0].clone(), ret[1].clone());
     }

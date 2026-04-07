@@ -278,6 +278,7 @@ pub fn prefs_category_modified_count(cat: &str) -> usize {
             n
         }
         "Console" => { if cur.log_max_entries != def.log_max_entries { 1 } else { 0 } }
+        "Asset Browser" => { if cur.asset_view_mode != def.asset_view_mode { 1 } else { 0 } }
         _ => 0,
     }
 }

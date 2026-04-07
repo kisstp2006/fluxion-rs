@@ -35,6 +35,9 @@ pub struct EditorPrefs {
     /// Default false — keeps the editor camera invisible to normal scene tools.
     #[serde(default)]
     pub show_editor_camera: bool,
+    /// Asset browser view mode: "tile" | "list". Default "tile".
+    #[serde(default = "default_asset_view_mode")]
+    pub asset_view_mode: String,
 }
 
 fn default_theme()            -> String { "dark".to_string() }
@@ -44,6 +47,7 @@ fn default_true()             -> bool   { true }
 fn default_log_max()          -> u32    { 10_000 }
 fn default_camera_speed()     -> f32    { 5.0 }
 fn default_camera_sensitivity() -> f32  { 1.0 }
+fn default_asset_view_mode()  -> String { "tile".to_string() }
 
 impl Default for EditorPrefs {
     fn default() -> Self {
@@ -56,6 +60,7 @@ impl Default for EditorPrefs {
             camera_speed:           default_camera_speed(),
             camera_sensitivity:     default_camera_sensitivity(),
             show_editor_camera:     false,
+            asset_view_mode:        default_asset_view_mode(),
         }
     }
 }
