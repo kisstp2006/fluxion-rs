@@ -28,7 +28,7 @@ struct CameraUniforms {
     view_proj:       mat4x4<f32>,
     inv_view_proj:   mat4x4<f32>,  // for reconstructing world pos from depth
     camera_position: vec3<f32>,
-    _pad:            f32,
+    debug_view:      u32,          // 0=Lit 1=Albedo 2=Normal 3=Roughness 4=Metalness 5=AO 6=Emissive 7=Unlit
 }
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -308,6 +308,35 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
     let k_d_amb     = (vec3<f32>(1.0) - f_amb) * (1.0 - metalness);
     let amb_base    = light_buf.ambient_color * light_buf.ambient_intensity * ao;
     let ambient     = amb_base * (k_d_amb * albedo + f_amb * (1.0 - roughness) * albedo);
+
+    // ── Debug view override ───────────────────────────────────────────────────
+    // Non-zero debug_view bypasses normal lighting and outputs a single GBuffer channel.
+    if camera.debug_view != 0u {
+        var dbg = vec3<f32>(0.0);
+        if camera.debug_view == 1u {
+            // Albedo
+            dbg = pow(albedo, vec3<f32>(1.0 / 2.2)); // sRGB for display
+        } else if camera.debug_view == 2u {
+            // World-space normal → [0,1]
+            dbg = n * 0.5 + 0.5;
+        } else if camera.debug_view == 3u {
+            // Roughness (greyscale)
+            dbg = vec3<f32>(roughness);
+        } else if camera.debug_view == 4u {
+            // Metalness (greyscale)
+            dbg = vec3<f32>(metalness);
+        } else if camera.debug_view == 5u {
+            // Ambient Occlusion (greyscale)
+            dbg = vec3<f32>(ao);
+        } else if camera.debug_view == 6u {
+            // Emissive
+            dbg = emission;
+        } else if camera.debug_view == 7u {
+            // Unlit — albedo without any lighting
+            dbg = albedo;
+        }
+        return vec4<f32>(dbg, 1.0);
+    }
 
     // ── Final composition ─────────────────────────────────────────────────────
     var color = ambient + total_radiance + emission;

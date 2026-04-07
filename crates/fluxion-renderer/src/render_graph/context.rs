@@ -187,6 +187,8 @@ pub struct FrameData {
     pub has_shadow_caster: bool,
     /// Skinned mesh draw calls (entities with Animator + SkinnedMeshRenderer).
     pub skinned_draw_calls: Vec<SkinnedDrawCall>,
+    /// Debug view mode: 0=Lit, 1=Albedo, 2=Normal, 3=Roughness, 4=Metalness, 5=AO, 6=Emissive, 7=Unlit.
+    pub debug_view: u32,
 }
 
 // ── Shared GPU render targets ─────────────────────────────────────────────────

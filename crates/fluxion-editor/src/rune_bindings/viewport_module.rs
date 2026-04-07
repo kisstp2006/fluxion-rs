@@ -106,10 +106,12 @@ pub struct GizmoEntry {
 // ── Thread-locals ─────────────────────────────────────────────────────────────
 
 thread_local! {
-    static VP_TEXTURES:   RefCell<[Option<egui::TextureId>; 4]> = RefCell::new([None; 4]);
-    static VP_LAYOUT:     Cell<ViewportLayout>                   = Cell::new(ViewportLayout::One);
-    static VP_FULLSCREEN: Cell<bool>                             = Cell::new(false);
+    static VP_TEXTURES:    RefCell<[Option<egui::TextureId>; 4]> = RefCell::new([None; 4]);
+    static VP_LAYOUT:      Cell<ViewportLayout>                  = Cell::new(ViewportLayout::One);
+    static VP_FULLSCREEN:  Cell<bool>                            = Cell::new(false);
     static GIZMO_REGISTRY: RefCell<Vec<GizmoEntry>>              = RefCell::new(Vec::new());
+    /// 0=Lit 1=Albedo 2=Normal 3=Roughness 4=Metalness 5=AO 6=Emissive 7=Unlit
+    static VP_DEBUG_VIEW:  Cell<u32>                             = Cell::new(0);
 }
 
 // ── Host-facing setters ───────────────────────────────────────────────────────
@@ -134,6 +136,11 @@ pub fn get_layout() -> ViewportLayout {
 /// Returns true if viewport fullscreen mode is active.
 pub fn get_fullscreen() -> bool {
     VP_FULLSCREEN.with(|c| c.get())
+}
+
+/// Returns the current debug view mode (0 = Lit / normal rendering).
+pub fn get_debug_view() -> u32 {
+    VP_DEBUG_VIEW.with(|c| c.get())
 }
 
 // ── Module builder ────────────────────────────────────────────────────────────
@@ -189,6 +196,15 @@ pub fn build_viewport_module() -> anyhow::Result<Module> {
         let panes = VP_LAYOUT.with(|c| c.get().active_panes());
         let k = slot.max(0) as usize;
         panes.get(k).copied().unwrap_or(0) as i64
+    }).build()?;
+
+    // Debug view mode
+    m.function("get_debug_view", || -> i64 {
+        VP_DEBUG_VIEW.with(|c| c.get() as i64)
+    }).build()?;
+
+    m.function("set_debug_view", |v: i64| {
+        VP_DEBUG_VIEW.with(|c| c.set(v.max(0).min(7) as u32));
     }).build()?;
 
     // Gizmo registry

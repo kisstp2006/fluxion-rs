@@ -679,19 +679,49 @@ impl FluxionRenderer {
             }
         }
 
+        // Also collect entities that reference this path but have no handle yet
+        // (freshly assigned material — handle was cleared to None by set_material_path).
+        let mut entities_needing_new_handle: Vec<(EntityId, bool, usize)> = Vec::new(); // (id, is_slot, slot_idx)
+        for id in &entities {
+            if let Some(mr) = world.get_component::<MeshRenderer>(*id) {
+                if mr.material_path.as_deref() == Some(path) && mr.material_handle.is_none() {
+                    entities_needing_new_handle.push((*id, false, 0));
+                }
+                for (i, slot) in mr.material_slots.iter().enumerate() {
+                    if slot.material_path.as_deref() == Some(path) && slot.material_handle.is_none() {
+                        entities_needing_new_handle.push((*id, true, i));
+                    }
+                }
+            }
+        }
+
         handles_to_replace.sort_unstable();
         handles_to_replace.dedup();
 
-        if handles_to_replace.is_empty() {
-            // No live handle — this file will be picked up fresh on next scene load.
+        if handles_to_replace.is_empty() && entities_needing_new_handle.is_empty() {
+            // No live handle and no unhydrated entities — nothing to do.
             return Ok(());
         }
 
-        // Replace the first handle in-place; re-create the GPU material for each extra.
-        let first = handles_to_replace[0];
-        self.materials.replace(first, new_mat);
+        // Replace existing handles in-place.
+        if !handles_to_replace.is_empty() {
+            let first = handles_to_replace[0];
+            self.materials.replace(first, new_mat);
+            for &h in &handles_to_replace[1..] {
+                let extra = crate::material::PbrMaterial::from_asset(
+                    &self.device,
+                    &self.queue,
+                    &asset,
+                    &self.mat_bgl,
+                    &mut self.textures,
+                    src,
+                )?;
+                self.materials.replace(h, extra);
+            }
+        }
 
-        for &h in &handles_to_replace[1..] {
+        // Assign new GPU handles to entities that have this material path but no handle yet.
+        for (id, is_slot, slot_idx) in entities_needing_new_handle {
             let extra = crate::material::PbrMaterial::from_asset(
                 &self.device,
                 &self.queue,
@@ -700,10 +730,104 @@ impl FluxionRenderer {
                 &mut self.textures,
                 src,
             )?;
-            self.materials.replace(h, extra);
+            let h = self.materials.add(extra);
+            if let Some(mut mr) = world.get_component_mut::<MeshRenderer>(id) {
+                if is_slot {
+                    if let Some(slot) = mr.material_slots.get_mut(slot_idx) {
+                        slot.material_handle = Some(h);
+                    }
+                } else {
+                    mr.material_handle = Some(h);
+                }
+            }
         }
 
         log::info!("Hot-reloaded material: {path}");
+        Ok(())
+    }
+
+    /// Same as [`reload_material`] but loads the GPU asset from `abs_path` while
+    /// matching entities that store the logical `rel_path`.  Use this from the editor
+    /// where material paths are project-relative (e.g. "Materials/foo.fluxmat") but
+    /// the file lives at an absolute location.
+    pub fn reload_material_abs(
+        &mut self,
+        world: &mut ECSWorld,
+        rel_path: &str,
+        abs_path: &str,
+    ) -> anyhow::Result<()> {
+        let asset = crate::material::MaterialAsset::load_from_file(abs_path)?;
+        let src = self.asset_source.as_deref();
+        let new_mat = crate::material::PbrMaterial::from_asset(
+            &self.device,
+            &self.queue,
+            &asset,
+            &self.mat_bgl,
+            &mut self.textures,
+            src,
+        )?;
+
+        let entities: Vec<EntityId> = world.all_entities().collect();
+        let mut handles_to_replace: Vec<u32> = Vec::new();
+        let mut entities_needing_new_handle: Vec<(EntityId, bool, usize)> = Vec::new();
+
+        for id in &entities {
+            if let Some(mr) = world.get_component::<MeshRenderer>(*id) {
+                let matches = |p: Option<&str>| -> bool {
+                    p == Some(rel_path) || p == Some(abs_path)
+                };
+                if matches(mr.material_path.as_deref()) {
+                    match mr.material_handle {
+                        Some(h) => handles_to_replace.push(h),
+                        None    => entities_needing_new_handle.push((*id, false, 0)),
+                    }
+                }
+                for (i, slot) in mr.material_slots.iter().enumerate() {
+                    if matches(slot.material_path.as_deref()) {
+                        match slot.material_handle {
+                            Some(h) => handles_to_replace.push(h),
+                            None    => entities_needing_new_handle.push((*id, true, i)),
+                        }
+                    }
+                }
+            }
+        }
+
+        handles_to_replace.sort_unstable();
+        handles_to_replace.dedup();
+
+        if handles_to_replace.is_empty() && entities_needing_new_handle.is_empty() {
+            return Ok(());
+        }
+
+        if !handles_to_replace.is_empty() {
+            let first = handles_to_replace[0];
+            self.materials.replace(first, new_mat);
+            for &h in &handles_to_replace[1..] {
+                let extra = crate::material::PbrMaterial::from_asset(
+                    &self.device, &self.queue, &asset, &self.mat_bgl, &mut self.textures, src,
+                )?;
+                self.materials.replace(h, extra);
+            }
+        }
+
+        for (id, is_slot, slot_idx) in entities_needing_new_handle {
+            let extra = crate::material::PbrMaterial::from_asset(
+                &self.device, &self.queue, &asset, &self.mat_bgl, &mut self.textures, src,
+            )?;
+            let h = self.materials.add(extra);
+            if let Some(mut mr) = world.get_component_mut::<MeshRenderer>(id) {
+                if is_slot {
+                    if let Some(slot) = mr.material_slots.get_mut(slot_idx) {
+                        slot.material_handle = Some(h);
+                    }
+                } else {
+                    mr.material_handle = Some(h);
+                }
+            }
+        }
+
+        log::info!("Hot-reloaded material (abs): {rel_path}");
         Ok(())
     }
 
@@ -1280,6 +1404,7 @@ impl FluxionRenderer {
         time:  &Time,
         pane:  usize,
         cam_override: Option<CameraOverride>,
+        debug_view: u32,
     ) -> anyhow::Result<()> {
         if self.width == 0 || self.height == 0 { return Ok(()); }
         let w      = self.width;
@@ -1303,6 +1428,7 @@ impl FluxionRenderer {
         }
 
         let mut frame = self.extract_frame_data(world, time);
+        frame.debug_view = debug_view;
         if pane == 0 { self.last_draw_call_count = frame.draw_calls.len() as u32; }
 
         // Apply camera override (ortho panes).
@@ -1703,6 +1829,7 @@ impl FluxionRenderer {
             shadow_view_proj,
             has_shadow_caster,
             skinned_draw_calls: Vec::new(),
+            debug_view: 0,
         }
     }
 

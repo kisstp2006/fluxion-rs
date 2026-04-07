@@ -25,7 +25,7 @@ struct CameraUniforms {
     view_proj:     [[f32; 4]; 4],
     inv_view_proj: [[f32; 4]; 4],
     camera_pos:    [f32; 3],
-    _pad:          f32,
+    debug_view:    u32,
 }
 
 pub struct LightingPass {
@@ -267,7 +267,7 @@ impl RenderPass for LightingPass {
             view_proj:     cam.view_proj.to_cols_array_2d(),
             inv_view_proj: cam.inv_view_proj.to_cols_array_2d(),
             camera_pos:    cam.position.to_array(),
-            _pad:          0.0,
+            debug_view:    ctx.frame.debug_view,
         };
         ctx.queue.write_buffer(camera_buf, 0, bytemuck::bytes_of(&data));
 

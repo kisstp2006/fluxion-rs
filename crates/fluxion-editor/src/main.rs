@@ -541,7 +541,12 @@ impl EditorInner {
             } else {
                 None
             };
-            if let Err(e) = self.renderer.render_to_pane(&self.host.world, &self.host.time, pane, cam_override) {
+            let dbg = if pane == 0 {
+                crate::rune_bindings::viewport_module::get_debug_view()
+            } else {
+                0
+            };
+            if let Err(e) = self.renderer.render_to_pane(&self.host.world, &self.host.time, pane, cam_override, dbg) {
                 log::error!("render_to_pane({pane}): {e}");
             }
         }
@@ -1047,8 +1052,30 @@ impl EditorInner {
         {
             let reloads: Vec<String> = std::mem::take(&mut self.host.pending_material_reloads);
             for path in reloads {
+                // Resolve the project-relative path to an absolute path for disk reads.
+                // Try project_root/assets/<path> first, then project_root/<path>.
+                let abs = {
+                    let with_assets = self.project_root.join("assets").join(&path);
+                    if with_assets.exists() {
+                        with_assets.to_string_lossy().to_string()
+                    } else {
+                        let direct = self.project_root.join(&path);
+                        if direct.exists() {
+                            direct.to_string_lossy().to_string()
+                        } else {
+                            path.clone()
+                        }
+                    }
+                };
                 if let Err(e) = self.renderer.reload_material(&mut self.host.world, &path) {
-                    log::warn!("material hot-reload '{path}': {e}");
+                    // Retry with the absolute path if the relative path failed.
+                    if abs != path {
+                        if let Err(e2) = self.renderer.reload_material_abs(&mut self.host.world, &path, &abs) {
+                            log::warn!("material hot-reload '{path}': {e2}");
+                        }
+                    } else {
+                        log::warn!("material hot-reload '{path}': {e}");
+                    }
                 }
             }
             if std::mem::take(&mut self.host.needs_asset_rescan) {

@@ -71,6 +71,29 @@ fn draw_gizmo_menu() {
     }
 }
 
+// ── Debug view picker ─────────────────────────────────────────────────────────
+
+const DEBUG_VIEW_LABELS = ["Lit", "Albedo", "Normal", "Roughness", "Metalness", "AO", "Emissive", "Unlit"];
+
+fn draw_debug_view_picker() {
+    let cur = fluxion::viewport::get_debug_view();
+    let cur_lbl = DEBUG_VIEW_LABELS[cur];
+    fluxion::ui::menu_clear("Viewport.DebugView");
+    let i = 0;
+    while i < DEBUG_VIEW_LABELS.len() {
+        fluxion::ui::menu_register_item_priority("Viewport.DebugView", DEBUG_VIEW_LABELS[i], (i + 1) * 10);
+        i += 1;
+    }
+    let action = fluxion::ui::menu_render_as("Viewport.DebugView", cur_lbl);
+    let j = 0;
+    while j < DEBUG_VIEW_LABELS.len() {
+        if action == `Viewport.DebugView/${DEBUG_VIEW_LABELS[j]}` {
+            fluxion::viewport::set_debug_view(j);
+        }
+        j += 1;
+    }
+}
+
 // ── Header bar (layout + gizmo + fullscreen) — compact, no stats label ───────
 
 fn draw_header() {
@@ -78,6 +101,7 @@ fn draw_header() {
 
     draw_layout_picker();
     draw_gizmo_menu();
+    draw_debug_view_picker();
 
     let is_fullscreen = fluxion::viewport::get_fullscreen();
     let fs_icon = if is_fullscreen { "minimize-2" } else { "maximize-2" };
