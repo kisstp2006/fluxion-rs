@@ -1,59 +1,72 @@
 // ============================================================
 // menubar.rn — Top menu bar (File / Edit / View / Help)
 //
-// Replaces the hardcoded Rust menu bar in main.rs.
-// Called once per frame by main.rs via vm.call_fn(["menubar","panel"], ()).
-// The Rust host sets the egui ui pointer to the menu bar ui before calling.
+// Rendered by main.rs inside egui::MenuBar.
+// This script defines menu entries via the Rust MenuRegistry API,
+// then renders each root with menu_render(...).
 // ============================================================
 
 pub mod menubar {
 
-pub fn panel() {
-    // menu_begin returns true when the popup is open (items should be queued).
-    // menu_item only queues a label — it no longer returns a bool.
-    // menu_end renders the popup and returns the clicked label ("" if none).
-    // Actions are executed immediately based on menu_end's return value.
+fn define_file_menu() {
+    fluxion::ui::menu_register_item_priority("File", "New Scene          Ctrl+N", 10);
+    fluxion::ui::menu_register_submenu("File", "Open Recent");
+    fluxion::ui::menu_register_item_priority("File", "Open Scene...", 30);
+    fluxion::ui::menu_register_separator_priority("File", 40);
+    fluxion::ui::menu_register_item_priority("File", "Save Scene         Ctrl+S", 50);
+    fluxion::ui::menu_register_separator_priority("File", 60);
+    fluxion::ui::menu_register_item_priority("File", "Exit", 1000);
+}
 
-    let file_open = fluxion::ui::menu_begin("File");
-    if file_open {
-        fluxion::ui::menu_item("New Scene          Ctrl+N");
-        fluxion::ui::menu_item("Open Scene...");
-        fluxion::ui::menu_separator();
-        fluxion::ui::menu_item("Save Scene         Ctrl+S");
-        fluxion::ui::menu_separator();
-        fluxion::ui::menu_item("Exit");
-    }
-    let file_clicked = fluxion::ui::menu_end();
-    if file_clicked == "New Scene          Ctrl+N" { fluxion::world::do_new_scene(); }
-    if file_clicked == "Open Scene..."             { fluxion::world::do_open_scene(); }
-    if file_clicked == "Save Scene         Ctrl+S" { fluxion::world::do_save_scene(); }
-    if file_clicked == "Exit"                      { fluxion::world::exit_app(); }
+fn define_edit_menu() {
+    fluxion::ui::menu_register_item_priority("Edit", "Undo               Ctrl+Z", 10);
+    fluxion::ui::menu_register_item_priority("Edit", "Redo               Ctrl+Y", 20);
+    fluxion::ui::menu_register_separator_priority("Edit", 30);
+    fluxion::ui::menu_register_item_priority("Edit", "Project Settings", 40);
+    fluxion::ui::menu_register_item_priority("Edit", "Preferences        Ctrl+,", 50);
+}
+
+fn define_view_menu() {
+    fluxion::ui::menu_register_item_priority("View", "Reset Layout", 10);
+
+    // Transform submenu under View.
+    fluxion::ui::menu_register_submenu("View", "Transform Tools");
+    fluxion::ui::menu_register_item_priority("View.Transform Tools", "Translate", 10);
+    fluxion::ui::menu_register_item_priority("View.Transform Tools", "Rotate", 20);
+    fluxion::ui::menu_register_item_priority("View.Transform Tools", "Scale", 30);
+}
+
+fn define_help_menu() {
+    fluxion::ui::menu_register_item_priority("Help", "About FluxionRS", 10);
+}
+
+pub fn panel() {
+    define_file_menu();
+    define_edit_menu();
+    define_view_menu();
+    define_help_menu();
 
     let can_undo = fluxion::world::can_undo();
     let can_redo = fluxion::world::can_redo();
-    let edit_open = fluxion::ui::menu_begin("Edit");
-    if edit_open {
-        fluxion::ui::menu_item(`Undo    Ctrl+Z  [${can_undo}]`);
-        fluxion::ui::menu_item(`Redo    Ctrl+Y  [${can_redo}]`);
-        fluxion::ui::menu_separator();
-        fluxion::ui::menu_item("Project Settings");
-        fluxion::ui::menu_item("Preferences        Ctrl+,");
-    }
-    let edit_clicked = fluxion::ui::menu_end();
-    if edit_clicked == "Project Settings"          { fluxion::settings::set_show_project_settings(true); }
-    if edit_clicked == "Preferences        Ctrl+," { fluxion::settings::set_show_editor_prefs(true); }
 
-    let view_open = fluxion::ui::menu_begin("View");
-    if view_open {
-        fluxion::ui::menu_item("Reset Layout");
-    }
-    fluxion::ui::menu_end();
+    let file_clicked = fluxion::ui::menu_render("File");
+    if file_clicked == "File/New Scene          Ctrl+N" { fluxion::world::do_new_scene(); }
+    if file_clicked == "File/Open Scene..."             { fluxion::world::do_open_scene(); }
+    if file_clicked == "File/Save Scene         Ctrl+S" { fluxion::world::do_save_scene(); }
+    if file_clicked == "File/Exit"                      { fluxion::world::exit_app(); }
 
-    let help_open = fluxion::ui::menu_begin("Help");
-    if help_open {
-        fluxion::ui::menu_item("About FluxionRS");
-    }
-    fluxion::ui::menu_end();
+    let edit_clicked = fluxion::ui::menu_render("Edit");
+    if edit_clicked == "Edit/Undo               Ctrl+Z" && can_undo { fluxion::world::trigger_undo(); }
+    if edit_clicked == "Edit/Redo               Ctrl+Y" && can_redo { fluxion::world::trigger_redo(); }
+    if edit_clicked == "Edit/Project Settings"          { fluxion::settings::set_show_project_settings(true); }
+    if edit_clicked == "Edit/Preferences        Ctrl+," { fluxion::settings::set_show_editor_prefs(true); }
+
+    let view_clicked = fluxion::ui::menu_render("View");
+    if view_clicked == "View/Transform Tools/Translate" { fluxion::world::set_transform_tool("Translate"); }
+    if view_clicked == "View/Transform Tools/Rotate"    { fluxion::world::set_transform_tool("Rotate"); }
+    if view_clicked == "View/Transform Tools/Scale"     { fluxion::world::set_transform_tool("Scale"); }
+
+    let _help_clicked = fluxion::ui::menu_render("Help");
 }
 
 } // pub mod menubar

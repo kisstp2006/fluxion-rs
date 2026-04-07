@@ -7,15 +7,48 @@
 // ============================================================
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use rune::{Module, runtime::Ref};
 
-/// Entry in an open menu popup — either a clickable item or a separator.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum MenuEntry {
-    Item(String),
-    Separator,
+    Item {
+        label:    String,
+        priority: i32,
+        order:    u64,
+    },
+    Separator {
+        priority: i32,
+        order:    u64,
+    },
+    SubMenu {
+        label:    String,
+        priority: i32,
+        order:    u64,
+        children: Vec<MenuEntry>,
+    },
+}
+
+#[derive(Default, Debug)]
+struct MenuRegistry {
+    menus: HashMap<String, Vec<MenuEntry>>,
+}
+
+static MENU_REGISTRY: OnceLock<Mutex<MenuRegistry>> = OnceLock::new();
+static MENU_ORDER_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn with_menu_registry<R>(f: impl FnOnce(&mut MenuRegistry) -> R) -> R {
+    let reg = MENU_REGISTRY.get_or_init(|| Mutex::new(MenuRegistry::default()));
+    let mut guard = reg.lock().unwrap_or_else(|e| e.into_inner());
+    f(&mut guard)
+}
+
+fn next_menu_order() -> u64 {
+    MENU_ORDER_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Unified drag-and-drop payload shared across all editor panels.
@@ -77,16 +110,6 @@ thread_local! {
     /// Raw mouse delta accumulated from DeviceEvent::MouseMotion each frame.
     /// This works even when the cursor is locked (unlike egui pointer delta).
     static RAW_MOUSE_DELTA: Cell<(f64, f64)> = Cell::new((0.0, 0.0));
-    /// Map from menu-label → clicked item label (set this frame, read next frame).
-    static MENU_CLICKED: RefCell<std::collections::HashMap<String, String>> = RefCell::new(std::collections::HashMap::new());
-    /// Accumulated items for the current menu (filled by menu_item/menu_separator).
-    static MENU_ITEMS: RefCell<Vec<MenuEntry>> = RefCell::new(Vec::new());
-    /// Label of the currently building menu (set by menu_begin).
-    static MENU_LABEL: RefCell<String> = RefCell::new(String::new());
-    /// Items from the PREVIOUS frame per menu label — fallback when same-frame items are empty.
-    static MENU_ITEMS_PREV: RefCell<std::collections::HashMap<String, Vec<MenuEntry>>> = RefCell::new(std::collections::HashMap::new());
-    /// Button response from the most recent menu_begin call, forwarded to menu_end for popup positioning.
-    static MENU_BUTTON_RESP: RefCell<Option<egui::Response>> = RefCell::new(None);
     /// True when the viewport image has click-focus (set on primary click, held during drag).
     static VP_FOCUSED: Cell<bool> = Cell::new(false);
     /// Per-pane rects — updated by image_interactive (pane 0) and image (other panes).
@@ -193,6 +216,220 @@ fn with_ui<R>(f: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
     CURRENT_UI.with(|c| {
         c.get().map(|mut ptr| unsafe { f(ptr.as_mut()) })
     })
+}
+
+fn split_menu_path(path: &str) -> Vec<&str> {
+    path
+        .split('.')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn menu_entry_sort_key(entry: &MenuEntry) -> (i32, u64) {
+    match entry {
+        MenuEntry::Item { priority, order, .. }
+        | MenuEntry::Separator { priority, order }
+        | MenuEntry::SubMenu { priority, order, .. } => (*priority, *order),
+    }
+}
+
+fn ensure_submenu_children_mut<'a>(
+    entries: &'a mut Vec<MenuEntry>,
+    segments: &[&str],
+) -> &'a mut Vec<MenuEntry> {
+    if segments.is_empty() {
+        return entries;
+    }
+
+    let segment = segments[0];
+    let mut found_index = None;
+    for (idx, entry) in entries.iter().enumerate() {
+        if let MenuEntry::SubMenu { label, .. } = entry {
+            if label == segment {
+                found_index = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let idx = if let Some(i) = found_index {
+        i
+    } else {
+        entries.push(MenuEntry::SubMenu {
+            label: segment.to_string(),
+            priority: 100,
+            order: next_menu_order(),
+            children: Vec::new(),
+        });
+        entries.len() - 1
+    };
+
+    match &mut entries[idx] {
+        MenuEntry::SubMenu { children, .. } => {
+            ensure_submenu_children_mut(children, &segments[1..])
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn find_submenu_children_mut<'a>(
+    entries: &'a mut Vec<MenuEntry>,
+    segments: &[&str],
+) -> Option<&'a mut Vec<MenuEntry>> {
+    if segments.is_empty() {
+        return Some(entries);
+    }
+
+    let segment = segments[0];
+    for entry in entries.iter_mut() {
+        if let MenuEntry::SubMenu { label, children, .. } = entry {
+            if label == segment {
+                return find_submenu_children_mut(children, &segments[1..]);
+            }
+        }
+    }
+    None
+}
+
+fn get_or_create_container_mut<'a>(
+    registry: &'a mut MenuRegistry,
+    path: &str,
+) -> Option<&'a mut Vec<MenuEntry>> {
+    let segments = split_menu_path(path);
+    if segments.is_empty() {
+        return None;
+    }
+
+    let root = segments[0].to_string();
+    let root_entries = registry.menus.entry(root).or_default();
+    if segments.len() == 1 {
+        Some(root_entries)
+    } else {
+        Some(ensure_submenu_children_mut(root_entries, &segments[1..]))
+    }
+}
+
+fn get_container_mut<'a>(registry: &'a mut MenuRegistry, path: &str) -> Option<&'a mut Vec<MenuEntry>> {
+    let segments = split_menu_path(path);
+    if segments.is_empty() {
+        return None;
+    }
+
+    let root_entries = registry.menus.get_mut(segments[0])?;
+    if segments.len() == 1 {
+        Some(root_entries)
+    } else {
+        find_submenu_children_mut(root_entries, &segments[1..])
+    }
+}
+
+fn upsert_item(entries: &mut Vec<MenuEntry>, label: &str, priority: i32) {
+    if entries.iter().any(|e| {
+        matches!(
+            e,
+            MenuEntry::Item {
+                label: existing,
+                priority: p,
+                ..
+            } if existing == label && *p == priority
+        )
+    }) {
+        return;
+    }
+
+    entries.push(MenuEntry::Item {
+        label: label.to_string(),
+        priority,
+        order: next_menu_order(),
+    });
+}
+
+fn upsert_separator(entries: &mut Vec<MenuEntry>, priority: i32) {
+    if entries.iter().any(|e| {
+        matches!(
+            e,
+            MenuEntry::Separator {
+                priority: p,
+                ..
+            } if *p == priority
+        )
+    }) {
+        return;
+    }
+
+    entries.push(MenuEntry::Separator {
+        priority,
+        order: next_menu_order(),
+    });
+}
+
+fn upsert_submenu(entries: &mut Vec<MenuEntry>, label: &str, priority: i32) {
+    if entries.iter().any(|e| {
+        matches!(
+            e,
+            MenuEntry::SubMenu {
+                label: existing,
+                ..
+            } if existing == label
+        )
+    }) {
+        return;
+    }
+
+    entries.push(MenuEntry::SubMenu {
+        label: label.to_string(),
+        priority,
+        order: next_menu_order(),
+        children: Vec::new(),
+    });
+}
+
+fn render_entries_recursive(ui: &mut egui::Ui, entries: &[MenuEntry], path_root: &str) -> Option<String> {
+    let mut sorted = entries.to_vec();
+    sorted.sort_by_key(menu_entry_sort_key);
+
+    for entry in &sorted {
+        match entry {
+            MenuEntry::Item { label, .. } => {
+                if ui.button(label).clicked() {
+                    ui.close();
+                    return Some(format!("{}/{}", path_root, label));
+                }
+            }
+            MenuEntry::Separator { .. } => {
+                ui.separator();
+            }
+            MenuEntry::SubMenu { label, children, .. } => {
+                let child_path = format!("{}/{}", path_root, label);
+                let mut click = None;
+                ui.menu_button(label, |ui| {
+                    if click.is_none() {
+                        click = render_entries_recursive(ui, children, &child_path);
+                    }
+                });
+                if click.is_some() {
+                    return click;
+                }
+            }
+        }
+    }
+    None
+}
+
+fn render_menu_button(
+    ui: &mut egui::Ui,
+    menu_key: &str,
+    button_label: &str,
+    entries: &[MenuEntry],
+) -> Option<String> {
+    let mut click = None;
+    ui.menu_button(button_label, |ui| {
+        if click.is_none() {
+            click = render_entries_recursive(ui, entries, menu_key);
+        }
+    });
+    click
 }
 
 /// Accumulate raw mouse motion (call from DeviceEvent::MouseMotion each event).
@@ -2134,123 +2371,121 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         CURSOR_GRAB.with(|c| c.set(Some(v)));
     }).build()?;
 
-    // ── Menu helpers ──────────────────────────────────────────────────────────
-    //
-    // Stable two-call pattern: menu_begin renders ONLY the button and returns
-    // whether the popup is currently open.  menu_end promotes this frame's
-    // items into the cache and then renders the popup (egui Area) using those
-    // SAME-FRAME items.  This eliminates the previous one-frame lag where the
-    // popup was empty on first open.
-    //
-    // Popup is rendered via egui::Area with constrain(true) so it never goes
-    // outside the window boundary (fixes Image-1 clipping bug).
+    // ── Menu system (egui-native, no popup state machine) ────────────────────
 
-    m.function("menu_begin", |label: Ref<str>| -> bool {
-        let label_str = label.as_ref().to_string();
-        MENU_LABEL.with(|c| *c.borrow_mut() = label_str.clone());
-        MENU_ITEMS.with(|c| c.borrow_mut().clear());
-
-        let popup_id = egui::Id::new(("flx_menu", label_str.clone()));
-
-        let is_open = with_ui(|ui| {
-            let already_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
-
-            // Render button, slightly tinted when popup is open.
-            let btn = if already_open {
-                let fill = ui.visuals().selection.bg_fill.gamma_multiply(0.35);
-                ui.add(egui::Button::new(label_str.as_str()).fill(fill))
-            } else {
-                ui.button(label_str.as_str())
-            };
-
-            if btn.clicked() {
-                egui::Popup::toggle_id(ui.ctx(), popup_id);
-            }
-
-            MENU_BUTTON_RESP.with(|r| *r.borrow_mut() = Some(btn));
-
-            egui::Popup::is_id_open(ui.ctx(), popup_id)
-        }).unwrap_or(false);
-
-        is_open
+    m.function("menu_clear", |menu: Ref<str>| {
+        with_menu_registry(|reg| {
+            reg.menus.remove(menu.as_ref());
+        });
     }).build()?;
 
-    m.function("menu_item", |label: Ref<str>| {
-        MENU_ITEMS.with(|c| c.borrow_mut().push(MenuEntry::Item(label.as_ref().to_string())));
+    m.function("menu_clear_all", || {
+        with_menu_registry(|reg| {
+            reg.menus.clear();
+        });
     }).build()?;
 
-    m.function("menu_separator", || {
-        MENU_ITEMS.with(|c| c.borrow_mut().push(MenuEntry::Separator));
-    }).build()?;
-
-    // menu_end() → String
-    // 1. Promotes this-frame items to MENU_ITEMS_PREV (always, no gating).
-    // 2. If the popup is open, renders it with same-frame items using a
-    //    constrained egui::Area (no off-screen overflow).
-    // 3. Returns the clicked item label, or "" if nothing was clicked.
-    m.function("menu_end", || -> String {
-        let label_str = MENU_LABEL.with(|c| c.borrow().clone());
-        let popup_id  = egui::Id::new(("flx_menu", label_str.clone()));
-        let area_id   = egui::Id::new(("flx_menu_area", label_str.clone()));
-
-        let current_items: Vec<MenuEntry> = MENU_ITEMS.with(|c| c.borrow().clone());
-        MENU_ITEMS.with(|c| c.borrow_mut().clear());
-
-        // Always promote — ensures cache is fresh even when menu is closed.
-        if !current_items.is_empty() {
-            MENU_ITEMS_PREV.with(|c| c.borrow_mut().insert(label_str.clone(), current_items.clone()));
-        }
-
-        // Use this-frame items if available, otherwise fall back to cached.
-        let render_items = if current_items.is_empty() {
-            MENU_ITEMS_PREV.with(|c| c.borrow().get(&label_str).cloned().unwrap_or_default())
-        } else {
-            current_items
-        };
-
-        let mut clicked_item = String::new();
-
-        with_ui(|ui| {
-            if !egui::Popup::is_id_open(ui.ctx(), popup_id) { return; }
-
-            let btn_rect = MENU_BUTTON_RESP.with(|r| {
-                r.borrow().as_ref().map(|r| r.rect).unwrap_or(egui::Rect::NOTHING)
-            });
-
-            // Render popup as a constrained Area so it never overflows screen bounds.
-            let area_resp = egui::Area::new(area_id)
-                .order(egui::Order::Foreground)
-                .constrain(true)
-                .fixed_pos(btn_rect.left_bottom())
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_min_width(150.0);
-                        for entry in &render_items {
-                            match entry {
-                                MenuEntry::Item(lbl) => {
-                                    if ui.add_sized(
-                                        [ui.available_width().max(150.0), 0.0],
-                                        egui::Button::new(lbl.as_str()).frame(false),
-                                    ).clicked() {
-                                        clicked_item = lbl.clone();
-                                    }
-                                }
-                                MenuEntry::Separator => { ui.separator(); }
-                            }
-                        }
-                    });
-                });
-
-            // Close conditions: item clicked, click outside, or Escape.
-            let close = !clicked_item.is_empty()
-                || area_resp.response.clicked_elsewhere()
-                || ui.input(|i| i.key_pressed(egui::Key::Escape));
-            if close {
-                egui::Popup::close_id(ui.ctx(), popup_id);
+    m.function("menu_register_item", |menu: Ref<str>, item: Ref<str>| {
+        with_menu_registry(|reg| {
+            if let Some(entries) = get_or_create_container_mut(reg, menu.as_ref()) {
+                upsert_item(entries, item.as_ref(), 100);
             }
         });
+    }).build()?;
 
-        clicked_item
+    m.function("menu_register_item_priority", |menu: Ref<str>, item: Ref<str>, priority: i64| {
+        with_menu_registry(|reg| {
+            if let Some(entries) = get_or_create_container_mut(reg, menu.as_ref()) {
+                upsert_item(entries, item.as_ref(), priority as i32);
+            }
+        });
+    }).build()?;
+
+    m.function("menu_register_separator", |menu: Ref<str>| {
+        with_menu_registry(|reg| {
+            if let Some(entries) = get_or_create_container_mut(reg, menu.as_ref()) {
+                upsert_separator(entries, 100);
+            }
+        });
+    }).build()?;
+
+    m.function("menu_register_separator_priority", |menu: Ref<str>, priority: i64| {
+        with_menu_registry(|reg| {
+            if let Some(entries) = get_or_create_container_mut(reg, menu.as_ref()) {
+                upsert_separator(entries, priority as i32);
+            }
+        });
+    }).build()?;
+
+    m.function("menu_register_submenu", |menu: Ref<str>, label: Ref<str>| {
+        with_menu_registry(|reg| {
+            if let Some(entries) = get_or_create_container_mut(reg, menu.as_ref()) {
+                upsert_submenu(entries, label.as_ref(), 100);
+            }
+        });
+    }).build()?;
+
+    m.function("menu_add_to_submenu", |parent: Ref<str>, label: Ref<str>| {
+        with_menu_registry(|reg| {
+            if let Some(entries) = get_or_create_container_mut(reg, parent.as_ref()) {
+                upsert_item(entries, label.as_ref(), 100);
+            }
+        });
+    }).build()?;
+
+    m.function("menu_unregister_item", |menu: Ref<str>, item: Ref<str>| {
+        let item_label = item.as_ref().to_string();
+        with_menu_registry(|reg| {
+            if let Some(entries) = get_container_mut(reg, menu.as_ref()) {
+                entries.retain(|entry| match entry {
+                    MenuEntry::Item { label, .. } => label != &item_label,
+                    MenuEntry::SubMenu { label, .. } => label != &item_label,
+                    MenuEntry::Separator { .. } => true,
+                });
+            }
+        });
+    }).build()?;
+
+    m.function("menu_get_registered_items", |menu: Ref<str>| -> Vec<String> {
+        with_menu_registry(|reg| {
+            let Some(entries) = get_container_mut(reg, menu.as_ref()) else {
+                return Vec::new();
+            };
+
+            let mut sorted = entries.clone();
+            sorted.sort_by_key(menu_entry_sort_key);
+            sorted
+                .iter()
+                .map(|entry| match entry {
+                    MenuEntry::Item { label, .. } => format!("ITEM:{}", label),
+                    MenuEntry::Separator { .. } => "SEP".to_string(),
+                    MenuEntry::SubMenu { label, .. } => format!("SUB:{}", label),
+                })
+                .collect()
+        })
+    }).build()?;
+
+    m.function("menu_render", |menu: Ref<str>| -> String {
+        let menu_key = menu.as_ref().to_string();
+        let entries = with_menu_registry(|reg| {
+            reg.menus.get(&menu_key).cloned().unwrap_or_default()
+        });
+
+        with_ui(|ui| {
+            render_menu_button(ui, &menu_key, &menu_key, &entries).unwrap_or_default()
+        }).unwrap_or_default()
+    }).build()?;
+
+    m.function("menu_render_as", |menu: Ref<str>, button_label: Ref<str>| -> String {
+        let menu_key = menu.as_ref().to_string();
+        let button   = button_label.as_ref().to_string();
+        let entries = with_menu_registry(|reg| {
+            reg.menus.get(&menu_key).cloned().unwrap_or_default()
+        });
+
+        with_ui(|ui| {
+            render_menu_button(ui, &menu_key, &button, &entries).unwrap_or_default()
+        }).unwrap_or_default()
     }).build()?;
 
     m.function("badge_right", |text: Ref<str>, r: f64, g: f64, b: f64| {

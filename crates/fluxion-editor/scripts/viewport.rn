@@ -31,38 +31,40 @@ fn draw_layout_picker() {
     let cur = fluxion::viewport::get_layout();
     let lbl = layout_label(cur);
 
-    fluxion::ui::menu_begin(`[${lbl}]`);
-    fluxion::ui::menu_item("One (1 pane)");
-    fluxion::ui::menu_item("TwoH (2 horiz)");
-    fluxion::ui::menu_item("TwoV (2 vert)");
-    fluxion::ui::menu_item("Four (4 panes)");
-    let action = fluxion::ui::menu_end();
+    fluxion::ui::menu_clear("Viewport.Layout");
+    fluxion::ui::menu_register_item_priority("Viewport.Layout", "One (1 pane)", 10);
+    fluxion::ui::menu_register_item_priority("Viewport.Layout", "TwoH (2 horiz)", 20);
+    fluxion::ui::menu_register_item_priority("Viewport.Layout", "TwoV (2 vert)", 30);
+    fluxion::ui::menu_register_item_priority("Viewport.Layout", "Four (4 panes)", 40);
+    let action = fluxion::ui::menu_render_as("Viewport.Layout", `[${lbl}]`);
 
-    if action == "One (1 pane)"    { fluxion::viewport::set_layout("One"); }
-    if action == "TwoH (2 horiz)"  { fluxion::viewport::set_layout("TwoH"); }
-    if action == "TwoV (2 vert)"   { fluxion::viewport::set_layout("TwoV"); }
-    if action == "Four (4 panes)"  { fluxion::viewport::set_layout("Four"); }
+    if action == "Viewport.Layout/One (1 pane)"    { fluxion::viewport::set_layout("One"); }
+    if action == "Viewport.Layout/TwoH (2 horiz)"  { fluxion::viewport::set_layout("TwoH"); }
+    if action == "Viewport.Layout/TwoV (2 vert)"   { fluxion::viewport::set_layout("TwoV"); }
+    if action == "Viewport.Layout/Four (4 panes)"  { fluxion::viewport::set_layout("Four"); }
 }
 
 // ── Gizmo overlay menu ───────────────────────────────────────────────────────
 
 fn draw_gizmo_menu() {
-    fluxion::ui::menu_begin("Gizmos");
+    fluxion::ui::menu_clear("Viewport.Gizmos");
     let entries = fluxion::viewport::get_gizmo_registry();
+    let prio = 10;
     for entry in entries {
         let label    = entry[1];
         let enabled  = entry[3] == "true";
         let item_lbl = if enabled { `✓ ${label}` } else { `  ${label}` };
-        fluxion::ui::menu_item(item_lbl);
+        fluxion::ui::menu_register_item_priority("Viewport.Gizmos", item_lbl, prio);
+        prio = prio + 10;
     }
-    let action = fluxion::ui::menu_end();
+    let action = fluxion::ui::menu_render("Viewport.Gizmos");
     if action != "" {
         let entries2 = fluxion::viewport::get_gizmo_registry();
         for entry in entries2 {
             let label   = entry[1];
             let enabled = entry[3] == "true";
             let check   = if enabled { `✓ ${label}` } else { `  ${label}` };
-            if check == action {
+            if `Viewport.Gizmos/${check}` == action {
                 fluxion::viewport::set_gizmo_enabled(label, !enabled);
             }
         }
