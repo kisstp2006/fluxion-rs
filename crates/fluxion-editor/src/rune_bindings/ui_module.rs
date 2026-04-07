@@ -219,10 +219,12 @@ fn with_ui<R>(f: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
 }
 
 /// Returns the label column width for inspector property rows:
-/// ~40 % of the available panel width, clamped to [80, 150] px.
+/// ~40 % of the total panel width, clamped to [80, 180] px.
+/// IMPORTANT: call this BEFORE entering a horizontal() closure so
+/// ui.available_width() still reflects the full panel width.
 #[inline]
 fn prop_lbl_w(ui: &egui::Ui) -> f32 {
-    (ui.available_width() * 0.40).max(80.0).min(150.0)
+    (ui.available_width() * 0.38).max(80.0).min(180.0)
 }
 
 /// Muted label colour used for all inspector property labels.
@@ -235,6 +237,23 @@ fn prop_lbl_color() -> egui::Color32 {
 #[inline]
 fn prop_display<'a>(label: &'a str) -> &'a str {
     label.split("##").next().unwrap_or(label)
+}
+
+/// Compute (lbl_w, widget_w) from the panel width captured BEFORE entering a
+/// horizontal() closure. Always call this on the outer `ui`, never on the inner.
+#[inline]
+fn prop_split(ui: &egui::Ui) -> (f32, f32) {
+    let total  = ui.available_width();
+    let lbl_w  = (total * 0.38).max(80.0).min(180.0);
+    let wid_w  = (total - lbl_w - ui.spacing().item_spacing.x).max(20.0);
+    (lbl_w, wid_w)
+}
+
+/// Returns the widget column width for inspector property rows:
+/// available width minus the label column width.
+#[inline]
+fn prop_widget_w(ui: &egui::Ui) -> f32 {
+    ui.available_width() - prop_lbl_w(ui)
 }
 
 fn split_menu_path(path: &str) -> Vec<&str> {
@@ -1052,7 +1071,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("checkbox", |label: Ref<str>, value: bool| -> bool {
         with_ui(|ui| {
             let mut v  = value;
-            let lbl_w  = prop_lbl_w(ui);
+            let (lbl_w, _) = prop_split(ui);
             let display = prop_display(label.as_ref()).to_string();
             let resp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
@@ -1072,7 +1091,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("drag_float", |label: Ref<str>, value: f64, speed: f64, min: f64, max: f64| -> f64 {
         with_ui(|ui| {
             let mut v   = value as f32;
-            let lbl_w   = prop_lbl_w(ui);
+            let (lbl_w, widget_w) = prop_split(ui);
             let display = prop_display(label.as_ref()).to_string();
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
@@ -1083,7 +1102,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     ).truncate(),
                 );
                 ui.add_sized(
-                    [ui.available_width(), 16.0],
+                    [widget_w, 16.0],
                     egui::DragValue::new(&mut v)
                         .speed(speed as f32)
                         .range(min as f32..=max as f32)
@@ -1098,7 +1117,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("drag_int", |label: Ref<str>, value: i64| -> i64 {
         with_ui(|ui| {
             let mut v   = value as i32;
-            let lbl_w   = prop_lbl_w(ui);
+            let (lbl_w, widget_w) = prop_split(ui);
             let display = prop_display(label.as_ref()).to_string();
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
@@ -1109,7 +1128,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     ).truncate(),
                 );
                 ui.add_sized(
-                    [ui.available_width(), 16.0],
+                    [widget_w, 16.0],
                     egui::DragValue::new(&mut v),
                 )
             }).inner;
@@ -1136,13 +1155,13 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         with_ui(|ui| {
             let mut v = value as f32;
             let rw     = if (v - min as f32).abs() > 1e-5 { 20.0_f32 } else { 0.0_f32 };
+            let (lbl_w, widget_w) = prop_split(ui);
+            let display_lbl = prop_display(label.as_ref()).to_string();
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
-                let lbl_w = prop_lbl_w(ui);
-                let display_lbl = prop_display(label.as_ref());
                 ui.add_sized([lbl_w, 16.0],
-                    egui::Label::new(egui::RichText::new(display_lbl).color(prop_lbl_color()).size(11.5)).truncate());
-                let avail = (ui.available_width() - rw).max(40.0);
+                    egui::Label::new(egui::RichText::new(&display_lbl).color(prop_lbl_color()).size(11.5)).truncate());
+                let avail = (widget_w - rw).max(40.0);
                 let mut sl = egui::Slider::new(&mut v, min as f32..=max as f32)
                     .show_value(true)
                     .clamping(egui::SliderClamping::Always);
@@ -1180,7 +1199,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("input_text", |label: Ref<str>, value: Ref<str>| -> String {
         with_ui(|ui| {
             let mut v   = value.as_ref().to_string();
-            let lbl_w   = prop_lbl_w(ui);
+            let (lbl_w, widget_w) = prop_split(ui);
             let display = prop_display(label.as_ref()).to_string();
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
@@ -1191,7 +1210,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     ).truncate(),
                 );
                 ui.add_sized(
-                    [ui.available_width(), 16.0],
+                    [widget_w, 16.0],
                     egui::TextEdit::singleline(&mut v),
                 );
             }).response;
@@ -1373,9 +1392,9 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("color3", |label: Ref<str>, r: f64, g: f64, b: f64| -> Vec<f64> {
         with_ui(|ui| {
             let mut c   = [r as f32, g as f32, b as f32];
-            let lbl_w   = prop_lbl_w(ui);
+            let (lbl_w, _) = prop_split(ui);
             let display = prop_display(label.as_ref()).to_string();
-            ui.horizontal(|ui| {
+            let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
                 ui.add_sized(
                     [lbl_w, 16.0],
@@ -1383,18 +1402,20 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
                     ).truncate(),
                 );
-                ui.color_edit_button_rgb(&mut c);
-            });
+                egui::widgets::color_picker::color_edit_button_rgb(ui, &mut c);
+            }).response;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             vec![c[0] as f64, c[1] as f64, c[2] as f64]
         }).unwrap_or_else(|| vec![r, g, b])
     }).build()?;
 
     m.function("color4", |label: Ref<str>, r: f64, g: f64, b: f64, a: f64| -> Vec<f64> {
         with_ui(|ui| {
-            let mut c   = [r as f32, g as f32, b as f32, a as f32];
-            let lbl_w   = prop_lbl_w(ui);
+            let c = [r as f32, g as f32, b as f32, a as f32];
+            let mut rgba = egui::Rgba::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            let (lbl_w, _) = prop_split(ui);
             let display = prop_display(label.as_ref()).to_string();
-            ui.horizontal(|ui| {
+            let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
                 ui.add_sized(
                     [lbl_w, 16.0],
@@ -1402,9 +1423,11 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
                     ).truncate(),
                 );
-                ui.color_edit_button_rgba_unmultiplied(&mut c);
-            });
-            vec![c[0] as f64, c[1] as f64, c[2] as f64, c[3] as f64]
+                egui::widgets::color_picker::color_edit_button_rgba(ui, &mut rgba, egui::widgets::color_picker::Alpha::OnlyBlend);
+            }).response;
+            LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
+            let out = rgba.to_rgba_unmultiplied();
+            vec![out[0] as f64, out[1] as f64, out[2] as f64, out[3] as f64]
         }).unwrap_or_else(|| vec![r, g, b, a])
     }).build()?;
 
@@ -1930,7 +1953,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("vec3_inline", |label: Ref<str>, x: f64, y: f64, z: f64, speed: f64| -> Vec<f64> {
         with_ui(|ui| {
             let mut v   = [x as f32, y as f32, z as f32];
-            let lbl_w   = prop_lbl_w(ui);
+            let (lbl_w, widget_w) = prop_split(ui);
             let display = prop_display(label.as_ref()).to_string();
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
@@ -1940,18 +1963,21 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
                     ).truncate(),
                 );
-                let avail = ui.available_width();
-                let col_w = (avail / 3.0 - 16.0).max(20.0);
-                let resp = ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80),  "X");
-                    let r = ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(speed as f32));
-                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80),  "Y");
-                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(speed as f32));
-                    ui.colored_label(egui::Color32::from_rgb(80, 120, 220), "Z");
-                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[2]).speed(speed as f32));
-                    r
-                }).inner;
-                resp
+                let badge_w = 10.0_f32;
+                let spacing = ui.spacing().item_spacing.x;
+                let col_w   = ((widget_w - 3.0 * (badge_w + spacing) - spacing) / 3.0).max(20.0);
+                let cursor  = ui.cursor().min;
+                let rect    = egui::Rect::from_min_size(cursor, egui::vec2(widget_w, 18.0));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)));
+                child.colored_label(egui::Color32::from_rgb(220, 80, 80),  "X");
+                let r = child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(speed as f32));
+                child.colored_label(egui::Color32::from_rgb(80, 200, 80),  "Y");
+                child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(speed as f32));
+                child.colored_label(egui::Color32::from_rgb(80, 120, 220), "Z");
+                child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[2]).speed(speed as f32));
+                ui.allocate_rect(rect, egui::Sense::hover());
+                r
             }).inner;
             LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             vec![v[0] as f64, v[1] as f64, v[2] as f64]
@@ -1961,7 +1987,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("vec2_inline", |label: Ref<str>, x: f64, y: f64, speed: f64| -> Vec<f64> {
         with_ui(|ui| {
             let mut v   = [x as f32, y as f32];
-            let lbl_w   = prop_lbl_w(ui);
+            let (lbl_w, widget_w) = prop_split(ui);
             let display = prop_display(label.as_ref()).to_string();
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
@@ -1971,16 +1997,19 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
                     ).truncate(),
                 );
-                let avail = ui.available_width();
-                let col_w = (avail / 2.0 - 16.0).max(20.0);
-                let resp = ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80), "X");
-                    let r = ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(speed as f32));
-                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "Y");
-                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(speed as f32));
-                    r
-                }).inner;
-                resp
+                let badge_w = 10.0_f32;
+                let spacing = ui.spacing().item_spacing.x;
+                let col_w   = ((widget_w - 2.0 * (badge_w + spacing) - spacing) / 2.0).max(20.0);
+                let cursor  = ui.cursor().min;
+                let rect    = egui::Rect::from_min_size(cursor, egui::vec2(widget_w, 18.0));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)));
+                child.colored_label(egui::Color32::from_rgb(220, 80, 80), "X");
+                let r = child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(speed as f32));
+                child.colored_label(egui::Color32::from_rgb(80, 200, 80), "Y");
+                child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(speed as f32));
+                ui.allocate_rect(rect, egui::Sense::hover());
+                r
             }).inner;
             LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             vec![v[0] as f64, v[1] as f64]
@@ -1995,7 +2024,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         };
         with_ui(|ui| {
             let mut v   = [x as f32, y as f32, z as f32, w as f32];
-            let lbl_w   = prop_lbl_w(ui);
+            let (lbl_w, widget_w) = prop_split(ui);
             let display = prop_display(label.as_ref()).to_string();
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
@@ -2005,20 +2034,23 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
                     ).truncate(),
                 );
-                let avail = ui.available_width();
-                let col_w = (avail / 4.0 - 16.0).max(16.0);
-                let resp = ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80),   "X");
-                    let r = ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(speed as f32));
-                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80),   "Y");
-                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(speed as f32));
-                    ui.colored_label(egui::Color32::from_rgb(80, 120, 220),  "Z");
-                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[2]).speed(speed as f32));
-                    ui.colored_label(egui::Color32::from_rgb(160, 160, 160), "W");
-                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[3]).speed(speed as f32));
-                    r
-                }).inner;
-                resp
+                let badge_w = 10.0_f32;
+                let spacing = ui.spacing().item_spacing.x;
+                let col_w   = ((widget_w - 4.0 * (badge_w + spacing) - spacing) / 4.0).max(14.0);
+                let cursor  = ui.cursor().min;
+                let rect    = egui::Rect::from_min_size(cursor, egui::vec2(widget_w, 18.0));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)));
+                child.colored_label(egui::Color32::from_rgb(220, 80, 80),   "X");
+                let r = child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(speed as f32));
+                child.colored_label(egui::Color32::from_rgb(80, 200, 80),   "Y");
+                child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(speed as f32));
+                child.colored_label(egui::Color32::from_rgb(80, 120, 220),  "Z");
+                child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[2]).speed(speed as f32));
+                child.colored_label(egui::Color32::from_rgb(160, 160, 160), "W");
+                child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[3]).speed(speed as f32));
+                ui.allocate_rect(rect, egui::Sense::hover());
+                r
             }).inner;
             LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             vec![v[0] as f64, v[1] as f64, v[2] as f64, v[3] as f64]
@@ -2028,7 +2060,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
     m.function("quat_euler_inline", |label: Ref<str>, pitch: f64, yaw: f64, roll: f64| -> Vec<f64> {
         with_ui(|ui| {
             let mut v   = [pitch as f32, yaw as f32, roll as f32];
-            let lbl_w   = prop_lbl_w(ui);
+            let (lbl_w, widget_w) = prop_split(ui);
             let display = prop_display(label.as_ref()).to_string();
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
@@ -2038,18 +2070,21 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         egui::RichText::new(&display).color(prop_lbl_color()).size(11.5)
                     ).truncate(),
                 );
-                let avail = ui.available_width();
-                let col_w = (avail / 3.0 - 16.0).max(20.0);
-                let resp = ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(220, 80, 80),  "P");
-                    let r = ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(0.5f32).range(-360.0f32..=360.0f32));
-                    ui.colored_label(egui::Color32::from_rgb(80, 200, 80),  "Y");
-                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(0.5f32).range(-360.0f32..=360.0f32));
-                    ui.colored_label(egui::Color32::from_rgb(80, 120, 220), "R");
-                    ui.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[2]).speed(0.5f32).range(-360.0f32..=360.0f32));
-                    r
-                }).inner;
-                resp
+                let badge_w = 10.0_f32;
+                let spacing = ui.spacing().item_spacing.x;
+                let col_w   = ((widget_w - 3.0 * (badge_w + spacing) - spacing) / 3.0).max(20.0);
+                let cursor  = ui.cursor().min;
+                let rect    = egui::Rect::from_min_size(cursor, egui::vec2(widget_w, 18.0));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)));
+                child.colored_label(egui::Color32::from_rgb(220, 80, 80),  "P");
+                let r = child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[0]).speed(0.5f32).range(-360.0f32..=360.0f32));
+                child.colored_label(egui::Color32::from_rgb(80, 200, 80),  "Y");
+                child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[1]).speed(0.5f32).range(-360.0f32..=360.0f32));
+                child.colored_label(egui::Color32::from_rgb(80, 120, 220), "R");
+                child.add_sized([col_w, 16.0], egui::DragValue::new(&mut v[2]).speed(0.5f32).range(-360.0f32..=360.0f32));
+                ui.allocate_rect(rect, egui::Sense::hover());
+                r
             }).inner;
             LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
             vec![v[0] as f64, v[1] as f64, v[2] as f64]
@@ -2138,7 +2173,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             } else {
                 (raw, raw)
             };
-            let lbl_w   = prop_lbl_w(ui);
+            let (lbl_w, widget_w) = prop_split(ui);
             let mut chosen = current.as_ref().to_string();
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(18.0);
@@ -2148,10 +2183,9 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         egui::RichText::new(display).color(prop_lbl_color()).size(11.5)
                     ).truncate(),
                 );
-                let avail = ui.available_width();
                 let resp = egui::ComboBox::from_id_salt(ui.auto_id_with(id_str))
                     .selected_text(current.as_ref())
-                    .width(avail)
+                    .width(widget_w)
                     .show_ui(ui, |ui| {
                         for opt in &options {
                             ui.selectable_value(&mut chosen, opt.clone(), opt.as_str());
@@ -2184,15 +2218,15 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 _          => ("file",     egui::Color32::from_rgb(160, 160, 175)),
             };
 
+            let (lbl_w, widget_w) = prop_split(ui);
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(20.0);
-                let lbl_w = prop_lbl_w(ui);
                 let display = prop_display(label.as_ref());
                 ui.add_sized([lbl_w, 16.0],
                     egui::Label::new(egui::RichText::new(display).color(prop_lbl_color()).size(11.5)).truncate());
 
                 // dark background box for the asset path
-                let avail = ui.available_width() - 18.0;
+                let avail = widget_w - 18.0;
                 let (rect, _) = ui.allocate_exact_size(
                     egui::vec2(avail, 20.0), egui::Sense::click());
                 ui.painter().rect_filled(
@@ -2273,16 +2307,16 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         let lbl = label.as_ref().to_string();
         with_ui(|ui| {
             let mut result = entity_id;
+            let (lbl_w, widget_w) = prop_split(ui);
             let hresp = ui.horizontal(|ui| {
                 ui.set_min_height(20.0);
-                let lbl_w   = prop_lbl_w(ui);
                 let display = prop_display(lbl.as_str());
                 ui.add_sized([lbl_w, 16.0],
                     egui::Label::new(egui::RichText::new(display).color(prop_lbl_color()).size(11.5)).truncate());
 
                 let entity_name = crate::rune_bindings::world_module::entity_name_for_id(entity_id);
 
-                let avail = ui.available_width() - 40.0;
+                let avail = widget_w - 40.0;
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(avail, 20.0), egui::Sense::click());
                 ui.painter().rect_filled(rect, 3.0, egui::Color32::from_rgb(40, 40, 48));
                 let name_color = if entity_id < 0 {
@@ -2341,14 +2375,14 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 egui::Color32::from_rgb(120, 120, 140)
             };
 
+            let (lbl_w, widget_w) = prop_split(ui);
             ui.horizontal(|ui| {
                 ui.set_min_height(20.0);
-                let lbl_w = prop_lbl_w(ui);
                 let display = prop_display(lbl.as_str());
                 ui.add_sized([lbl_w, 16.0],
                     egui::Label::new(egui::RichText::new(display).color(prop_lbl_color()).size(11.5)).truncate());
 
-                let field_w = ((ui.available_width() - col_w - 4.0) / 3.0).max(30.0);
+                let field_w = ((widget_w - col_w - 4.0) / 3.0).max(30.0);
 
                 // X (red badge)
                 let xc = egui::Color32::from_rgb(210, 80, 80);
