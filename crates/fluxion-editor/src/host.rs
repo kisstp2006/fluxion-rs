@@ -158,6 +158,22 @@ impl EditorHost {
         Self::spawn_default_scene(world);
     }
 
+    /// If the world has no entity with a Camera component, spawn a default editor camera.
+    pub fn ensure_camera_exists(world: &mut ECSWorld) {
+        let all: Vec<_> = world.all_entities().collect();
+        let has_camera = all.iter().any(|&id| world.get_component::<Camera>(id).is_some());
+        if !has_camera {
+            let cam = world.spawn(Some("Main Camera"));
+            let mut t = Transform::new();
+            t.position = Vec3::new(0.0, 2.0, 5.0);
+            t.rotation = Quat::from_rotation_x(-15_f32.to_radians());
+            t.dirty = true;
+            world.add_component(cam, t);
+            world.add_component(cam, Camera::default());
+            log::info!("No camera in loaded scene — spawned default Main Camera");
+        }
+    }
+
     fn spawn_default_scene(world: &mut ECSWorld) {
         // Camera
         let cam = world.spawn(Some("Main Camera"));

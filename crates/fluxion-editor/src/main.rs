@@ -1184,6 +1184,7 @@ impl EditorInner {
                     log::error!("Scene load failed: {e}");
                     return;
                 }
+                host::EditorHost::ensure_camera_exists(&mut self.host.world);
                 self.scene_path  = Some(path);
                 self.scene_dirty = false;
                 log::info!("Scene loaded");
