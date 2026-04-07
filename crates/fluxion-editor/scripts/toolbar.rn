@@ -43,12 +43,14 @@ pub fn panel() {
     }
     fluxion::ui::push_enabled(snap);
     let sv = fluxion::world::get_snap_translate();
-    let new_sv = fluxion::ui::drag_float("T##snap_t", sv, 0.1, 0.01, 100.0);
+    fluxion::ui::small("T");
+    let new_sv = fluxion::ui::drag_float_w(sv, 0.1, 0.01, 100.0, 50.0);
     if snap && new_sv != sv {
         fluxion::world::set_snap_translate(new_sv);
     }
     let sr = fluxion::world::get_snap_rotate();
-    let new_sr = fluxion::ui::drag_float("R°##snap_r", sr, 1.0, 1.0, 180.0);
+    fluxion::ui::small("R°");
+    let new_sr = fluxion::ui::drag_float_w(sr, 1.0, 1.0, 180.0, 50.0);
     if snap && new_sr != sr {
         fluxion::world::set_snap_rotate(new_sr);
     }

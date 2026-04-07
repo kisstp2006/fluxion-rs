@@ -21,6 +21,9 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static WANT_QUIT: AtomicBool = AtomicBool::new(false);
 
 use winit::{
     application::ApplicationHandler,
@@ -274,7 +277,12 @@ impl ApplicationHandler for EditorApp {
                         }
                     }
                     WindowEvent::Resized(size) => g.renderer.resize(size.width, size.height),
-                    WindowEvent::RedrawRequested => g.frame(),
+                    WindowEvent::RedrawRequested => {
+                        g.frame();
+                        if WANT_QUIT.load(Ordering::Relaxed) {
+                            event_loop.exit();
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -777,7 +785,7 @@ impl EditorInner {
                 "new_scene"      => do_new_scene  = true,
                 "open_scene"     => do_open_scene = true,
                 "save_scene"     => do_save_scene = true,
-                "exit"           => std::process::exit(0),
+                "exit"           => WANT_QUIT.store(true, Ordering::Relaxed),
                 "rescan_assets"  => {
                     self.host.asset_db.scan(&self.project_root);
                     self.host.physmat_cache.clear();

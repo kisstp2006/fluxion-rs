@@ -60,42 +60,6 @@ pub(crate) enum DndPayload {
     Entity { id: i64 },
 }
 
-/// State for detecting drag vs click operations
-#[derive(Default)]
-struct DragDetectionState {
-    mouse_start_pos: Option<egui::Pos2>,
-    is_dragging: bool,
-    drag_threshold: f32,
-}
-
-impl DragDetectionState {
-    fn start_drag(&mut self, pos: egui::Pos2) {
-        self.mouse_start_pos = Some(pos);
-        self.is_dragging = false;
-        self.drag_threshold = 5.0; // 5 pixel threshold
-    }
-    
-    fn update(&mut self, current_pos: egui::Pos2) -> bool {
-        if let Some(start_pos) = self.mouse_start_pos {
-            let distance = start_pos.distance(current_pos);
-            if distance > self.drag_threshold {
-                self.is_dragging = true;
-                return true;
-            }
-        }
-        false
-    }
-    
-    fn is_dragging(&self) -> bool {
-        self.is_dragging
-    }
-    
-    fn reset(&mut self) {
-        self.mouse_start_pos = None;
-        self.is_dragging = false;
-    }
-}
-
 thread_local! {
     static CURRENT_UI: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
     /// Stored response from the last `image_interactive` call.
@@ -137,9 +101,6 @@ thread_local! {
     static TEXTURE_CACHE: RefCell<std::collections::HashMap<String, egui::TextureHandle>>
         = RefCell::new(std::collections::HashMap::new());
     
-    /// Drag detection state - tracks mouse position and drag threshold
-    static DRAG_STATE: RefCell<DragDetectionState> = RefCell::new(DragDetectionState::default());
-
     // ── ltreeview context menu result ───────────────────────────────────────────────────
     /// Written by context_menu closures inside ltreeview_hierarchy; read after show().
     /// Format: (node_id, action_label). -1 means no action this frame.
@@ -147,6 +108,9 @@ thread_local! {
     /// Reverse map for ltreeview_assets: path_hash(i64) → path string.
     static LTREE_ASSET_PATHS: RefCell<std::collections::HashMap<i64, String>>
         = RefCell::new(std::collections::HashMap::new());
+    /// External DnD drop result written by label_ui closures inside ltreeview_assets.
+    /// Format: "drop_move:<dest_dir>:<src_path>"  — cleared at the start of each ltreeview call.
+    static LTREE_EXT_DROP: RefCell<String> = RefCell::new(String::new());
 
     // ── Horizontal layout state ──────────────────────────────────────────────────────
     /// Saved parent UI pointer while inside a horizontal_begin/end block.
@@ -1110,6 +1074,22 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                 )
             }).inner;
             LAST_WIDGET_RESP.with(|r| *r.borrow_mut() = Some(hresp));
+            v as f64
+        }).unwrap_or(value)
+    }).build()?;
+
+    // drag_float_w(value, speed, min, max, width) — fixed-width DragValue with no label, no prop_split.
+    // Useful in toolbars. Max 5 params (Rune 0.14 limit).
+    m.function("drag_float_w", |value: f64, speed: f64, min: f64, max: f64, width: f64| -> f64 {
+        with_ui(|ui| {
+            let mut v = value as f32;
+            ui.add_sized(
+                [width as f32, 18.0],
+                egui::DragValue::new(&mut v)
+                    .speed(speed as f32)
+                    .range(min as f32..=max as f32)
+                    .max_decimals(3),
+            );
             v as f64
         }).unwrap_or(value)
     }).build()?;
@@ -3691,15 +3671,11 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                 let icon_bg   = egui::Color32::from_rgba_unmultiplied(ir, ig, ib, 28);
                                 let is_sel    = path == &sel;
 
-                                // ── Wrap tile in dnd_drag_source ─────────────
+                                // ── Allocate tile directly (no dnd_drag_source wrapper) ──
                                 let tile_total = egui::vec2(tile_sz, tile_sz + font_sz + 4.0);
-                                let drag_tile_id = egui::Id::new(("tile_dnd", path.as_str()));
-                                let dnd_inner = ui.dnd_drag_source(
-                                    drag_tile_id,
-                                    DndPayload::Asset { path: path.clone(), asset_type: t.to_string() },
-                                    |ui| {
-                                        let (tile_rect, tile_resp) = ui.allocate_exact_size(
-                                            tile_total, egui::Sense::click());
+                                {
+                                    let (tile_rect, tile_resp) = ui.allocate_exact_size(
+                                        tile_total, egui::Sense::click_and_drag());
                                         let painter = ui.painter_at(tile_rect);
 
                                         // Background
@@ -3762,47 +3738,26 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                                 egui::Color32::from_rgb(190, 190, 200)
                                             });
 
-                                        tile_resp
-                                    });
-                                let tile_resp = dnd_inner.inner;
-                                
-                                // Custom drag detection - check if this is a click or drag
-                                let is_drag_click = DRAG_STATE.with(|state| {
-                                    let mut state = state.borrow_mut();
-                                    if tile_resp.clicked() {
-                                        // Start tracking on click
-                                        if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                            state.start_drag(mouse_pos);
-                                        }
-                                        false // Don't consider click as drag yet
-                                    } else if tile_resp.dragged() {
-                                        // Check if we've exceeded the drag threshold
-                                        if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                            state.update(mouse_pos)
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                });
-                                
-                                // Only process as click if not dragged and not currently dragging
-                                let should_process_click = tile_resp.clicked() && !is_drag_click && !DRAG_STATE.with(|s| s.borrow().is_dragging());
-                                
-                                if should_process_click {
-                                    *result.borrow_mut() = vec!["select".to_string(), path.clone()];
-                                }
-                                if tile_resp.double_clicked() && !is_drag_click && !DRAG_STATE.with(|s| s.borrow().is_dragging()) {
-                                    *result.borrow_mut() = vec!["open".to_string(), path.clone()];
-                                }
-                                
-                                // Reset drag state when interaction ends
-                                if tile_resp.clicked() || tile_resp.dragged() {
-                                    DRAG_STATE.with(|s| s.borrow_mut().reset());
+                                // Manual threshold-based DnD initiation
+                                let drag_delta = ui.input(|i| i.pointer.press_origin())
+                                    .map(|origin| tile_resp.interact_pointer_pos()
+                                        .map(|cur| cur.distance(origin))
+                                        .unwrap_or(0.0))
+                                    .unwrap_or(0.0);
+                                let is_really_dragging = tile_resp.dragged() && drag_delta > 5.0;
+                                if is_really_dragging {
+                                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grabbing);
+                                    egui::DragAndDrop::set_payload(ui.ctx(),
+                                        DndPayload::Asset { path: path.clone(), asset_type: t.to_string() });
                                 }
 
-                                // Context menu
+                                if tile_resp.clicked() {
+                                    *result.borrow_mut() = vec!["select".to_string(), path.clone()];
+                                }
+                                if tile_resp.double_clicked() {
+                                    *result.borrow_mut() = vec!["open".to_string(), path.clone()];
+                                }
+
                                 tile_resp.context_menu(|ui| {
                                     for item in ctx_items(t) {
                                         if ui.button(item).clicked() {
@@ -3812,18 +3767,18 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                         }
                                     }
                                 });
-                            }
+                                } // tile block
+                            } // for path
                         });
                 });
             result.into_inner()
         }).unwrap_or_else(|| vec!["".to_string(), String::new()])
     }).build()?;
 
-    // Readonly multiline text area for the console detail panel.
+    // text_readonly(text, height) — scrollable read-only multiline text area.
     m.function("text_readonly", |text: Ref<str>, height: f64| {
         with_ui(|ui| {
             egui::ScrollArea::vertical()
-                .id_salt("console_detail")
                 .max_height(height as f32)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -4198,13 +4153,9 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
 
                                 // tile_square = tile_sz × tile_sz, then label_h below
                                 let tile_total = egui::vec2(tile_sz, tile_sz + label_h + 2.0);
-                                let drag_id = egui::Id::new(("v2_tile_dnd", path.as_str()));
-                                let dnd = ui.dnd_drag_source(
-                                    drag_id,
-                                    DndPayload::Asset { path: path.clone(), asset_type: t.to_string() },
-                                    |ui| {
-                                        let (tile_rect, tile_resp) = ui.allocate_exact_size(
-                                            tile_total, egui::Sense::click());
+                                {
+                                    let (tile_rect, tile_resp) = ui.allocate_exact_size(
+                                        tile_total, egui::Sense::click_and_drag());
                                         let painter   = ui.painter_at(tile_rect);
                                         let tile_sq   = egui::Rect::from_min_size(
                                             tile_rect.min, egui::vec2(tile_sz, tile_sz));
@@ -4312,54 +4263,34 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                             else if tile_resp.hovered() { egui::Color32::from_rgb(230, 230, 240) }
                                             else { egui::Color32::from_rgb(185, 185, 195) });
 
-                                        tile_resp
-                                    });
-                                let tile_resp = dnd.inner;
-                                
-                                // Custom drag detection - check if this is a click or drag
-                                let is_drag_click = DRAG_STATE.with(|state| {
-                                    let mut state = state.borrow_mut();
-                                    if tile_resp.clicked() {
-                                        // Start tracking on click
-                                        if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                            state.start_drag(mouse_pos);
-                                        }
-                                        false // Don't consider click as drag yet
-                                    } else if tile_resp.dragged() {
-                                        // Check if we've exceeded the drag threshold
-                                        if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                            state.update(mouse_pos)
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        false
+                                    // Manual threshold-based DnD initiation
+                                    let drag_delta = ui.input(|i| i.pointer.press_origin())
+                                        .map(|origin| tile_resp.interact_pointer_pos()
+                                            .map(|cur| cur.distance(origin))
+                                            .unwrap_or(0.0))
+                                        .unwrap_or(0.0);
+                                    let is_really_dragging = tile_resp.dragged() && drag_delta > 5.0;
+                                    if is_really_dragging {
+                                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grabbing);
+                                        egui::DragAndDrop::set_payload(ui.ctx(),
+                                            DndPayload::Asset { path: path.clone(), asset_type: t.to_string() });
                                     }
-                                });
-                                
-                                // Only process as click if not dragged and not currently dragging
-                                let should_process_click = tile_resp.clicked() && !is_drag_click && !DRAG_STATE.with(|s| s.borrow().is_dragging());
-                                
-                                if should_process_click {
-                                    *result.borrow_mut() = if is_folder {
-                                        vec!["folder_select".to_string(), clean_path.clone()]
-                                    } else {
-                                        vec!["select".to_string(), path.clone()]
-                                    };
-                                }
-                                if tile_resp.double_clicked() && !is_drag_click && !DRAG_STATE.with(|s| s.borrow().is_dragging()) {
-                                    *result.borrow_mut() = if is_folder {
-                                        vec!["folder_open".to_string(), clean_path.clone()]
-                                    } else {
-                                        vec!["open".to_string(), path.clone()]
-                                    };
-                                }
-                                
-                                // Reset drag state when interaction ends
-                                if tile_resp.clicked() || tile_resp.dragged() {
-                                    DRAG_STATE.with(|s| s.borrow_mut().reset());
-                                }
-                                tile_resp.context_menu(|ui| {
+
+                                    if tile_resp.clicked() {
+                                        *result.borrow_mut() = if is_folder {
+                                            vec!["folder_select".to_string(), clean_path.clone()]
+                                        } else {
+                                            vec!["select".to_string(), path.clone()]
+                                        };
+                                    }
+                                    if tile_resp.double_clicked() {
+                                        *result.borrow_mut() = if is_folder {
+                                            vec!["folder_open".to_string(), clean_path.clone()]
+                                        } else {
+                                            vec!["open".to_string(), path.clone()]
+                                        };
+                                    }
+                                    tile_resp.context_menu(|ui| {
                                     if is_folder {
                                         if ui.button("Open Folder").clicked() {
                                             *result.borrow_mut() = vec!["folder_open".to_string(), clean_path.clone()];
@@ -4385,8 +4316,9 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                             }
                                         }
                                     }
-                                });
-                            }
+                                    });
+                                } // tile block
+                            } // for path
                         });
                 });
 
@@ -4645,6 +4577,9 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             }
         });
 
+        // Clear external drop result from previous frame.
+        LTREE_EXT_DROP.with(|d| d.borrow_mut().clear());
+
         with_ui(|ui| {
             enum Visit { Enter(String), CloseDir }
 
@@ -4652,7 +4587,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             let (_, actions) =
                 egui_ltreeview::TreeView::new(egui::Id::new("ltreeview_assets"))
                     .show(ui, |builder| {
-                        // Root "assets" node
+                        // Root "assets" node — label_ui detects external DnD drop onto root.
                         let root_icon_tint = if is_root_active {
                             egui::Color32::from_rgb(240, 168, 50)
                         } else {
@@ -4665,7 +4600,23 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                 .icon(move |ui| {
                                     ui.add(crate::icons::img("folder", 13.0, root_icon_tint));
                                 })
-                                .label("assets")
+                                .label_ui(|ui| {
+                                    let r = ui.interact(ui.max_rect(),
+                                        egui::Id::new("ltree_ext_drop_root"), egui::Sense::hover());
+                                    if r.dnd_hover_payload::<DndPayload>().is_some() {
+                                        ui.painter().rect_stroke(r.rect, 2.0,
+                                            egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 200, 100)),
+                                            egui::StrokeKind::Outside);
+                                    }
+                                    if let Some(p) = r.dnd_release_payload::<DndPayload>() {
+                                        if let DndPayload::Asset { path: src, .. } = p.as_ref() {
+                                            LTREE_EXT_DROP.with(|d| {
+                                                *d.borrow_mut() = format!("drop_move::{src}");
+                                            });
+                                        }
+                                    }
+                                    ui.add(egui::Label::new("assets").sense(egui::Sense::empty()));
+                                })
                         );
 
                         let mut stack: Vec<Visit> = Vec::new();
@@ -4693,6 +4644,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                     };
                                     let icon_name = if has_ch { "folder" } else { "folder" };
 
+                                    let dir_for_drop = path.clone();
                                     let nb = if has_ch {
                                         egui_ltreeview::NodeBuilder::dir(nid)
                                             .drop_allowed(true)
@@ -4703,7 +4655,23 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                     .icon(move |ui| {
                                         ui.add(crate::icons::img(icon_name, 13.0, folder_tint));
                                     })
-                                    .label(stem);
+                                    .label_ui(move |ui| {
+                                        let drop_id = egui::Id::new(("ltree_ext_drop", dir_for_drop.as_str()));
+                                        let r = ui.interact(ui.max_rect(), drop_id, egui::Sense::hover());
+                                        if r.dnd_hover_payload::<DndPayload>().is_some() {
+                                            ui.painter().rect_stroke(r.rect, 2.0,
+                                                egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 200, 100)),
+                                                egui::StrokeKind::Outside);
+                                        }
+                                        if let Some(p) = r.dnd_release_payload::<DndPayload>() {
+                                            if let DndPayload::Asset { path: src, .. } = p.as_ref() {
+                                                LTREE_EXT_DROP.with(|d| {
+                                                    *d.borrow_mut() = format!("drop_move:{dir_for_drop}:{src}");
+                                                });
+                                            }
+                                        }
+                                        ui.add(egui::Label::new(stem.as_str()).sense(egui::Sense::empty()));
+                                    });
 
                                     builder.node(nb);
 
@@ -4724,8 +4692,10 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                         builder.close_dir();
                     });
 
-            let mut result = String::new();
+            // Check for external (grid tile) DnD drop first.
+            let mut result = LTREE_EXT_DROP.with(|d| d.borrow().clone());
             for action in actions {
+                if !result.is_empty() { break; }
                 match action {
                     egui_ltreeview::Action::SetSelected(ids) => {
                         if let Some(&id) = ids.first() {
