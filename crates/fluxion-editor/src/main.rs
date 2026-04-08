@@ -446,6 +446,13 @@ impl EditorApp {
         log::info!("AssetDatabase: {} assets indexed", inner.host.asset_db.count());
         crate::rune_bindings::load_asset_refs(&inner.project_root);
 
+        // Compile-check whichever script is open in the built-in editor (if any).
+        if let Ok(mut ed) = script_editor::EDITOR.try_lock() {
+            if ed.open_path.is_some() {
+                ed.compile_check();
+            }
+        }
+
         // Load editor preferences and push settings context to Rune.
         let prefs = load_editor_prefs();
         // Apply prefs immediately
@@ -1146,6 +1153,10 @@ impl EditorInner {
                     }
                 }
                 if got_event {
+                    // Drain any remaining queued events (OS can fire many per save)
+                    // so they don't re-trigger a rescan immediately after the cooldown.
+                    while rx.try_recv().is_ok() {}
+
                     self.host.asset_db.scan(&self.project_root);
                     self.host.physmat_cache.clear();
                     log::info!("Asset watcher: rescan triggered ({} assets)", self.host.asset_db.count());
@@ -1153,9 +1164,9 @@ impl EditorInner {
                         &self.host.world, &self.host.registry,
                         &self.host.asset_db, &self.project_root,
                     );
-                    self.file_watcher_cooldown = 0.5; // 500 ms debounce
+                    self.file_watcher_cooldown = 2.0; // 2 s debounce — Windows fires many events per save
 
-                    // Hot-reload gameplay scripts if any .rn file changed while playing.
+                    // Hot-reload gameplay scripts + compile check if any .rn file changed.
                     if rn_changed {
                         let is_playing = crate::rune_bindings::get_editor_mode_str() == "Playing";
                         if is_playing {
@@ -1163,6 +1174,10 @@ impl EditorInner {
                             log::info!("Script hot-reload: rebuilt gameplay scripts after .rn change");
                         }
                         crate::rune_bindings::set_script_hotreload_pending(true);
+                        // Re-run compile diagnostics in the script editor if a file is open.
+                        if let Ok(mut ed) = script_editor::EDITOR.try_lock() {
+                            ed.compile_check();
+                        }
                     }
                 }
             }
