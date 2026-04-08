@@ -232,7 +232,7 @@ impl EditorHost {
                 log::warn!("[ScriptBundle] File not found: {:?}", abs_path);
                 continue;
             }
-            match RuneBehaviour::from_file_with_extra_modules(&abs_path, build_gameplay_modules) {
+            match RuneBehaviour::from_file_with_prelude_and_extra_modules(&abs_path, build_gameplay_modules) {
                 Ok(behaviour) => {
                     clear_script_error(entity_id.to_bits(), &script_name);
                     self.gameplay_scripts.insert((entity_id, script_name), behaviour);

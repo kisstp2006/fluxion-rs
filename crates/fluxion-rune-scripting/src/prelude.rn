@@ -1,0 +1,443 @@
+// ============================================================
+// prelude.rn — Auto-injected Fluxion gameplay scripting prelude
+//
+// This file is compiled as the FIRST source unit in every
+// RuneBehaviour.  It defines the high-level OOP-style API:
+//
+//   Vec3, Vec2, Quaternion, Transform, GameObject
+//   Input, Time, Debug, Mathf, Key
+//
+// All methods delegate to fluxion::native::* free functions.
+//
+// VALUE SEMANTICS NOTE:
+//   position(), euler_angles(), scale() all return COPIES.
+//   Mutate via set_position(), translate(), rotate(), etc.
+// ============================================================
+
+// ── Vec3 ─────────────────────────────────────────────────────────────────────
+
+struct Vec3 { x, y, z }
+
+impl Vec3 {
+    pub fn zero()    { Vec3 { x: 0.0, y: 0.0, z: 0.0 } }
+    pub fn one()     { Vec3 { x: 1.0, y: 1.0, z: 1.0 } }
+    pub fn forward() { Vec3 { x: 0.0, y: 0.0, z: -1.0 } }
+    pub fn back()    { Vec3 { x: 0.0, y: 0.0, z: 1.0 } }
+    pub fn up()      { Vec3 { x: 0.0, y: 1.0, z: 0.0 } }
+    pub fn down()    { Vec3 { x: 0.0, y: -1.0, z: 0.0 } }
+    pub fn right()   { Vec3 { x: 1.0, y: 0.0, z: 0.0 } }
+    pub fn left()    { Vec3 { x: -1.0, y: 0.0, z: 0.0 } }
+
+    pub fn add(self, other) {
+        Vec3 { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
+    }
+    pub fn sub(self, other) {
+        Vec3 { x: self.x - other.x, y: self.y - other.y, z: self.z - other.z }
+    }
+    pub fn mul(self, f) {
+        Vec3 { x: self.x * f, y: self.y * f, z: self.z * f }
+    }
+    pub fn length(self) {
+        Mathf::sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+    }
+    pub fn normalized(self) {
+        let len = self.length();
+        if len > 0.0001 {
+            Vec3 { x: self.x / len, y: self.y / len, z: self.z / len }
+        } else {
+            Vec3::zero()
+        }
+    }
+    pub fn dot(self, other) {
+        self.x * other.x + self.y * other.y + self.z * other.z
+    }
+    pub fn cross(self, other) {
+        Vec3 {
+            x: self.y * other.z - self.z * other.y,
+            y: self.z * other.x - self.x * other.z,
+            z: self.x * other.y - self.y * other.x,
+        }
+    }
+    pub fn distance(self, other) {
+        self.sub(other).length()
+    }
+    pub fn lerp(self, other, t) {
+        Vec3 {
+            x: self.x + (other.x - self.x) * t,
+            y: self.y + (other.y - self.y) * t,
+            z: self.z + (other.z - self.z) * t,
+        }
+    }
+    pub fn to_array(self) {
+        [self.x, self.y, self.z]
+    }
+}
+
+fn vec3_from_array(v) {
+    Vec3 { x: v[0], y: v[1], z: v[2] }
+}
+
+// ── Vec2 ─────────────────────────────────────────────────────────────────────
+
+struct Vec2 { x, y }
+
+impl Vec2 {
+    pub fn zero() { Vec2 { x: 0.0, y: 0.0 } }
+    pub fn one()  { Vec2 { x: 1.0, y: 1.0 } }
+
+    pub fn add(self, other) { Vec2 { x: self.x + other.x, y: self.y + other.y } }
+    pub fn sub(self, other) { Vec2 { x: self.x - other.x, y: self.y - other.y } }
+    pub fn mul(self, f)     { Vec2 { x: self.x * f, y: self.y * f } }
+    pub fn length(self)     { Mathf::sqrt(self.x * self.x + self.y * self.y) }
+    pub fn dot(self, other) { self.x * other.x + self.y * other.y }
+}
+
+// ── Quaternion ───────────────────────────────────────────────────────────────
+
+struct Quaternion { x, y, z, w }
+
+impl Quaternion {
+    pub fn identity() { Quaternion { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }
+
+    pub fn euler(x, y, z) {
+        let v = fluxion::native::transform::quat_from_euler(x, y, z);
+        Quaternion { x: v[0], y: v[1], z: v[2], w: v[3] }
+    }
+
+    pub fn to_euler(self) {
+        let v = fluxion::native::transform::quat_to_euler(self.x, self.y, self.z, self.w);
+        Vec3 { x: v[0], y: v[1], z: v[2] }
+    }
+
+    pub fn mul(self, other) {
+        let v = fluxion::native::transform::quat_mul(
+            [self.x, self.y, self.z, self.w],
+            [other.x, other.y, other.z, other.w],
+        );
+        Quaternion { x: v[0], y: v[1], z: v[2], w: v[3] }
+    }
+
+    pub fn mul_vec3(self, v) {
+        let r = fluxion::native::transform::quat_mul_vec3(
+            [self.x, self.y, self.z, self.w],
+            [v.x, v.y, v.z],
+        );
+        Vec3 { x: r[0], y: r[1], z: r[2] }
+    }
+
+    pub fn to_array(self) { [self.x, self.y, self.z, self.w] }
+}
+
+fn quat_from_array(v) {
+    Quaternion { x: v[0], y: v[1], z: v[2], w: v[3] }
+}
+
+// ── Transform ────────────────────────────────────────────────────────────────
+//
+// Wraps an entity i64 ID.  ALL methods call fluxion::native::transform::*.
+// Vec3 values are VALUE TYPES — position() returns a copy.
+// Use translate(delta)/rotate(dx,dy,dz) to avoid read-modify-write.
+
+struct Transform { _id }
+
+impl Transform {
+    // ── Position ──────────────────────────────────────────────────────────────
+
+    pub fn position(self) {
+        let v = fluxion::native::transform::get_position(self._id);
+        Vec3 { x: v[0], y: v[1], z: v[2] }
+    }
+    pub fn set_position(self, v) {
+        fluxion::native::transform::set_position(self._id, [v.x, v.y, v.z]);
+    }
+
+    // Convenience: move by a Vec3 delta (no read-modify-write needed)
+    pub fn translate(self, v) {
+        fluxion::native::transform::translate(self._id, [v.x, v.y, v.z]);
+    }
+
+    // ── Rotation — Euler (degrees) ────────────────────────────────────────────
+
+    pub fn euler_angles(self) {
+        let v = fluxion::native::transform::get_euler(self._id);
+        Vec3 { x: v[0], y: v[1], z: v[2] }
+    }
+    pub fn set_rotation_euler(self, v) {
+        fluxion::native::transform::set_euler(self._id, [v.x, v.y, v.z]);
+    }
+
+    // Convenience: add Euler degree deltas (no read-modify-write needed)
+    pub fn rotate(self, x, y, z) {
+        fluxion::native::transform::rotate(self._id, x, y, z);
+    }
+
+    // ── Rotation — Quaternion ────────────────────────────────────────────────
+
+    pub fn rotation(self) {
+        let v = fluxion::native::transform::get_rotation_quat(self._id);
+        Quaternion { x: v[0], y: v[1], z: v[2], w: v[3] }
+    }
+    pub fn set_rotation(self, q) {
+        fluxion::native::transform::set_rotation_quat(self._id, [q.x, q.y, q.z, q.w]);
+    }
+
+    // ── Scale ─────────────────────────────────────────────────────────────────
+
+    pub fn scale(self) {
+        let v = fluxion::native::transform::get_scale(self._id);
+        Vec3 { x: v[0], y: v[1], z: v[2] }
+    }
+    pub fn set_scale(self, v) {
+        fluxion::native::transform::set_scale(self._id, [v.x, v.y, v.z]);
+    }
+
+    // ── LookAt ────────────────────────────────────────────────────────────────
+
+    pub fn look_at(self, target) {
+        fluxion::native::transform::look_at(self._id, [target.x, target.y, target.z]);
+    }
+
+    // ── Hierarchy ────────────────────────────────────────────────────────────
+
+    pub fn parent(self) {
+        let pid = fluxion::native::transform::get_parent(self._id);
+        Transform { _id: pid }
+    }
+    pub fn set_parent(self, t) {
+        fluxion::native::transform::set_parent(self._id, t._id);
+    }
+    pub fn child_count(self) {
+        fluxion::native::transform::child_count(self._id)
+    }
+    pub fn get_child(self, idx) {
+        let cid = fluxion::native::transform::get_child(self._id, idx);
+        Transform { _id: cid }
+    }
+
+    pub fn is_valid(self) { self._id >= 0 }
+}
+
+// ── GameObject ───────────────────────────────────────────────────────────────
+//
+// Root object for an entity.  Access its transform via .transform.
+
+struct GameObject { _id }
+
+impl GameObject {
+    pub fn transform(self) { Transform { _id: self._id } }
+
+    pub fn name(self) {
+        fluxion::native::gameobject::get_name(self._id)
+    }
+    pub fn set_name(self, s) {
+        fluxion::native::gameobject::set_name(self._id, s);
+    }
+
+    pub fn destroy(self) {
+        fluxion::native::gameobject::destroy(self._id);
+    }
+
+    pub fn is_valid(self) { self._id >= 0 }
+
+    // Static-style: find by name in scene (-1 = not found, check .is_valid())
+    pub fn find(name) {
+        let id = fluxion::native::gameobject::find_by_name(name);
+        GameObject { _id: id }
+    }
+
+    // Static-style: spawn a new entity with given display name (deferred)
+    pub fn spawn(name) {
+        fluxion::native::gameobject::spawn(name);
+        GameObject { _id: -1 }
+    }
+}
+
+// ── Self-accessors ────────────────────────────────────────────────────────────
+//
+// Use these in update()/start() to get the current entity's objects.
+
+fn self_transform() {
+    let id = fluxion::native::transform::self_id();
+    Transform { _id: id }
+}
+
+fn self_gameobject() {
+    let id = fluxion::native::gameobject::self_id();
+    GameObject { _id: id }
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+//
+// Delegates to fluxion::input (the full gameplay input module with axis support).
+// Key constants: Input::get_key(Key::W) — string fallback also accepted.
+
+struct Input {}
+
+impl Input {
+    pub fn get_key(code)      { fluxion::input::key_down(code) }
+    pub fn get_key_down(code) { fluxion::input::key_pressed(code) }
+    pub fn get_key_up(code)   { fluxion::input::key_released(code) }
+    pub fn get_axis(neg, pos) { fluxion::input::get_axis(neg, pos) }
+    pub fn mouse_delta()      {
+        let v = fluxion::input::mouse_delta();
+        Vec2 { x: v[0], y: v[1] }
+    }
+    pub fn mouse_left()  { fluxion::input::mouse_left() }
+    pub fn mouse_right() { fluxion::input::mouse_right() }
+}
+
+// ── Time ──────────────────────────────────────────────────────────────────────
+
+struct Time {}
+
+impl Time {
+    pub fn delta_time()  { fluxion::native::time::delta_time() }
+    pub fn time()        { fluxion::native::time::time() }
+    pub fn frame_count() { fluxion::native::time::frame_count() }
+}
+
+// ── Debug ─────────────────────────────────────────────────────────────────────
+
+struct Debug {}
+
+impl Debug {
+    pub fn log(msg)     { fluxion::native::debug::log(msg) }
+    pub fn warn(msg)    { fluxion::native::debug::warn(msg) }
+    pub fn error(msg)   { fluxion::native::debug::error(msg) }
+}
+
+// ── Mathf ─────────────────────────────────────────────────────────────────────
+
+struct Mathf {}
+
+impl Mathf {
+    pub fn PI()       { 3.14159265358979323846 }
+    pub fn TAU()      { 6.28318530717958647692 }
+    pub fn DEG2RAD()  { 0.01745329251994329576 }
+    pub fn RAD2DEG()  { 57.2957795130823228646 }
+
+    pub fn sin(x)     { fluxion::native::math::sin(x) }
+    pub fn cos(x)     { fluxion::native::math::cos(x) }
+    pub fn tan(x)     { fluxion::native::math::tan(x) }
+    pub fn asin(x)    { fluxion::native::math::asin(x) }
+    pub fn acos(x)    { fluxion::native::math::acos(x) }
+    pub fn atan(x)    { fluxion::native::math::atan(x) }
+    pub fn atan2(y,x) { fluxion::native::math::atan2(y, x) }
+    pub fn sqrt(x)    { fluxion::native::math::sqrt(x) }
+    pub fn abs(x)     { fluxion::native::math::abs(x) }
+    pub fn floor(x)   { fluxion::native::math::floor(x) }
+    pub fn ceil(x)    { fluxion::native::math::ceil(x) }
+    pub fn round(x)   { fluxion::native::math::round(x) }
+    pub fn min(a,b)   { fluxion::native::math::min(a, b) }
+    pub fn max(a,b)   { fluxion::native::math::max(a, b) }
+    pub fn clamp(x,lo,hi) { fluxion::native::math::clamp(x, lo, hi) }
+    pub fn pow(x,e)   { fluxion::native::math::pow(x, e) }
+    pub fn sign(x)    { fluxion::native::math::sign(x) }
+    pub fn lerp(a, b, t) { a + (b - a) * t }
+    pub fn deg2rad(d) { d * 0.01745329251994329576 }
+    pub fn rad2deg(r) { r * 57.2957795130823228646 }
+    pub fn ping_pong(t, len) {
+        let t2 = t % (len * 2.0);
+        if t2 < len { t2 } else { len * 2.0 - t2 }
+    }
+    pub fn smooth_step(a, b, t) {
+        let t2 = Mathf::clamp((t - a) / (b - a), 0.0, 1.0);
+        t2 * t2 * (3.0 - 2.0 * t2)
+    }
+}
+
+// ── Key constants ─────────────────────────────────────────────────────────────
+//
+// Use Key::W, Key::Space, etc. with Input::get_key().
+// All values are the string key codes accepted by the native input layer.
+// String fallback still works: Input::get_key("KeyW")
+
+struct Key {}
+
+impl Key {
+    // Letters
+    pub fn A() { "KeyA" }
+    pub fn B() { "KeyB" }
+    pub fn C() { "KeyC" }
+    pub fn D() { "KeyD" }
+    pub fn E() { "KeyE" }
+    pub fn F() { "KeyF" }
+    pub fn G() { "KeyG" }
+    pub fn H() { "KeyH" }
+    pub fn I() { "KeyI" }
+    pub fn J() { "KeyJ" }
+    pub fn K() { "KeyK" }
+    pub fn L() { "KeyL" }
+    pub fn M() { "KeyM" }
+    pub fn N() { "KeyN" }
+    pub fn O() { "KeyO" }
+    pub fn P() { "KeyP" }
+    pub fn Q() { "KeyQ" }
+    pub fn R() { "KeyR" }
+    pub fn S() { "KeyS" }
+    pub fn T() { "KeyT" }
+    pub fn U() { "KeyU" }
+    pub fn V() { "KeyV" }
+    pub fn W() { "KeyW" }
+    pub fn X() { "KeyX" }
+    pub fn Y() { "KeyY" }
+    pub fn Z() { "KeyZ" }
+
+    // Digits
+    pub fn Alpha0() { "Digit0" }
+    pub fn Alpha1() { "Digit1" }
+    pub fn Alpha2() { "Digit2" }
+    pub fn Alpha3() { "Digit3" }
+    pub fn Alpha4() { "Digit4" }
+    pub fn Alpha5() { "Digit5" }
+    pub fn Alpha6() { "Digit6" }
+    pub fn Alpha7() { "Digit7" }
+    pub fn Alpha8() { "Digit8" }
+    pub fn Alpha9() { "Digit9" }
+
+    // Special keys
+    pub fn Space()     { "Space" }
+    pub fn Return()    { "Enter" }
+    pub fn Escape()    { "Escape" }
+    pub fn Tab()       { "Tab" }
+    pub fn Backspace() { "Backspace" }
+    pub fn Delete()    { "Delete" }
+    pub fn Insert()    { "Insert" }
+    pub fn Home()      { "Home" }
+    pub fn End()       { "End" }
+    pub fn PageUp()    { "PageUp" }
+    pub fn PageDown()  { "PageDown" }
+
+    // Modifier keys
+    pub fn LeftShift()  { "ShiftLeft" }
+    pub fn RightShift() { "ShiftRight" }
+    pub fn LeftCtrl()   { "ControlLeft" }
+    pub fn RightCtrl()  { "ControlRight" }
+    pub fn LeftAlt()    { "AltLeft" }
+    pub fn RightAlt()   { "AltRight" }
+
+    // Arrow keys
+    pub fn Left()  { "ArrowLeft" }
+    pub fn Right() { "ArrowRight" }
+    pub fn Up()    { "ArrowUp" }
+    pub fn Down()  { "ArrowDown" }
+
+    // Function keys
+    pub fn F1()  { "F1" }
+    pub fn F2()  { "F2" }
+    pub fn F3()  { "F3" }
+    pub fn F4()  { "F4" }
+    pub fn F5()  { "F5" }
+    pub fn F6()  { "F6" }
+    pub fn F7()  { "F7" }
+    pub fn F8()  { "F8" }
+    pub fn F9()  { "F9" }
+    pub fn F10() { "F10" }
+    pub fn F11() { "F11" }
+    pub fn F12() { "F12" }
+
+    // Mouse buttons
+    pub fn Mouse0() { "Mouse0" }
+    pub fn Mouse1() { "Mouse1" }
+    pub fn Mouse2() { "Mouse2" }
+}

@@ -267,6 +267,16 @@ pub fn with_world<R>(f: impl FnOnce(&ECSWorld) -> R) -> Option<R> {
     })
 }
 
+/// Call `f` with a mutable reference to the current frame's ECSWorld.
+/// Returns `None` if the world context is not set.
+/// SAFETY: caller must not alias — only one mutable borrow at a time.
+pub fn with_world_mut<R>(f: impl FnOnce(&mut ECSWorld) -> R) -> Option<R> {
+    WORLD_PTR.with(|c| {
+        let mut ptr = c.get()?;
+        Some(f(unsafe { ptr.as_mut() }))
+    })
+}
+
 /// Append a log line from Rust host code.
 /// Parses the `[LEVEL]` prefix to determine level; caps at 10 000 entries.
 pub fn push_log(line: String) {
@@ -2425,7 +2435,10 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         if total < 0 { vec![] } else { vec![total, errors] }
     }).build()?;
 
-    // script_fields(entity_id, script_name) → [[field_name, value_json_str], …]
+    // script_fields(entity_id, script_name) →
+    //   [[name, value_json, hint, label, min, max, tooltip, hidden, readonly], …]
+    // Columns 0-1 are the field name and JSON value.
+    // Columns 2-8 are ScriptFieldMeta: hint, label, min, max, tooltip, hidden("1"/"0"), readonly("1"/"0").
     m.function("script_fields", |entity_id: i64, script_name: String| -> Vec<Vec<String>> {
         if entity_id < 0 { return Vec::new(); }
         ENTITY_CACHE.with(|cache| {
@@ -2437,7 +2450,17 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                     let bundle = world.get_component::<fluxion_core::ScriptBundle>(eid)?;
                     let entry = bundle.scripts.iter().find(|e| e.name == script_name)?;
                     Some(entry.fields.iter().map(|f| {
-                        vec![f.name.clone(), f.value.to_string()]
+                        vec![
+                            f.name.clone(),
+                            f.value.to_string(),
+                            f.meta.hint.clone(),
+                            f.meta.label.clone(),
+                            f.meta.min.to_string(),
+                            f.meta.max.to_string(),
+                            f.meta.tooltip.clone(),
+                            if f.meta.hidden    { "1".into() } else { "0".into() },
+                            if f.meta.read_only { "1".into() } else { "0".into() },
+                        ]
                     }).collect::<Vec<_>>())
                 }).unwrap_or_default()
             } else {

@@ -30,3 +30,9 @@ pub mod vm;
 pub use behaviour::RuneBehaviour;
 #[cfg(not(target_arch = "wasm32"))]
 pub use vm::{RuneVm, TIME_SNAPSHOT, input_snapshot};
+
+/// The gameplay scripting prelude: defines Vec3, Quaternion, Transform,
+/// GameObject, Input, Time, Debug, Mathf, Key structs.
+/// Auto-injected as the first source unit in every `RuneBehaviour`.
+#[cfg(not(target_arch = "wasm32"))]
+pub const GAMEPLAY_PRELUDE: &str = include_str!("prelude.rn");

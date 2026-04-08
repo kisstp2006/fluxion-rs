@@ -89,7 +89,7 @@ pub use debug_draw::{DebugDraw, DebugLine, draw_line, draw_ray, draw_sphere,
     draw_aabb, draw_box_rotated, draw_capsule, draw_cross, draw_grid,
     draw_cone, draw_frustum, drain_debug_lines};
 pub use assets::{AssetDatabase, AssetRecord, AssetType};
-pub use components::{ScriptBundle, ScriptEntry, ScriptField, derive_script_name, scan_struct_fields};
+pub use components::{ScriptBundle, ScriptEntry, ScriptField, ScriptFieldMeta, derive_script_name, scan_struct_fields};
 pub use templates::{TemplateRegistry, ProjectTemplate, TemplateMetadata, TemplateCategory, 
     TemplateDifficulty, TemplateSize, TemplateOptions, TemplateInstaller};
 

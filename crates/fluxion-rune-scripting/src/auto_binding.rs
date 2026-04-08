@@ -8,11 +8,11 @@
 
 use rune::Module;
 
-/// Debug / logging module: `fluxion::debug`
+/// Debug / logging module: `fluxion::native::debug`
 pub fn build_debug_module() -> anyhow::Result<Module> {
     use fluxion_core::{Color, debug_draw};
 
-    let mut m = Module::with_crate_item("fluxion", ["debug"])?;
+    let mut m = Module::with_crate_item("fluxion", ["native", "debug"])?;
 
     m.function("log", |msg: String| {
         log::info!("[Rune] {msg}");
@@ -43,22 +43,24 @@ pub fn build_debug_module() -> anyhow::Result<Module> {
     Ok(m)
 }
 
-/// Time module: `fluxion::time`
+/// Time module: `fluxion::native::time`
 pub fn build_time_module() -> anyhow::Result<Module> {
     use crate::vm::TIME_SNAPSHOT;
 
-    let mut m = Module::with_crate_item("fluxion", ["time"])?;
+    let mut m = Module::with_crate_item("fluxion", ["native", "time"])?;
 
-    m.function("delta_time", || TIME_SNAPSHOT.load_dt()).build()?;
-    m.function("elapsed",    || TIME_SNAPSHOT.load_elapsed()).build()?;
-    m.function("frame",      || TIME_SNAPSHOT.load_frame() as i64).build()?;
+    m.function("delta_time",  || TIME_SNAPSHOT.load_dt()).build()?;
+    m.function("time",         || TIME_SNAPSHOT.load_elapsed()).build()?;
+    m.function("elapsed",      || TIME_SNAPSHOT.load_elapsed()).build()?;
+    m.function("frame_count",  || TIME_SNAPSHOT.load_frame() as i64).build()?;
+    m.function("frame",        || TIME_SNAPSHOT.load_frame() as i64).build()?;
 
     Ok(m)
 }
 
-/// Input module: `fluxion::input`
+/// Input module: `fluxion::native::input` (basic, snapshot-based)
 pub fn build_input_module() -> anyhow::Result<Module> {
-    let mut m = Module::with_crate_item("fluxion", ["input"])?;
+    let mut m = Module::with_crate_item("fluxion", ["native", "input"])?;
 
     m.function("get_key", |key: String| -> bool {
         crate::vm::input_snapshot().is_key_held(&key)
@@ -75,7 +77,7 @@ pub fn build_input_module() -> anyhow::Result<Module> {
     Ok(m)
 }
 
-/// Viewport module: `fluxion::viewport`
+/// Viewport module: `fluxion::viewport` (kept for editor scripts)
 ///
 /// Exposes the current editor viewport pixel size so scripts can do
 /// resolution-aware layout without hard-coding dimensions.
@@ -90,12 +92,12 @@ pub fn build_viewport_module() -> anyhow::Result<Module> {
     Ok(m)
 }
 
-/// Math module: `fluxion::math`
+/// Math module: `fluxion::native::math`
 ///
 /// Exposes common f64 math functions as free functions because Rune 0.14
 /// does not install method syntax (e.g. `x.sin()`) on primitive floats.
 pub fn build_math_module() -> anyhow::Result<Module> {
-    let mut m = Module::with_crate_item("fluxion", ["math"])?;
+    let mut m = Module::with_crate_item("fluxion", ["native", "math"])?;
 
     m.function("sin",   |x: f64| -> f64 { x.sin()   }).build()?;
     m.function("cos",   |x: f64| -> f64 { x.cos()   }).build()?;

@@ -152,6 +152,8 @@ pub struct RuneVm {
     reload_hooks: Vec<Box<dyn Fn() + Send + Sync>>,
     /// Last compile errors (shown in-editor).
     pub last_error: Option<String>,
+    /// Optional prelude source injected before user scripts (gameplay only).
+    prelude: Option<&'static str>,
 }
 
 impl RuneVm {
@@ -178,6 +180,7 @@ impl RuneVm {
             watcher:      None,
             reload_hooks: Vec::new(),
             last_error:   None,
+            prelude:      None,
         })
     }
 
@@ -226,6 +229,49 @@ impl RuneVm {
             watcher:      None,
             reload_hooks: Vec::new(),
             last_error:   None,
+            prelude:      None,
+        })
+    }
+
+    /// Create a new VM with extra modules AND a prelude source injected before
+    /// user scripts.  Used by `RuneBehaviour` for gameplay scripts.
+    pub fn new_with_extra_modules_and_prelude(
+        source_paths:    &[&Path],
+        extra_modules_fn: impl Fn() -> anyhow::Result<Vec<rune::Module>>,
+        prelude:          &'static str,
+    ) -> anyhow::Result<Self> {
+        let mut ctx = rune::Context::with_default_modules()
+            .context("Failed to create default Rune context")?;
+
+        for m in crate::auto_binding::all_modules()? {
+            ctx.install(m).context("Failed to install engine module")?;
+        }
+        for m in extra_modules_fn()? {
+            ctx.install(m).context("Failed to install extra module")?;
+        }
+
+        let runtime = Arc::new(ctx.runtime().context("Failed to build Rune runtime")?);
+
+        let paths: Vec<PathBuf> = source_paths.iter().map(|p| p.to_path_buf()).collect();
+        let mut compile_ctx = rune::Context::with_default_modules()
+            .context("Failed to create compile context")?;
+        for m in crate::auto_binding::all_modules()? {
+            compile_ctx.install(m).context("Failed to install engine module (compile)")?;
+        }
+        for m in extra_modules_fn()? {
+            compile_ctx.install(m).context("Failed to install extra module (compile)")?;
+        }
+        let unit = Self::compile_paths_with_ctx_and_prelude(&paths, &compile_ctx, Some(prelude))?;
+
+        Ok(Self {
+            runtime,
+            unit:         Arc::new(RwLock::new(Arc::new(unit))),
+            source_paths: paths,
+            compile_ctx:  Some(Arc::new(compile_ctx)),
+            watcher:      None,
+            reload_hooks: Vec::new(),
+            last_error:   None,
+            prelude:      Some(prelude),
         })
     }
 
@@ -274,7 +320,7 @@ impl RuneVm {
             }
 
             let compile_result = match &self.compile_ctx {
-                Some(ctx) => Self::compile_paths_with_ctx(&self.source_paths, ctx),
+                Some(ctx) => Self::compile_paths_with_ctx_and_prelude(&self.source_paths, ctx, self.prelude),
                 None      => Self::compile_paths(&self.source_paths),
             };
             match compile_result {
@@ -310,7 +356,24 @@ impl RuneVm {
         paths: &[PathBuf],
         ctx:   &rune::Context,
     ) -> anyhow::Result<Unit> {
+        Self::compile_paths_with_ctx_and_prelude(paths, ctx, None)
+    }
+
+    /// Compile using a caller-supplied context, optionally injecting a prelude
+    /// source as the very first compilation unit (before any script files).
+    pub fn compile_paths_with_ctx_and_prelude(
+        paths:   &[PathBuf],
+        ctx:     &rune::Context,
+        prelude: Option<&str>,
+    ) -> anyhow::Result<Unit> {
         let mut sources = Sources::new();
+
+        if let Some(prelude_src) = prelude {
+            let source = Source::new("__prelude__", prelude_src.to_string())
+                .context("Failed to create prelude source")?;
+            let _ = sources.insert(source);
+        }
+
         for path in paths {
             let stem = path.file_stem()
                 .and_then(|s| s.to_str())

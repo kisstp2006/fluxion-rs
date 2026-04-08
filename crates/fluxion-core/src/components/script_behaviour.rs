@@ -15,12 +15,37 @@ use serde_json::Value as JsonValue;
 
 use crate::ecs::component::Component;
 
+/// Inspector annotation metadata parsed from `// [inspector: ...]` comments.
+///
+/// All fields are optional — missing means "use default inspector behaviour".
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScriptFieldMeta {
+    /// Widget hint: `"slider"`, `"drag"`, `"toggle"`, `"color"`, `"entity_ref"`,
+    /// `"mesh"`, `"material"`, `"audio"`, `"texture"`.  Empty = auto-detect from value type.
+    pub hint:    String,
+    /// Override the display label shown in the inspector.  Empty = use field name.
+    pub label:   String,
+    /// Minimum numeric value (for sliders / drag floats).
+    pub min:     f64,
+    /// Maximum numeric value (for sliders / drag floats).
+    pub max:     f64,
+    /// Tooltip shown on hover.
+    pub tooltip: String,
+    /// If true, field is hidden from the inspector (still readable by scripts).
+    pub hidden:  bool,
+    /// If true, field is shown as read-only in the inspector.
+    pub read_only: bool,
+}
+
 /// One serializable field extracted from a script struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScriptField {
     pub name:  String,
     /// JSON-encoded value: null / bool / number / string.
     pub value: JsonValue,
+    /// Optional inspector annotation metadata (from `// [inspector: ...]`).
+    #[serde(default)]
+    pub meta:  ScriptFieldMeta,
 }
 
 /// One attached Rune gameplay script entry.
@@ -80,6 +105,29 @@ impl Component for ScriptBundle {}
 ///
 /// Also scans `fn new(` body for `field: literal` assignments to infer typed defaults.
 /// Falls back to `JsonValue::Null` for fields with no detectable default.
+///
+/// # Inspector annotations
+/// Place a `// [inspector: ...]` comment on the line **directly above** a field to
+/// attach metadata.  Supported key=value tokens (comma-separated):
+/// - `slider`, `drag`, `toggle`, `color`, `entity_ref`, `mesh`, `material`, `audio`,
+///   `texture` — sets the widget hint.
+/// - `min=<f64>`, `max=<f64>` — clamp range for numeric widgets.
+/// - `label="..."` — override the display label.
+/// - `tooltip="..."` — hover tooltip.
+/// - `hide` — hide from inspector.
+/// - `readonly` — display as read-only.
+///
+/// Example:
+/// ```rune
+/// struct Player {
+///     // [inspector: slider, min=0, max=100, tooltip="Player health"]
+///     health,
+///     // [inspector: label="Move Speed", min=0, max=20]
+///     speed,
+///     // [inspector: hide]
+///     _internal_timer,
+/// }
+/// ```
 pub fn scan_struct_fields(source: &str, struct_name: &str) -> Vec<ScriptField> {
     let mut fields: Vec<ScriptField> = Vec::new();
 
@@ -90,24 +138,44 @@ pub fn scan_struct_fields(source: &str, struct_name: &str) -> Vec<ScriptField> {
     let Some(body_end) = after_header.find('}') else { return fields; };
     let body = &after_header[..body_end];
 
-    for line in body.lines() {
-        let trimmed = line.trim().trim_end_matches(',');
-        if trimmed.is_empty() || trimmed.starts_with('/') { continue; }
+    // Collect lines and their preceding annotation comment (if any).
+    let lines: Vec<&str> = body.lines().collect();
+    let mut pending_meta: Option<ScriptFieldMeta> = None;
+
+    for line in &lines {
+        let trimmed = line.trim();
+
+        // Check for [inspector: ...] annotation comment.
+        if let Some(rest) = trimmed.strip_prefix("// [inspector:") {
+            let rest = rest.trim_end_matches(']').trim();
+            pending_meta = Some(parse_inspector_annotation(rest));
+            continue;
+        }
+
+        // Skip other comments and blank lines but preserve pending_meta across blank lines.
+        if trimmed.is_empty() { continue; }
+        if trimmed.starts_with('/') {
+            // Non-annotation comment — reset pending meta.
+            pending_meta = None;
+            continue;
+        }
+
         // Field lines are bare identifiers (no `:` type annotations in Rune structs).
-        if trimmed.chars().all(|c| c.is_alphanumeric() || c == '_') && !trimmed.is_empty() {
-            fields.push(ScriptField { name: trimmed.to_string(), value: JsonValue::Null });
+        let field_name = trimmed.trim_end_matches(',');
+        if field_name.chars().all(|c| c.is_alphanumeric() || c == '_') && !field_name.is_empty() {
+            let meta = pending_meta.take().unwrap_or_default();
+            fields.push(ScriptField { name: field_name.to_string(), value: JsonValue::Null, meta });
+        } else {
+            pending_meta = None;
         }
     }
 
     if fields.is_empty() { return fields; }
 
     // ── 2. Scan fn new() body for typed defaults ──────────────────────────────
-    // Look for `FieldName {` (struct literal) inside fn new to find defaults.
-    let new_header = format!("{}  {{", struct_name); // struct literal: `StructName  {`
-    // More robust: look for the struct name followed by `{` inside fn new body.
+    let new_header = format!("{}  {{", struct_name);
     if let Some(fn_new_pos) = source.find("fn new(") {
         let fn_body = &source[fn_new_pos..];
-        // Find the struct literal: StructName {
         let lit_header = format!("{} {{", struct_name);
         let lit_pos_opt = fn_body.find(&lit_header)
             .or_else(|| fn_body.find(&new_header));
@@ -129,6 +197,44 @@ pub fn scan_struct_fields(source: &str, struct_name: &str) -> Vec<ScriptField> {
     }
 
     fields
+}
+
+/// Parse a `// [inspector: ...]` annotation body into `ScriptFieldMeta`.
+/// `src` is the text **between** `// [inspector:` and `]` (already trimmed).
+fn parse_inspector_annotation(src: &str) -> ScriptFieldMeta {
+    let mut meta = ScriptFieldMeta::default();
+
+    for token in src.split(',') {
+        let token = token.trim();
+        if token.is_empty() { continue; }
+
+        // Key=value tokens.
+        if let Some(eq) = token.find('=') {
+            let key = token[..eq].trim();
+            let val = token[eq + 1..].trim().trim_matches('"');
+            match key {
+                "min"     => { meta.min = val.parse().unwrap_or(0.0); }
+                "max"     => { meta.max = val.parse().unwrap_or(0.0); }
+                "label"   => { meta.label   = val.to_string(); }
+                "tooltip" => { meta.tooltip = val.to_string(); }
+                _         => {}
+            }
+        } else {
+            // Bare keyword tokens.
+            match token {
+                "slider" | "drag" | "toggle" | "color"
+                | "entity_ref" | "mesh" | "material"
+                | "audio" | "texture" | "scene" => {
+                    meta.hint = token.to_string();
+                }
+                "hide"     => { meta.hidden    = true; }
+                "readonly" => { meta.read_only = true; }
+                _          => {}
+            }
+        }
+    }
+
+    meta
 }
 
 /// Heuristically convert a Rune literal token to a `serde_json::Value`.

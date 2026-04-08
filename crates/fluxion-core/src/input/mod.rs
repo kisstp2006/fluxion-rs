@@ -87,6 +87,8 @@ pub fn default_input_actions() -> Vec<InputAction> {
 #[derive(Debug, Clone)]
 pub struct InputState {
     keys_down: HashSet<String>,
+    keys_just_pressed:  HashSet<String>,
+    keys_just_released: HashSet<String>,
     mouse_position: (f32, f32),
     mouse_delta: (f32, f32),
     last_mouse_position: Option<(f32, f32)>,
@@ -110,6 +112,8 @@ impl Default for InputState {
     fn default() -> Self {
         Self {
             keys_down: HashSet::new(),
+            keys_just_pressed:  HashSet::new(),
+            keys_just_released: HashSet::new(),
             mouse_position: (0.0, 0.0),
             mouse_delta: (0.0, 0.0),
             last_mouse_position: None,
@@ -137,6 +141,8 @@ impl InputState {
     pub fn begin_frame(&mut self) {
         self.mouse_delta = (0.0, 0.0);
         self.scroll_delta = (0.0, 0.0);
+        self.keys_just_pressed.clear();
+        self.keys_just_released.clear();
     }
 
     /// Reset gamepad snapshot (call at frame start; backend overwrites if a pad is active).
@@ -177,10 +183,22 @@ impl InputState {
 
     pub fn set_key_down(&mut self, code: &str, down: bool) {
         if down {
-            self.keys_down.insert(code.to_string());
+            if self.keys_down.insert(code.to_string()) {
+                self.keys_just_pressed.insert(code.to_string());
+            }
         } else {
-            self.keys_down.remove(code);
+            if self.keys_down.remove(code) {
+                self.keys_just_released.insert(code.to_string());
+            }
         }
+    }
+
+    pub fn is_key_just_pressed(&self, code: &str) -> bool {
+        self.keys_just_pressed.contains(code)
+    }
+
+    pub fn is_key_just_released(&self, code: &str) -> bool {
+        self.keys_just_released.contains(code)
     }
 
     pub fn set_mouse_position(&mut self, x: f32, y: f32) {

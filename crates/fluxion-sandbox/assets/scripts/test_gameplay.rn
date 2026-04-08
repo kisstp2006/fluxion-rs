@@ -1,74 +1,67 @@
 // ============================================================
-// test_gameplay.rn — Rune gameplay scripting test
+// test_gameplay.rn — Example gameplay script (new Unity-style API)
 //
-// HOW TO USE IN THE EDITOR:
-//   1. Open a project and create a scene with at least one entity
-//      (e.g. a cube with a MeshRenderer component).
-//   2. Select the entity, add a "ScriptBundle" component in the Inspector.
-//   3. Set the script path to:
-//        assets/scripts/test_gameplay.rn
-//      (relative to your project root)
-//   4. Press ▶ Play.
+// Demonstrates the prelude-based OOP API:
+//   self_transform() / self_gameobject()
+//   Transform::rotate / translate / position
+//   Input::get_key / get_axis using Key constants
+//   Time::frame_count / Debug::log
 //
-// WHAT TO OBSERVE:
-//   - Console: "[TestScript] start() on '<entity-name>'" appears once.
-//   - The entity spins continuously around its Y axis (90°/s).
-//   - WASD moves the entity horizontally, Space/ShiftLeft move up/down.
-//   - Console: "[TestScript] frame=… t=…s dt=…s" logs every ~60 frames.
-//   - Inspector shows a "rotate_speed" slider field after the first tick.
-//
-// MODULES EXERCISED:
-//   fluxion::script   — self_entity(), declare_field(), field()
-//   fluxion::entity   — name(), get/set_position, get/set_rotation_euler
-//   fluxion::input    — key_down()
-//   fluxion::time     — frame(), elapsed()
-//   fluxion::math     — pi()
-//   fluxion::debug    — log()
+// Inspector fields come from the TestGameplay struct below.
 // ============================================================
 
+struct TestGameplay {
+    rotate_speed,
+    move_speed,
+    jump_key,
+}
+
+impl TestGameplay {
+    pub fn new() {
+        TestGameplay {
+            rotate_speed: 90.0,
+            move_speed: 5.0,
+            jump_key: 0.0,
+        }
+    }
+}
+
 pub fn start() {
-    let id   = fluxion::script::self_entity();
-    let name = fluxion::entity::name(id);
-    fluxion::debug::log(`[TestScript] start() on '${name}'  (id=${id})`);
+    let go = self_gameobject();
+    Debug::log(`[TestScript] start() — entity: ${go.name()}`);
 }
 
 pub fn update(dt) {
-    let id = fluxion::script::self_entity();
+    let transform = self_transform();
 
-    // ── Declare an inspector-editable speed field ─────────────────────────────
-    fluxion::script::declare_field("rotate_speed", "f32", "slider", 0.0, 720.0);
+    // ── Rotation (Y axis, degrees per second) ────────────────────────────────
+    // rotate() takes degree deltas — no read-modify-write needed.
+    transform.rotate(0.0, 90.0 * dt, 0.0);
 
-    // ── Rotate Y axis (default 90 deg/s = π/2 rad/s) ─────────────────────────
-    let rot = fluxion::entity::get_rotation_euler(id);
-    let rad_per_s = fluxion::math::pi() * 0.5;
-    fluxion::entity::set_rotation_euler(id, [rot[0], rot[1] + rad_per_s * dt, rot[2]]);
+    // ── WASD Movement ────────────────────────────────────────────────────────
+    let h = Input::get_axis(Key::A(), Key::D());
+    let v = Input::get_axis(Key::S(), Key::W());
 
-    // ── WASD + Space/Shift movement ───────────────────────────────────────────
-    let pos = fluxion::entity::get_position(id);
-    let spd = 5.0 * dt;
+    let move_speed = 5.0;
+    let delta = Vec3 { x: h * move_speed * dt, y: 0.0, z: v * move_speed * dt };
+    transform.translate(delta);
 
-    let dx = if fluxion::input::key_down("KeyD")     {  spd }
-             else if fluxion::input::key_down("KeyA") { -spd }
-             else { 0.0 };
-    let dz = if fluxion::input::key_down("KeyW")     { -spd }
-             else if fluxion::input::key_down("KeyS") {  spd }
-             else { 0.0 };
-    let dy = if fluxion::input::key_down("Space")         {  spd }
-             else if fluxion::input::key_down("ShiftLeft") { -spd }
-             else { 0.0 };
+    // ── Sprint (hold Shift for 2x speed) ─────────────────────────────────────
+    let sprint = if Input::get_key(Key::LeftShift()) { 2.0 } else { 1.0 };
 
-    if dx != 0.0 || dy != 0.0 || dz != 0.0 {
-        fluxion::entity::set_position(id, [pos[0] + dx, pos[1] + dy, pos[2] + dz]);
+    // ── Jump on Space (just-pressed) ──────────────────────────────────────────
+    if Input::get_key_down(Key::Space()) {
+        Debug::log("[TestScript] Jump!");
     }
 
-    // ── Periodic heartbeat log (~every 60 frames) ─────────────────────────────
-    let frame   = fluxion::time::frame();
-    let elapsed = fluxion::time::elapsed();
+    // ── Debug output every 60 frames ─────────────────────────────────────────
+    let frame = Time::frame_count();
     if frame % 60 == 0 {
-        fluxion::debug::log(`[TestScript] frame=${frame}  t=${elapsed:.2}s  dt=${dt:.4}s`);
+        let pos = transform.position();
+        Debug::log(`[TestScript] frame=${frame}  pos=(${pos.x:.2}, ${pos.y:.2}, ${pos.z:.2})`);
     }
 }
 
 pub fn on_destroy() {
-    fluxion::debug::log("[TestScript] on_destroy() called");
+    Debug::log("[TestScript] on_destroy() called");
 }

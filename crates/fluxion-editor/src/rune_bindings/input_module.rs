@@ -57,6 +57,16 @@ pub fn build_input_module() -> Result<Module, ContextError> {
         with_input(|i| i.is_key_down(&code))
     }).build()?;
 
+    // Returns true on the first frame the key is pressed (just-pressed).
+    m.function("key_pressed", |code: String| -> bool {
+        with_input(|i| i.is_key_just_pressed(&code))
+    }).build()?;
+
+    // Returns true on the first frame the key is released (just-released).
+    m.function("key_released", |code: String| -> bool {
+        with_input(|i| i.is_key_just_released(&code))
+    }).build()?;
+
     // Unity-style axis: returns -1..1 from two opposing keys.
     m.function("get_axis", |neg: String, pos: String| -> f64 {
         with_input(|i| i.get_axis(&neg, &pos) as f64)

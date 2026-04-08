@@ -71,6 +71,32 @@ impl RuneBehaviour {
         })
     }
 
+    /// Load a gameplay behaviour, auto-injecting the Fluxion prelude before the script.
+    ///
+    /// The prelude defines the OOP-style API (Transform, GameObject, Vec3, Input, etc.)
+    /// wrapping the `fluxion::native::*` free functions provided by `extra_modules_fn`.
+    pub fn from_file_with_prelude_and_extra_modules(
+        path: &Path,
+        extra_modules_fn: impl Fn() -> anyhow::Result<Vec<rune::Module>>,
+    ) -> anyhow::Result<Self> {
+        let mut vm = RuneVm::new_with_extra_modules_and_prelude(
+            &[path],
+            extra_modules_fn,
+            crate::GAMEPLAY_PRELUDE,
+        )
+        .with_context(|| format!("Failed to compile {:?}", path))?;
+
+        if let Some(dir) = path.parent() {
+            let _ = vm.enable_hot_reload(dir);
+        }
+
+        Ok(Self {
+            vm,
+            script_path: path.to_path_buf(),
+            started: false,
+        })
+    }
+
     /// Call per-frame. Calls `start()` on the first tick, then `update(dt)`.
     pub fn tick(&mut self, dt: f32) {
         // Process any pending hot-reload events first.
