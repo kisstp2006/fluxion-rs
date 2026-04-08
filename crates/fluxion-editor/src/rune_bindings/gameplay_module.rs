@@ -457,5 +457,9 @@ pub fn build_gameplay_modules() -> anyhow::Result<Vec<Module>> {
     Ok(vec![
         build_script_module()?,
         build_entity_module()?,
+        // Full input API (key_down, axis_horizontal, mouse_delta, action_pressed, …)
+        // backed by the thread-local InputState pointer set in tick_gameplay_scripts.
+        super::input_module::build_input_module()
+            .map_err(|e| anyhow::anyhow!("input module: {e}"))?,
     ])
 }

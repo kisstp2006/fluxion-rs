@@ -24,7 +24,7 @@ use fluxion_core::{
     components::rigid_body::RigidBody,
 };
 use glam::{Quat, Vec3};
-use fluxion_rune_scripting::{RuneVm, RuneBehaviour};
+use fluxion_rune_scripting::{RuneVm, RuneBehaviour, TIME_SNAPSHOT, input_snapshot};
 
 use crate::rune_bindings::{
     all_editor_modules,
@@ -255,8 +255,18 @@ impl EditorHost {
 
         let dt = self.time.dt;
 
+        // Push frame timing so fluxion::time::delta_time() / elapsed() / frame() work.
+        TIME_SNAPSHOT.update(self.time.dt, self.time.elapsed, self.time.frame_count);
+
+        // Push held keys so fluxion::input::get_key() works in gameplay scripts.
+        let held: Vec<String> = self.input.held_keys().map(str::to_string).collect();
+        input_snapshot().update(held, vec![], vec![]);
+
         // Make world + registry available to gameplay Rune modules.
         let _guard = set_world_context(&self.world, &self.registry);
+
+        // Make input available via fluxion::input::key_down() / axis_horizontal() etc.
+        set_input_context(&mut self.input);
 
         let keys: Vec<(fluxion_core::EntityId, String)> = self.gameplay_scripts.keys().cloned().collect();
         for (entity_id, script_name) in keys {
@@ -311,6 +321,7 @@ impl EditorHost {
 
         // Drop guard before any world mutations.
         drop(_guard);
+        clear_input_context();
 
         // Apply deferred spawns/destroys from gameplay scripts.
         for bits in drain_pending_destroys() {

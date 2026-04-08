@@ -169,6 +169,12 @@ impl InputState {
         self.keys_down.contains(code)
     }
 
+    /// Returns an iterator over all currently-held key codes.
+    /// Used by the editor to push the held set into the Rune `INPUT_SNAPSHOT_CELL`.
+    pub fn held_keys(&self) -> impl Iterator<Item = &str> {
+        self.keys_down.iter().map(|s| s.as_str())
+    }
+
     pub fn set_key_down(&mut self, code: &str, down: bool) {
         if down {
             self.keys_down.insert(code.to_string());
