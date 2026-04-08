@@ -36,6 +36,12 @@ fn define_view_menu() {
     fluxion::ui::menu_register_item_priority("View.Transform Tools", "Scale", 30);
 }
 
+fn define_tools_menu() {
+    fluxion::ui::menu_register_item_priority("Tools", "Start Rune LSP", 10);
+    fluxion::ui::menu_register_item_priority("Tools", "Restart Rune LSP", 20);
+    fluxion::ui::menu_register_item_priority("Tools", "Stop Rune LSP", 30);
+}
+
 fn define_help_menu() {
     fluxion::ui::menu_register_item_priority("Help", "About FluxionRS", 10);
 }
@@ -44,6 +50,7 @@ pub fn panel() {
     define_file_menu();
     define_edit_menu();
     define_view_menu();
+    define_tools_menu();
     define_help_menu();
 
     let can_undo = fluxion::world::can_undo();
@@ -65,6 +72,12 @@ pub fn panel() {
     if view_clicked == "View/Transform Tools/Translate" { fluxion::world::set_transform_tool("Translate"); }
     if view_clicked == "View/Transform Tools/Rotate"    { fluxion::world::set_transform_tool("Rotate"); }
     if view_clicked == "View/Transform Tools/Scale"     { fluxion::world::set_transform_tool("Scale"); }
+
+    let lsp_on = fluxion::world::lsp_running();
+    let tools_clicked = fluxion::ui::menu_render("Tools");
+    if tools_clicked == "Tools/Start Rune LSP"   && !lsp_on { fluxion::world::push_action("lsp_start"); }
+    if tools_clicked == "Tools/Restart Rune LSP"            { fluxion::world::push_action("lsp_restart"); }
+    if tools_clicked == "Tools/Stop Rune LSP"    && lsp_on  { fluxion::world::push_action("lsp_stop"); }
 
     let _help_clicked = fluxion::ui::menu_render("Help");
 }

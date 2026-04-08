@@ -9,6 +9,7 @@
 mod dock;
 mod host;
 mod icons;
+mod lsp_manager;
 mod project_chooser;
 mod rune_bindings;
 mod theme;
@@ -155,6 +156,9 @@ struct EditorInner {
     editor_prefs: EditorPrefs,
     /// Autosave countdown timer in seconds.
     autosave_timer: f32,
+
+    // Rune language server process manager.
+    lsp_manager: lsp_manager::LspManager,
 }
 
 // ── ApplicationHandler impl ───────────────────────────────────────────────────
@@ -428,6 +432,7 @@ impl EditorApp {
             file_watcher_cooldown: 0.0,
             editor_prefs: EditorPrefs::default(),
             autosave_timer: 0.0,
+            lsp_manager: lsp_manager::LspManager::new(),
         };
 
         // Push project root so Rune asset browser can enumerate files.
@@ -451,6 +456,14 @@ impl EditorApp {
             inner.project_root.clone(),
         );
         inner.editor_prefs = prefs;
+
+        // Auto-launch the bundled Rune language server.
+        if let Some(lsp_bin) = lsp_manager::LspManager::resolve_binary() {
+            inner.lsp_manager.start(&lsp_bin);
+            write_vscode_settings(&inner.project_root, &lsp_bin);
+        } else {
+            log::warn!("[LSP] rune-languageserver not found — run `cargo install rune-languageserver` to enable LSP support");
+        }
 
         *self = EditorApp::Running(Rc::new(RefCell::new(inner)));
     }
@@ -865,6 +878,22 @@ impl EditorInner {
                     let world    = &self.host.world    as *const _;
                     let registry = &self.host.registry as *const _;
                     unsafe { self.host.undo.redo(&*world, &*registry); }
+                }
+                "lsp_start" => {
+                    if let Some(bin) = lsp_manager::LspManager::resolve_binary() {
+                        self.lsp_manager.start(&bin);
+                        write_vscode_settings(&self.project_root, &bin);
+                    } else {
+                        log::warn!("[LSP] rune-languageserver not found — run `cargo install rune-languageserver`");
+                    }
+                }
+                "lsp_restart" => {
+                    if let Some(bin) = lsp_manager::LspManager::resolve_binary() {
+                        self.lsp_manager.restart(&bin);
+                    }
+                }
+                "lsp_stop" => {
+                    self.lsp_manager.stop();
                 }
                 s if s.starts_with("camera_preview:") => {
                     let id_str = &s["camera_preview:".len()..];
@@ -1307,5 +1336,45 @@ impl EditorInner {
             self.host.world.despawn(id);
             self.scene_dirty = true;
         }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Write (or merge) `.vscode/settings.json` in the project root so VS Code
+/// picks up the bundled Rune language server automatically.
+fn write_vscode_settings(project_root: &std::path::Path, lsp_binary: &std::path::Path) {
+    let vscode_dir = project_root.join(".vscode");
+    if let Err(e) = std::fs::create_dir_all(&vscode_dir) {
+        log::warn!("[LSP] could not create .vscode dir: {e}");
+        return;
+    }
+    let settings_path = vscode_dir.join("settings.json");
+
+    // Read existing JSON (or start with empty object).
+    let mut json: serde_json::Value = if settings_path.exists() {
+        std::fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let lsp_path_str = lsp_binary.to_string_lossy().to_string();
+    if let Some(obj) = json.as_object_mut() {
+        obj.insert("rune.languageServer.path".to_string(),    serde_json::Value::String(lsp_path_str));
+        obj.insert("rune.languageServer.enabled".to_string(), serde_json::Value::Bool(true));
+    }
+
+    match serde_json::to_string_pretty(&json) {
+        Ok(text) => {
+            if let Err(e) = std::fs::write(&settings_path, text) {
+                log::warn!("[LSP] could not write .vscode/settings.json: {e}");
+            } else {
+                log::info!("[LSP] wrote .vscode/settings.json ({})", settings_path.display());
+            }
+        }
+        Err(e) => log::warn!("[LSP] JSON serialize error: {e}"),
     }
 }

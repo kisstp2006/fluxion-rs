@@ -9,6 +9,7 @@ members = [
     "crates/fluxion-audio",
     "crates/fluxion-sandbox",
     "crates/fluxion-editor",
+    "crates/fluxion-rune-lsp",
 ]
 resolver = "2"
 

@@ -2363,6 +2363,10 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         ACTION_SIGNALS.with(|s| s.borrow_mut().push(signal));
     }).build()?;
 
+    m.function("lsp_running", || -> bool {
+        crate::lsp_manager::LSP_RUNNING.load(std::sync::atomic::Ordering::Relaxed)
+    }).build()?;
+
     // ── Editor camera state (read/write by editor_camera.rn) ─────────────────
 
     m.function("get_editor_cam_pos", || -> Vec<f64> {

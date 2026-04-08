@@ -1,0 +1,15 @@
+[package]
+name        = "fluxion-rune-lsp"
+version     = "0.1.0"
+edition     = "2021"
+description = "Bundled Rune language server binary for the FluxionRS editor."
+
+[[bin]]
+name = "fluxion-rune-lsp"
+path = "src/main.rs"
+
+[dependencies]
+rune         = { version = "0.14", features = ["languageserver"] }
+rune-modules = "0.14"
+tokio        = { version = "1", features = ["full"] }
+anyhow       = "1"
