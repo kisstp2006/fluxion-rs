@@ -134,6 +134,7 @@ pub fn get_layout() -> ViewportLayout {
 }
 
 /// Returns true if viewport fullscreen mode is active.
+#[allow(dead_code)]
 pub fn get_fullscreen() -> bool {
     VP_FULLSCREEN.with(|c| c.get())
 }

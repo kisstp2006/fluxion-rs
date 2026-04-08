@@ -8,21 +8,6 @@
 
 pub mod inspector {
 
-// ── prop_section_begin / prop_section_end — consistent collapsible section headers
-// with a leading separator.  Callers must wrap body in `if prop_section_begin(...) { ... prop_section_end(); }`.
-
-fn prop_section_begin(title) {
-    fluxion::ui::separator();
-    let open = fluxion::ui::collapsing_begin(title);
-    if open { fluxion::ui::indent_push(); }
-    open
-}
-
-fn prop_section_end() {
-    fluxion::ui::indent_pop();
-    fluxion::ui::collapsing_end();
-}
-
 // ── draw_field — single authoritative widget dispatch for reflected component fields.
 // All reads/writes go through world::get_xxx / set_xxx.
 

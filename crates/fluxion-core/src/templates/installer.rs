@@ -5,7 +5,7 @@
 // project directories with progress tracking.
 // ============================================================
 
-use super::{ProjectTemplate, TemplateOptions};
+use super::TemplateOptions;
 use crate::project::ProjectConfig;
 use std::path::Path;
 use std::time::{Duration, Instant};

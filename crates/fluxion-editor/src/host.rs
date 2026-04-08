@@ -90,7 +90,7 @@ pub struct EditorHost {
 
 impl EditorHost {
     pub fn new(scripts_dir: PathBuf) -> anyhow::Result<Self> {
-        let mut world    = ECSWorld::new();
+        let world    = ECSWorld::new();
         let mut registry = ComponentRegistry::new();
         registry.register_builtins();
 
@@ -162,6 +162,7 @@ impl EditorHost {
     }
 
     /// If the world has no entity with a Camera component, spawn a default editor camera.
+    #[allow(dead_code)]
     pub fn ensure_camera_exists(world: &mut ECSWorld) {
         let all: Vec<_> = world.all_entities().collect();
         let has_camera = all.iter().any(|&id| world.get_component::<Camera>(id).is_some());

@@ -303,6 +303,7 @@ pub fn set_editor_cam_entity(entity: Option<EntityId>) {
 }
 
 /// Returns the editor camera entity bits as i64, or -1 if unset.
+#[allow(dead_code)]
 pub fn get_editor_cam_entity_id() -> i64 {
     EDITOR_CAM_ID.with(|c| c.get().map(|e| e.to_bits() as i64).unwrap_or(-1))
 }
@@ -454,16 +455,19 @@ pub fn get_editor_cam_state() -> EditorCameraState {
 }
 
 /// Read editor camera position [x,y,z] (for main.rs to push to renderer).
+#[allow(dead_code)]
 pub fn get_editor_cam_pos() -> [f64; 3] {
     EDITOR_CAM.with(|c| c.borrow().pos)
 }
 
 /// Read editor camera yaw (radians).
+#[allow(dead_code)]
 pub fn get_editor_cam_yaw() -> f64 {
     EDITOR_CAM.with(|c| c.borrow().yaw)
 }
 
 /// Read editor camera pitch (radians).
+#[allow(dead_code)]
 pub fn get_editor_cam_pitch() -> f64 {
     EDITOR_CAM.with(|c| c.borrow().pitch)
 }
@@ -480,6 +484,7 @@ pub fn init_editor_cam(pos: [f64; 3], yaw: f64, pitch: f64) {
 }
 
 /// Returns true if the editor camera was mutated by Rune this frame, then clears the flag.
+#[allow(dead_code)]
 pub fn take_editor_cam_dirty() -> bool {
     EDITOR_CAM_DIRTY.with(|c| {
         let v = c.get();

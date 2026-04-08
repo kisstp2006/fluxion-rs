@@ -136,19 +136,6 @@ fn field_decl_store() -> &'static Mutex<HashMap<String, Vec<Vec<String>>>> {
     FIELD_DECL_STORE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Called by the `declare_field` Rune binding to register field metadata.
-fn store_field_decl(script_name: &str, decl: Vec<String>) {
-    if let Ok(mut map) = field_decl_store().lock() {
-        let entry = map.entry(script_name.to_string()).or_default();
-        // Replace existing declaration with the same field name, or append.
-        if let Some(existing) = entry.iter_mut().find(|d| d.first().map(|n| n == &decl[0]).unwrap_or(false)) {
-            *existing = decl;
-        } else {
-            entry.push(decl);
-        }
-    }
-}
-
 /// Returns declared field metadata for a script by name.
 /// Each inner Vec is [name, type_str, hint, min_str, max_str].
 pub fn get_field_decls(script_name: &str) -> Vec<Vec<String>> {

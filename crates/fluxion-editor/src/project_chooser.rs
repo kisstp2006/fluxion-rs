@@ -14,7 +14,7 @@ use egui::{Align2, Color32, Context, FontId, RichText, Vec2, Window};
 
 use fluxion_core::{
     ProjectConfig, RecentProject,
-    create_project, load_project, load_recent_projects, push_recent_project,
+    load_project, load_recent_projects, push_recent_project,
     TemplateRegistry, TemplateCategory, TemplateOptions, TemplateInstaller,
 };
 
@@ -264,7 +264,7 @@ impl ProjectChooser {
             let mut clicked_template = None;
             
             for (i, template_meta) in templates.iter().enumerate() {
-                let template_id = if let Some(id) = self.template_registry.get_all().iter()
+                let template_id = if let Some(_id) = self.template_registry.get_all().iter()
                     .find(|m| std::ptr::eq(*m, template_meta))
                     .and_then(|m| self.template_registry.get_all().iter().position(|x| std::ptr::eq(x, m))) {
                     // Get template ID by matching metadata - this is a workaround
@@ -478,20 +478,6 @@ impl ProjectChooser {
             }
         } else {
             self.error_msg = Some("No template selected".to_string());
-        }
-    }
-
-    fn create_new(&mut self) {
-        let name = self.new_name.trim().to_string();
-        let base = PathBuf::from(self.new_dir.trim());
-        let root = base.join(&name);
-        match create_project(&root, &name) {
-            Ok(config) => {
-                self.record_and_emit(config, root);
-            }
-            Err(e) => {
-                self.error_msg = Some(format!("Failed to create project: {e}"));
-            }
         }
     }
 

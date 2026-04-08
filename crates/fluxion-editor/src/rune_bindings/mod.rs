@@ -17,17 +17,15 @@ pub use world_module::{
     drain_pending_edits, PendingEdit,
     get_selected_id, set_selected_id, set_project_root, set_undo_state, set_frame_time, set_time_elapsed,
     set_editor_shell_state, drain_action_signals, get_editor_mode_str, force_editor_mode, get_transform_tool_str,
-    get_editor_cam_pos, get_editor_cam_yaw, get_editor_cam_pitch,
-    get_editor_cam_state, EditorCameraState,
-    init_editor_cam, take_editor_cam_dirty,
+    get_editor_cam_state,
+    init_editor_cam,
     set_asset_db_context, clear_asset_db_context,
     set_frame_stats,
     get_snap_enabled, get_snap_translate, get_snap_rotate, get_snap_scale,
     get_multi_selected,
     get_box_gizmo_mode_raw,
-    set_editor_cam_entity, get_editor_cam_entity_id,
+    set_editor_cam_entity,
     rescan_asset_refs, load_asset_refs, apply_path_rename, clear_asset_refs_by_guid,
-    entity_from_id,
 };
 pub use camera_module::{
     set_camera_snapshot, set_camera_world, clear_camera_world,
@@ -36,7 +34,7 @@ pub use camera_module::{
 pub use environment_module::{
     set_environment_world, clear_environment_world, drain_environment_edits, EnvEditValue,
 };
-pub use viewport_module::{set_viewport_texture, set_pane_texture, get_layout, get_fullscreen};
+pub use viewport_module::{set_viewport_texture, set_pane_texture};
 pub use physics_module::{set_physics_context, clear_physics_context};
 pub use fluxion_audio::{set_audio_context, clear_audio_context};
 pub use input_module::{set_input_context, clear_input_context, set_action_map};

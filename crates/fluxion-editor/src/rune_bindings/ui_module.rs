@@ -211,15 +211,6 @@ fn with_ui<R>(f: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
     })
 }
 
-/// Returns the label column width for inspector property rows:
-/// ~40 % of the total panel width, clamped to [80, 180] px.
-/// IMPORTANT: call this BEFORE entering a horizontal() closure so
-/// ui.available_width() still reflects the full panel width.
-#[inline]
-fn prop_lbl_w(ui: &egui::Ui) -> f32 {
-    (ui.available_width() * 0.38).max(80.0).min(180.0)
-}
-
 /// Muted label colour used for all inspector property labels.
 #[inline]
 fn prop_lbl_color() -> egui::Color32 {
@@ -240,13 +231,6 @@ fn prop_split(ui: &egui::Ui) -> (f32, f32) {
     let lbl_w  = (total * 0.38).max(80.0).min(180.0);
     let wid_w  = (total - lbl_w - ui.spacing().item_spacing.x).max(20.0);
     (lbl_w, wid_w)
-}
-
-/// Returns the widget column width for inspector property rows:
-/// available width minus the label column width.
-#[inline]
-fn prop_widget_w(ui: &egui::Ui) -> f32 {
-    ui.available_width() - prop_lbl_w(ui)
 }
 
 fn split_menu_path(path: &str) -> Vec<&str> {

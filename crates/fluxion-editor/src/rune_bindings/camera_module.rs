@@ -38,6 +38,7 @@ use crate::rune_bindings::world_module::entity_from_id;
 pub struct CameraSnapshot {
     pub view_proj:     [[f32; 4]; 4],
     pub inv_view_proj: [[f32; 4]; 4],
+    #[allow(dead_code)]
     pub position:      [f32; 3],
     pub viewport_w:    u32,
     pub viewport_h:    u32,

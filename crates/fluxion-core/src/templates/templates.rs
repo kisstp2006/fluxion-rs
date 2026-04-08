@@ -68,7 +68,7 @@ impl ProjectTemplate for Empty3DTemplate {
         })
     }
     
-    fn create_directories(&self, base_path: &Path, options: &TemplateOptions) -> Result<(), String> {
+    fn create_directories(&self, base_path: &Path, _options: &TemplateOptions) -> Result<(), String> {
         let dirs = [
             "Assets",
             "Assets/Scenes",
@@ -190,7 +190,7 @@ impl ProjectTemplate for Empty2DTemplate {
         })
     }
     
-    fn create_directories(&self, base_path: &Path, options: &TemplateOptions) -> Result<(), String> {
+    fn create_directories(&self, base_path: &Path, _options: &TemplateOptions) -> Result<(), String> {
         let dirs = [
             "Assets",
             "Assets/Scenes",
@@ -284,7 +284,7 @@ impl ProjectTemplate for Basic3DTemplate {
         })
     }
     
-    fn create_directories(&self, base_path: &Path, options: &TemplateOptions) -> Result<(), String> {
+    fn create_directories(&self, base_path: &Path, _options: &TemplateOptions) -> Result<(), String> {
         let dirs = [
             "Assets",
             "Assets/Scenes",
@@ -305,7 +305,7 @@ impl ProjectTemplate for Basic3DTemplate {
         Ok(())
     }
     
-    fn create_files(&self, base_path: &Path, options: &TemplateOptions) -> Result<(), String> {
+    fn create_files(&self, base_path: &Path, _options: &TemplateOptions) -> Result<(), String> {
         // Create player controller script
         let player_script = r#"pub fn start() {
     // Initialize player
