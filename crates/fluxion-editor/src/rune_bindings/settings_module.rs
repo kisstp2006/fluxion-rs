@@ -723,7 +723,7 @@ pub fn build_settings_module() -> anyhow::Result<Module> {
     }).build()?;
     m.function("set_script_editor", |v: String| {
         let clamped = match v.as_str() {
-            "vscode" | "vscodium" => v,
+            "builtin" | "vscode" | "vscodium" => v,
             _ => "default".to_string(),
         };
         set_prefs_field!(script_editor, clamped);

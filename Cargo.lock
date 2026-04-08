@@ -675,7 +675,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -1227,6 +1227,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_code_editor"
+version = "0.2.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26573fe7a122374ff9d0b02b1b4f7d3b36002d8a57c811514cd1053f6d9772ff"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui_dock"
 version = "0.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1599,6 +1608,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "egui_code_editor",
  "egui_dock",
  "egui_extras",
  "egui_ltreeview",

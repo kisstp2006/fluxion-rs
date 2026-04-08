@@ -12,6 +12,7 @@ mod icons;
 mod lsp_manager;
 mod project_chooser;
 mod rune_bindings;
+mod script_editor;
 mod theme;
 mod toolbar;
 mod ui_shell;
@@ -894,6 +895,31 @@ impl EditorInner {
                 }
                 "lsp_stop" => {
                     self.lsp_manager.stop();
+                }
+                s if s.starts_with("open_script:") => {
+                    let rel = &s["open_script:".len()..];
+                    // Asset paths are project-relative (e.g. "scripts/foo.rn").
+                    // Resolve: try project_root/assets/<rel>, then project_root/<rel>.
+                    let abs = {
+                        let with_assets = self.project_root.join("assets").join(rel);
+                        if with_assets.exists() {
+                            with_assets
+                        } else {
+                            let direct = self.project_root.join(rel);
+                            if direct.exists() {
+                                direct
+                            } else {
+                                std::path::PathBuf::from(rel)
+                            }
+                        }
+                    };
+                    if let Ok(mut ed) = script_editor::EDITOR.lock() {
+                        ed.open(abs);
+                    }
+                }
+                "script_saved" => {
+                    // Trigger hot-reload for gameplay scripts after manual save.
+                    self.host.rebuild_gameplay_scripts();
                 }
                 s if s.starts_with("camera_preview:") => {
                     let id_str = &s["camera_preview:".len()..];

@@ -1430,6 +1430,14 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         });
         let editor = crate::rune_bindings::settings_module::get_script_editor();
         match editor.as_str() {
+            "builtin" => {
+                // Route .rn files to the built-in script editor panel.
+                if path.ends_with(".rn") {
+                    ACTION_SIGNALS.with(|s| s.borrow_mut().push(format!("open_script:{path}")));
+                } else {
+                    open_with_default(&abs);
+                }
+            }
             "vscode" => {
                 if std::process::Command::new("code").arg(&abs).spawn().is_err() {
                     log::warn!("[Editor] 'code' not found in PATH, falling back to default");
@@ -2365,6 +2373,34 @@ pub fn build_world_module() -> anyhow::Result<Module> {
 
     m.function("lsp_running", || -> bool {
         crate::lsp_manager::LSP_RUNNING.load(std::sync::atomic::Ordering::Relaxed)
+    }).build()?;
+
+    // ── Script editor state (read by script_editor.rn) ───────────────────────
+
+    m.function("script_editor_filename", || -> String {
+        crate::script_editor::EDITOR.lock()
+            .map(|e| e.open_path.as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default())
+            .unwrap_or_default()
+    }).build()?;
+
+    m.function("script_editor_is_dirty", || -> bool {
+        crate::script_editor::EDITOR.lock()
+            .map(|e| e.dirty)
+            .unwrap_or(false)
+    }).build()?;
+
+    m.function("script_editor_save", || {
+        if let Ok(mut e) = crate::script_editor::EDITOR.lock() {
+            e.save();
+        }
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push("script_saved".to_string()));
+    }).build()?;
+
+    m.function("script_editor_open", |path: String| {
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push(format!("open_script:{path}")));
     }).build()?;
 
     // ── Editor camera state (read/write by editor_camera.rn) ─────────────────

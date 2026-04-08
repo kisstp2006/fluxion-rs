@@ -9,6 +9,7 @@
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
 
 use crate::rune_bindings::{set_current_ui, UiContextGuard};
+use crate::script_editor;
 
 // ── Tab data ─────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,17 @@ impl<'a> egui_dock::TabViewer for RuneTabViewer<'a> {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut EditorTab) {
+        // Script Editor tab is rendered directly in Rust (no Rune call needed).
+        if tab.rune_fn == "script_editor_panel::panel" {
+            if let Ok(mut ed) = script_editor::EDITOR.lock() {
+                let save_req = ui.input(|i| {
+                    i.modifiers.ctrl && i.key_pressed(egui::Key::S)
+                });
+                script_editor::render(ui, &mut ed, save_req);
+            }
+            return;
+        }
+
         // Build the &[&str] path from "module::function".
         let parts: Vec<&str> = tab.rune_fn.split("::").collect();
 
@@ -109,14 +121,15 @@ pub fn default_dock_state() -> DockState<EditorTab> {
         vec![EditorTab::new("Inspector", "inspector::panel")],
     );
 
-    // Split bottom 25% for Console + Assets + Debugger (tabbed together)
+    // Split bottom 25% for Console + Assets + Debugger + Script Editor (tabbed together)
     surface.split_below(
         hier_node,
         0.75,
         vec![
-            EditorTab::new("Console",  "console::panel"),
-            EditorTab::new("Assets",   "assets::panel"),
-            EditorTab::new("Debugger", "debugger::panel"),
+            EditorTab::new("Console",       "console::panel"),
+            EditorTab::new("Assets",        "assets::panel"),
+            EditorTab::new("Debugger",      "debugger::panel"),
+            EditorTab::new("Script Editor", "script_editor_panel::panel"),
         ],
     );
 

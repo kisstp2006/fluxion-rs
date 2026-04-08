@@ -92,6 +92,13 @@ fn handle_grid_action(action, path) {
         let t = fluxion::world::asset_type(path.clone());
         if t == "scene" {
             fluxion::world::load_scene(path.clone());
+        } else if path.ends_with(".rn") {
+            let editor_pref = fluxion::settings::get_script_editor();
+            if editor_pref == "builtin" {
+                fluxion::world::script_editor_open(path.clone());
+            } else {
+                fluxion::world::open_in_external_editor(path.clone());
+            }
         } else {
             fluxion::world::set_selected_asset(path.clone());
         }
@@ -122,6 +129,8 @@ fn handle_grid_action(action, path) {
         fluxion::world::asset_show_in_explorer(path.clone());
     } else if action == "ctx:Open in Editor" {
         fluxion::world::open_in_external_editor(path.clone());
+    } else if action == "ctx:Open in Built-in Editor" {
+        fluxion::world::script_editor_open(path.clone());
     } else if action == "ctx:Delete" {
         let refs = fluxion::world::asset_entity_refs(path.clone());
         if refs.len() > 0 {

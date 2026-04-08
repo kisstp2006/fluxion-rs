@@ -1015,7 +1015,7 @@ fn render_prefs_content_v3(ui: &mut egui::Ui, tab: &str) {
             v3_section(ui, "Script Editor");
             let se  = sm::with_prefs(|p| p.script_editor.clone()).unwrap_or_else(|| "default".to_string());
             let sed = sm::with_prefs_defaults(|p| p.script_editor.clone()).unwrap_or_else(|| "default".to_string());
-            if let Some(v) = v3_select(ui, "Open Scripts In", "Program used to open .rn and .js files from the asset browser", &se, &sed, &["default", "vscode", "vscodium"]) {
+            if let Some(v) = v3_select(ui, "Open Scripts In", "Program used to open .rn files from the asset browser (builtin = in-editor Script Editor tab)", &se, &sed, &["builtin", "default", "vscode", "vscodium"]) {
                 sm::modify_prefs(|p| p.script_editor = v);
             }
         }
