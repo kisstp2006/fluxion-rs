@@ -325,6 +325,8 @@ impl EditorApp {
 
         let scripts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts");
         let mut host = EditorHost::new(scripts_dir).expect("EditorHost init failed");
+        // Rebuild camera manager for the default scene spawned inside EditorHost::new().
+        host.camera_manager.rebuild(&host.world);
 
         // Enable gizmos in editor mode
         renderer.gizmos_enabled = true;
@@ -336,6 +338,7 @@ impl EditorApp {
                 if let Ok(data) = load_scene_file(sp.to_str().unwrap_or("")) {
                     host.world.clear();
                     let _ = load_scene_into_world(&mut host.world, &data, true, &host.registry);
+                    host.camera_manager.rebuild(&host.world);
                     log::info!("Loaded scene: {}", sp.display());
                 }
                 Some(sp)
@@ -1258,6 +1261,7 @@ impl EditorInner {
     pub fn new_scene(&mut self) {
         self.host.world.clear();
         host::EditorHost::spawn_default_scene_pub(&mut self.host.world);
+        self.host.camera_manager.rebuild(&self.host.world);
         self.scene_path  = None;
         self.scene_dirty = false;
         log::info!("New scene created");
@@ -1289,6 +1293,7 @@ impl EditorInner {
                     });
                     crate::rune_bindings::init_editor_cam(pos, yaw, pitch);
                 }
+                self.host.camera_manager.rebuild(&self.host.world);
                 self.scene_path  = Some(path);
                 self.scene_dirty = false;
                 log::info!("Scene loaded");

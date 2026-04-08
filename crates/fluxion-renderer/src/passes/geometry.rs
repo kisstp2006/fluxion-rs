@@ -261,22 +261,34 @@ impl RenderPass for GeometryPass {
         }
 
         // ── Begin MRT render pass ─────────────────────────────────────────────
+        // For the first camera always clear the GBuffer + depth.
+        // For subsequent cameras:
+        //   - DepthOnly / Nothing: load existing GBuffer + depth (composites on top).
+        //   - Skybox / SolidColor: clear GBuffer + depth (new background).
+        use fluxion_core::ClearFlags;
+        let do_clear = ctx.frame.is_first_camera
+            || matches!(ctx.frame.camera.clear_flags, ClearFlags::Skybox | ClearFlags::SolidColor);
+
+        let gbuf_load = if do_clear { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) } else { wgpu::LoadOp::Load };
+        let norm_load = if do_clear { wgpu::LoadOp::Clear(wgpu::Color { r: 0.5, g: 0.5, b: 1.0, a: 0.0 }) } else { wgpu::LoadOp::Load };
+        let depth_load = if do_clear { wgpu::LoadOp::Clear(1.0) } else { wgpu::LoadOp::Load };
+
         let res = ctx.resources;
         let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("geometry_pass"),
             color_attachments: &[
                 Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_albedo_ao.view, resolve_target: None, depth_slice: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store }}),
+                    ops: wgpu::Operations { load: gbuf_load, store: wgpu::StoreOp::Store }}),
                 Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_normal.view, resolve_target: None, depth_slice: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.5, g: 0.5, b: 1.0, a: 0.0 }), store: wgpu::StoreOp::Store }}),
+                    ops: wgpu::Operations { load: norm_load, store: wgpu::StoreOp::Store }}),
                 Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_orm.view, resolve_target: None, depth_slice: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store }}),
+                    ops: wgpu::Operations { load: gbuf_load, store: wgpu::StoreOp::Store }}),
                 Some(wgpu::RenderPassColorAttachment { view: &res.gbuf_emission.view, resolve_target: None, depth_slice: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store }}),
+                    ops: wgpu::Operations { load: gbuf_load, store: wgpu::StoreOp::Store }}),
             ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &res.depth.view,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations { load: depth_load, store: wgpu::StoreOp::Store }),
                 stencil_ops: None,
             }),
             ..Default::default()

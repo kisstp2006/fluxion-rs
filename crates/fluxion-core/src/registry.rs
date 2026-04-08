@@ -413,6 +413,7 @@ impl ComponentRegistry {
             if data.get("isOrthographic").and_then(|v| v.as_bool()).unwrap_or(false) {
                 c.projection_mode = ProjectionMode::Orthographic;
             }
+            c.validate();
             world.add_component(entity, c);
             Ok(())
         });

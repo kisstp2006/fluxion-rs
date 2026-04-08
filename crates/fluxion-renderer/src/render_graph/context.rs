@@ -189,6 +189,15 @@ pub struct FrameData {
     pub skinned_draw_calls: Vec<SkinnedDrawCall>,
     /// Debug view mode: 0=Lit, 1=Albedo, 2=Normal, 3=Roughness, 4=Metalness, 5=AO, 6=Emissive, 7=Unlit.
     pub debug_view: u32,
+
+    // ── Multi-camera rendering ─────────────────────────────────────────────────
+    /// Index of this camera in the depth-sorted list (0 = lowest depth).
+    pub camera_index: usize,
+    /// Total number of cameras being rendered this frame.
+    pub camera_count: usize,
+    /// `true` for the first camera in the stack (lowest depth).
+    /// Passes use this to decide whether to clear or load shared targets.
+    pub is_first_camera: bool,
 }
 
 // ── Shared GPU render targets ─────────────────────────────────────────────────

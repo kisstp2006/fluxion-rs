@@ -26,6 +26,7 @@ pub use world_module::{
     get_box_gizmo_mode_raw,
     set_editor_cam_entity, get_editor_cam_entity_id,
     rescan_asset_refs, load_asset_refs, apply_path_rename, clear_asset_refs_by_guid,
+    entity_from_id,
 };
 pub use camera_module::{
     set_camera_snapshot, set_camera_world, clear_camera_world,
@@ -56,15 +57,17 @@ pub use settings_module::{
 };
 
 pub fn all_editor_modules() -> Result<Vec<Module>> {
-    Ok(vec![
+    let mut modules = vec![
         ui_module::build_ui_module()?,
         world_module::build_world_module()?,
         viewport_module::build_viewport_module()?,
-        camera_module::build_camera_module()?,
         fluxion_physics::build_physics_rune_module()?,
         fluxion_audio::build_audio_rune_module()?,
         input_module::build_input_module()?,
         environment_module::build_environment_module()?,
         settings_module::build_settings_module()?,
-    ])
+    ];
+    // build_camera_module returns two modules: fluxion::camera + fluxion::Camera
+    modules.extend(camera_module::build_camera_module()?);
+    Ok(modules)
 }

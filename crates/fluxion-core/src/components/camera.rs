@@ -160,6 +160,11 @@ pub struct Camera {
 
     /// If set, render to a named render-texture instead of the screen.
     pub render_to_texture: Option<String>,
+
+    /// Optional script-friendly tag for lookup (e.g. "MainCamera", "UICamera").
+    /// Does not affect rendering; purely for `CameraManager::find_by_tag`.
+    #[serde(default)]
+    pub tag: String,
 }
 
 fn default_true() -> bool { true }
@@ -188,7 +193,18 @@ impl Camera {
             is_active:        true,
             is_main:          true,
             render_to_texture: None,
+            tag:              String::new(),
         }
+    }
+
+    /// Clamp all numeric properties to valid ranges.
+    /// Silently fixes bad values (matches Unity's behaviour).
+    pub fn validate(&mut self) {
+        self.fov          = self.fov.clamp(0.01, 179.99);
+        self.near         = self.near.max(0.0001);
+        self.far          = self.far.max(self.near + 0.001);
+        self.ortho_size   = self.ortho_size.max(0.001);
+        self.focal_length = self.focal_length.max(0.1);
     }
 
     // ── Projection helpers ────────────────────────────────────────────────────

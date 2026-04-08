@@ -61,6 +61,7 @@ pub use fluxion_reflect_derive::Reflect as DeriveReflect;
 pub use components::{MeshRenderer, MaterialSlot, PrimitiveType};
 pub use components::{RigidBody, PhysicsShape, BodyType};
 pub use components::{Camera, ProjectionMode, ClearFlags};
+pub use components::CameraManager;
 pub use components::{Animator, AnimationClip, Skeleton, JointDef, JointChannel, MAX_JOINTS};
 pub use components::AnimationSystem;
 pub use components::{LodGroup, LodLevel, LodSystem};

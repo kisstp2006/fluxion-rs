@@ -18,7 +18,7 @@ use fluxion_core::{
     ComponentRegistry, ECSWorld, InputState, Time,
     transform::Transform,
     transform::system::TransformSystem,
-    components::{Camera, Light, LightType, CameraControllerSystem},
+    components::{Camera, Light, LightType, CameraControllerSystem, CameraManager},
     AnimationSystem, LodSystem, CsgSystem, AudioSystem,
     PhysicsMaterial,
     components::rigid_body::RigidBody,
@@ -82,6 +82,10 @@ pub struct EditorHost {
     /// Set to true when a new asset file was created/written this frame.
     /// main.rs drains this flag and calls asset_db.scan().
     pub needs_asset_rescan: bool,
+
+    /// Tracks all Camera entities in the scene.
+    /// Rebuilt after scene load, new scene, and camera add/remove/edit.
+    pub camera_manager: CameraManager,
 }
 
 impl EditorHost {
@@ -148,6 +152,7 @@ impl EditorHost {
             physmat_cache:             HashMap::new(),
             pending_material_reloads:  Vec::new(),
             needs_asset_rescan:        false,
+            camera_manager:            CameraManager::new(),
         })
     }
 
@@ -515,8 +520,11 @@ impl EditorHost {
                     "lens_shift_y"    => if let fluxion_core::reflect::ReflectValue::F32(v) = cam_edit.value { cam.lens_shift[1] = v; }
                     field => { let _ = cam.set_field(field, cam_edit.value); }
                 }
+                cam.validate();
             }
         }
+        // After camera edits, keep depth order in the manager current.
+        self.camera_manager.resort(&self.world);
 
         for edit in drain_pending_edits() {
             match edit.component.as_str() {
@@ -527,7 +535,11 @@ impl EditorHost {
                 }
                 "__despawn__" => {
                     if edit.entity.is_valid() {
+                        let was_camera = self.world.get_component::<Camera>(edit.entity).is_some();
                         self.world.despawn(edit.entity);
+                        if was_camera {
+                            self.camera_manager.rebuild(&self.world);
+                        }
                     }
                 }
                 "__duplicate__" => {
@@ -577,17 +589,22 @@ impl EditorHost {
                             edit.entity,
                         ) {
                             log::warn!("add_component '{}': {:?}", edit.field, e);
+                        } else if edit.field == "Camera" {
+                            self.camera_manager.rebuild(&self.world);
                         }
                     }
                 }
                 "__remove_comp__" => {
                     if edit.entity.is_valid() {
+                        let was_camera = edit.field == "Camera";
                         if !self.registry.remove_component_by_name(
                             &edit.field,
                             &mut self.world,
                             edit.entity,
                         ) {
                             log::warn!("remove_component: no remover for '{}'", edit.field);
+                        } else if was_camera {
+                            self.camera_manager.rebuild(&self.world);
                         }
                     }
                 }
@@ -814,19 +831,12 @@ impl EditorHost {
                                 let label = format!("Edit {}.{}", edit.component, edit.field);
                                 self.undo.push(label, vec![inv]);
                             }
-                            // Enforce single-main-camera: clear is_main on every other Camera.
+                            // Enforce single-main-camera via CameraManager.
                             if is_main_set {
-                                let owner = edit.entity;
-                                let others: Vec<fluxion_core::EntityId> = self.world
-                                    .all_entities()
-                                    .filter(|&e| e != owner
-                                        && self.world.get_component::<Camera>(e).is_some())
-                                    .collect();
-                                for other in others {
-                                    if let Some(mut cam) = self.world.get_component_mut::<Camera>(other) {
-                                        cam.is_main = false;
-                                    }
-                                }
+                                self.camera_manager.set_main(&mut self.world, edit.entity);
+                            } else if edit.component == "Camera" {
+                                // Any other camera field change — rebuild to keep depth order fresh.
+                                self.camera_manager.rebuild(&self.world);
                             }
                         }
                     }

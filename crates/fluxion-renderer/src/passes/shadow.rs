@@ -187,6 +187,8 @@ impl RenderPass for ShadowPass {
     }
 
     fn execute(&mut self, ctx: &mut RenderContext) {
+        // Shadow map is shared across all cameras — only render it for the first camera.
+        if !ctx.frame.is_first_camera { return; }
         // Skip if no shadow-casting light this frame.
         if !ctx.frame.has_shadow_caster { return; }
 

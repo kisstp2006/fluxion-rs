@@ -1304,70 +1304,7 @@ impl FluxionRenderer {
 
         let mut frame = self.extract_frame_data(world, time, false, false);
         self.last_draw_call_count = frame.draw_calls.len() as u32;
-
-        // ── Apply Environment component overrides ─────────────────────────────
-        // Query the first active Environment component; if found, its settings
-        // override the global RendererConfig + scene_settings for this frame.
-        let mut env_override: Option<Environment> = None;
-        world.query_active::<&Environment, _>(|_, env| {
-            if env_override.is_none() {
-                env_override = Some(env.clone());
-            }
-        });
-        if let Some(ref env) = env_override {
-            self.apply_environment(env);
-            // Also update frame.sky with Environment values so the shader receives them
-            let sky = &env.sky;
-            frame.sky.sky_mode = match sky.mode {
-                BackgroundMode::Gradient      => 0,
-                BackgroundMode::ProceduralSky => 1,
-                BackgroundMode::SolidColor    => 2,
-                BackgroundMode::Panorama      => 3,
-            };
-            frame.sky.horizon_color = sky.horizon_color;
-            frame.sky.zenith_color = sky.zenith_color;
-            frame.sky.solid_color = sky.solid_color;
-            // Drive sky sun direction from the directional light so rotation is respected.
-            // light.direction = where light shines TOWARD (world_forward); negate = toward sun.
-            let dir_light_sun: Option<[f32; 3]> = frame.lights.iter()
-                .find(|l| l.light_type == LIGHT_DIRECTIONAL)
-                .map(|l| [-l.direction[0], -l.direction[1], -l.direction[2]]);
-            frame.sky.sun_direction = dir_light_sun
-                .unwrap_or_else(|| sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth));
-            frame.sky.sun_intensity = sky.sun_intensity;
-            frame.sky.sun_size = sky.sun_size;
-            frame.sky.turbidity = sky.turbidity;
-            frame.sky.rayleigh = sky.rayleigh;
-            frame.sky.mie_coefficient = sky.mie_coefficient;
-            frame.sky.mie_directional_g = sky.mie_directional_g;
-        } else {
-            self.restore_config_defaults();
-        }
-
-        let mut light_data = LightBufferData::new();
-        for light in &frame.lights { light_data.push(*light); }
-        // Prefer Environment ambient/fog if present, else fall back to scene_settings.
-        if let Some(ref env) = env_override {
-            light_data.ambient_color     = env.ambient.color;
-            light_data.ambient_intensity = env.ambient.intensity;
-            light_data.fog_color         = env.fog.color;
-            light_data.fog_density       = env.fog.density;
-            light_data.fog_enabled       = u32::from(env.fog.enabled);
-            light_data.fog_mode          = env.fog.mode.as_u32();
-            light_data.fog_near          = env.fog.near;
-            light_data.fog_far           = env.fog.far;
-        } else {
-            let s = &self.scene_settings;
-            light_data.ambient_color     = s.ambient_color;
-            light_data.ambient_intensity = s.ambient_intensity;
-            light_data.fog_color         = s.fog_color;
-            light_data.fog_density       = s.fog_density;
-            light_data.fog_enabled       = u32::from(s.fog_enabled);
-            light_data.fog_mode          = 0; // Exponential
-            light_data.fog_near          = 10.0;
-            light_data.fog_far           = 100.0;
-        }
-        self.light_buffer.upload(&self.queue, &light_data);
+        self.apply_env_and_lights(world, &mut frame);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("viewport_encoder"),
@@ -1430,6 +1367,109 @@ impl FluxionRenderer {
             *target = Some(GpuTexture::render_target(&self.device, &label, w, h, format));
         }
 
+        // ── Multi-camera path: pane 0, play mode (no cam_override) ──────────────
+        // Iterate all active cameras depth-sorted, run the full graph once per camera.
+        // Ortho panes (1-3) and editor-cam-override on pane 0 use the legacy single-camera path.
+        if pane == 0 && cam_override.is_none() {
+            let cameras = self.extract_all_cameras(world);
+            if cameras.is_empty() {
+                log::warn!("No active cameras in scene — rendering black frame");
+                // Produce a black frame: run the graph once with an identity camera.
+                let mut frame = self.extract_frame_data(world, time, false, false);
+                frame.debug_view     = debug_view;
+                frame.camera_count   = 0;
+                frame.is_first_camera = true;
+                self.last_draw_call_count = 0;
+                self.apply_env_and_lights(world, &mut frame);
+                let vp_view: *const wgpu::TextureView = &self.viewport_texture.as_ref().unwrap().view;
+                let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pane_black") });
+                let mut ctx = RenderContext {
+                    device: &self.device, queue: &self.queue, encoder: &mut encoder,
+                    resources: &self.resources, frame: &frame,
+                    surface_view: unsafe { &*vp_view },
+                    light_buffer: &self.light_buffer.gpu_buffer,
+                    meshes: &self.meshes, materials: &self.materials, skinned_meshes: &self.skinned_meshes,
+                };
+                self.render_graph.execute(&mut ctx);
+                self.queue.submit(std::iter::once(encoder.finish()));
+                return Ok(());
+            }
+
+            let cam_count = cameras.len();
+            // Build the shared frame data once (draw calls, lights, particles, etc.)
+            // then swap the camera per iteration.
+            let mut base_frame = self.extract_frame_data(world, time, false, false);
+            base_frame.debug_view   = debug_view;
+            base_frame.camera_count = cam_count;
+            self.last_draw_call_count = base_frame.draw_calls.len() as u32;
+            self.apply_env_and_lights(world, &mut base_frame);
+
+            // Single encoder for the whole frame (all cameras share one submit).
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("pane_multi_cam"),
+            });
+
+            for (cam_idx, cam_data) in cameras.into_iter().enumerate() {
+                let is_first = cam_idx == 0;
+                // Clone base frame, override camera and multi-cam fields.
+                // We only clone the lightweight fields; draw_calls + lights use a borrow trick below.
+                let mut frame = FrameData {
+                    camera:          cam_data,
+                    draw_calls:      Vec::new(), // filled below via swap
+                    lights:          Vec::new(),
+                    viewport:        base_frame.viewport,
+                    time:            base_frame.time,
+                    sky:             base_frame.sky,
+                    particles:       Vec::new(),
+                    debug_lines:     Vec::new(),
+                    shadow_view_proj: base_frame.shadow_view_proj,
+                    has_shadow_caster: base_frame.has_shadow_caster,
+                    skinned_draw_calls: Vec::new(),
+                    debug_view:      base_frame.debug_view,
+                    camera_index:    cam_idx,
+                    camera_count:    cam_count,
+                    is_first_camera: is_first,
+                };
+                // Temporarily move the shared lists into the per-camera frame to avoid cloning.
+                std::mem::swap(&mut frame.draw_calls,        &mut base_frame.draw_calls);
+                std::mem::swap(&mut frame.lights,            &mut base_frame.lights);
+                std::mem::swap(&mut frame.particles,         &mut base_frame.particles);
+                std::mem::swap(&mut frame.debug_lines,       &mut base_frame.debug_lines);
+                std::mem::swap(&mut frame.skinned_draw_calls,&mut base_frame.skinned_draw_calls);
+
+                if is_first {
+                    self.last_view_matrix = frame.camera.view;
+                    self.last_proj_matrix = frame.camera.projection;
+                }
+
+                let vp_view: *const wgpu::TextureView = &self.viewport_texture.as_ref().unwrap().view;
+                let mut ctx = RenderContext {
+                    device:         &self.device,
+                    queue:          &self.queue,
+                    encoder:        &mut encoder,
+                    resources:      &self.resources,
+                    frame:          &frame,
+                    surface_view:   unsafe { &*vp_view },
+                    light_buffer:   &self.light_buffer.gpu_buffer,
+                    meshes:         &self.meshes,
+                    materials:      &self.materials,
+                    skinned_meshes: &self.skinned_meshes,
+                };
+                self.render_graph.execute(&mut ctx);
+
+                // Move shared lists back into base_frame for the next iteration.
+                std::mem::swap(&mut frame.draw_calls,        &mut base_frame.draw_calls);
+                std::mem::swap(&mut frame.lights,            &mut base_frame.lights);
+                std::mem::swap(&mut frame.particles,         &mut base_frame.particles);
+                std::mem::swap(&mut frame.debug_lines,       &mut base_frame.debug_lines);
+                std::mem::swap(&mut frame.skinned_draw_calls,&mut base_frame.skinned_draw_calls);
+            }
+
+            self.queue.submit(std::iter::once(encoder.finish()));
+            return Ok(());
+        }
+
+        // ── Legacy single-camera path (ortho panes, editor cam override) ─────────
         let had_cam_override = cam_override.is_some();
         let mut frame = self.extract_frame_data(world, time, prefer_main, had_cam_override);
         frame.debug_view = debug_view;
@@ -1452,7 +1492,37 @@ impl FluxionRenderer {
             self.last_proj_matrix = frame.camera.projection;
         }
 
-        // Environment overrides (same logic as render_to_viewport).
+        self.apply_env_and_lights(world, &mut frame);
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("pane_encoder"),
+        });
+        let target_ref: &Option<GpuTexture> = if pane == 0 {
+            &self.viewport_texture
+        } else {
+            &self.viewport_extra_textures[pane - 1]
+        };
+        let vp_view: *const wgpu::TextureView = &target_ref.as_ref().unwrap().view;
+        let mut ctx = RenderContext {
+            device:       &self.device,
+            queue:        &self.queue,
+            encoder:      &mut encoder,
+            resources:    &self.resources,
+            frame:        &frame,
+            surface_view: unsafe { &*vp_view },
+            light_buffer:   &self.light_buffer.gpu_buffer,
+            meshes:         &self.meshes,
+            materials:      &self.materials,
+            skinned_meshes: &self.skinned_meshes,
+        };
+        self.render_graph.execute(&mut ctx);
+        self.queue.submit(std::iter::once(encoder.finish()));
+        Ok(())
+    }
+
+    /// Apply Environment component overrides and upload light buffer.
+    /// Shared by render_to_pane, render_to_viewport, and render.
+    fn apply_env_and_lights(&mut self, world: &ECSWorld, frame: &mut FrameData) {
         let mut env_override: Option<Environment> = None;
         world.query_active::<&Environment, _>(|_, env| {
             if env_override.is_none() { env_override = Some(env.clone()); }
@@ -1472,12 +1542,12 @@ impl FluxionRenderer {
             let dir_light_sun: Option<[f32; 3]> = frame.lights.iter()
                 .find(|l| l.light_type == LIGHT_DIRECTIONAL)
                 .map(|l| [-l.direction[0], -l.direction[1], -l.direction[2]]);
-            frame.sky.sun_direction  = dir_light_sun
+            frame.sky.sun_direction = dir_light_sun
                 .unwrap_or_else(|| sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth));
-            frame.sky.sun_intensity  = sky.sun_intensity;
-            frame.sky.sun_size       = sky.sun_size;
-            frame.sky.turbidity      = sky.turbidity;
-            frame.sky.rayleigh       = sky.rayleigh;
+            frame.sky.sun_intensity      = sky.sun_intensity;
+            frame.sky.sun_size           = sky.sun_size;
+            frame.sky.turbidity          = sky.turbidity;
+            frame.sky.rayleigh           = sky.rayleigh;
             frame.sky.mie_coefficient    = sky.mie_coefficient;
             frame.sky.mie_directional_g  = sky.mie_directional_g;
         } else {
@@ -1506,31 +1576,6 @@ impl FluxionRenderer {
             light_data.fog_far           = 100.0;
         }
         self.light_buffer.upload(&self.queue, &light_data);
-
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("pane_encoder"),
-        });
-        let target_ref: &Option<GpuTexture> = if pane == 0 {
-            &self.viewport_texture
-        } else {
-            &self.viewport_extra_textures[pane - 1]
-        };
-        let vp_view: *const wgpu::TextureView = &target_ref.as_ref().unwrap().view;
-        let mut ctx = RenderContext {
-            device:       &self.device,
-            queue:        &self.queue,
-            encoder:      &mut encoder,
-            resources:    &self.resources,
-            frame:        &frame,
-            surface_view: unsafe { &*vp_view },
-            light_buffer:   &self.light_buffer.gpu_buffer,
-            meshes:         &self.meshes,
-            materials:      &self.materials,
-            skinned_meshes: &self.skinned_meshes,
-        };
-        self.render_graph.execute(&mut ctx);
-        self.queue.submit(std::iter::once(encoder.finish()));
-        Ok(())
     }
 
     /// View into the last viewport render target, or `None` if `render_to_viewport`
@@ -1614,67 +1659,7 @@ impl FluxionRenderer {
         let surface_view = surface_texture.texture.create_view(&Default::default());
 
         let mut frame = self.extract_frame_data(world, time, false, false);
-
-        // ── Apply Environment component overrides ──────────────────────────────────────────
-        let mut env_override: Option<Environment> = None;
-        world.query_active::<&Environment, _>(|_, env| {
-            if env_override.is_none() {
-                env_override = Some(env.clone());
-            }
-        });
-        if let Some(ref env) = env_override {
-            self.apply_environment(env);
-            // Also update frame.sky with Environment values so the shader receives them
-            let sky = &env.sky;
-            frame.sky.sky_mode = match sky.mode {
-                BackgroundMode::Gradient      => 0,
-                BackgroundMode::ProceduralSky => 1,
-                BackgroundMode::SolidColor    => 2,
-                BackgroundMode::Panorama      => 3,
-            };
-            frame.sky.horizon_color = sky.horizon_color;
-            frame.sky.zenith_color = sky.zenith_color;
-            frame.sky.solid_color = sky.solid_color;
-            let dir_light_sun: Option<[f32; 3]> = frame.lights.iter()
-                .find(|l| l.light_type == LIGHT_DIRECTIONAL)
-                .map(|l| [-l.direction[0], -l.direction[1], -l.direction[2]]);
-            frame.sky.sun_direction = dir_light_sun
-                .unwrap_or_else(|| sun_direction_from_angles(sky.sun_elevation, sky.sun_azimuth));
-            frame.sky.sun_intensity = sky.sun_intensity;
-            frame.sky.sun_size = sky.sun_size;
-            frame.sky.turbidity = sky.turbidity;
-            frame.sky.rayleigh = sky.rayleigh;
-            frame.sky.mie_coefficient = sky.mie_coefficient;
-            frame.sky.mie_directional_g = sky.mie_directional_g;
-        } else {
-            self.restore_config_defaults();
-        }
-
-        let mut light_data = LightBufferData::new();
-        for light in &frame.lights {
-            light_data.push(*light);
-        }
-        if let Some(ref env) = env_override {
-            light_data.ambient_color     = env.ambient.color;
-            light_data.ambient_intensity = env.ambient.intensity;
-            light_data.fog_color         = env.fog.color;
-            light_data.fog_density       = env.fog.density;
-            light_data.fog_enabled       = u32::from(env.fog.enabled);
-            light_data.fog_mode          = env.fog.mode.as_u32();
-            light_data.fog_near          = env.fog.near;
-            light_data.fog_far           = env.fog.far;
-        } else {
-            let s = &self.scene_settings;
-            light_data.ambient_color     = s.ambient_color;
-            light_data.ambient_intensity = s.ambient_intensity;
-            light_data.fog_color         = s.fog_color;
-            light_data.fog_density       = s.fog_density;
-            light_data.fog_enabled       = u32::from(s.fog_enabled);
-            light_data.fog_mode          = 0;
-            light_data.fog_near          = 10.0;
-            light_data.fog_far           = 100.0;
-        }
-        self.light_buffer.upload(&self.queue, &light_data);
+        self.apply_env_and_lights(world, &mut frame);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("frame_encoder"),
@@ -1834,6 +1819,9 @@ impl FluxionRenderer {
             has_shadow_caster,
             skinned_draw_calls: Vec::new(),
             debug_view: 0,
+            camera_index:    0,
+            camera_count:    1,
+            is_first_camera: true,
         }
     }
 
@@ -1985,6 +1973,60 @@ impl FluxionRenderer {
             sky.sun_direction = d.normalize().to_array();
         }
         sky
+    }
+
+    /// Extract all active cameras, depth-sorted ascending.
+    /// Returns an empty Vec if no active cameras exist (caller should log + render black).
+    /// Edge case: if the first camera has DepthOnly or Nothing clear_flags, it is upgraded
+    /// to Skybox so the first pass always fills the GBuffer + HDR target completely.
+    fn extract_all_cameras(&self, world: &ECSWorld) -> Vec<CameraData> {
+        use fluxion_core::ClearFlags;
+        let (w, h) = (self.width, self.height);
+        let mut candidates: Vec<(i32, CameraData)> = Vec::new();
+
+        world.query_active::<(&Transform, &Camera), _>(|_id, (transform, camera)| {
+            if !camera.is_active { return; }
+            // Skip render_to_texture cameras (stub for future work — they have a target texture path).
+            // For now, only include cameras that render to screen.
+
+            let view = Mat4::look_at_rh(
+                transform.world_position,
+                transform.world_position + transform.world_forward(),
+                transform.world_up(),
+            );
+            let proj      = camera.projection_matrix_ex(w, h);
+            let view_proj = proj * view;
+            let inv_vp    = view_proj.inverse();
+            let inv_proj  = proj.inverse();
+
+            candidates.push((camera.depth, CameraData {
+                view,
+                projection:       proj,
+                view_proj,
+                inv_view_proj:    inv_vp,
+                inv_proj,
+                position:         transform.world_position,
+                near:             camera.near,
+                far:              camera.far,
+                viewport_rect:    camera.viewport_rect,
+                clear_flags:      camera.clear_flags,
+                background_color: camera.background_color,
+            }));
+        });
+
+        candidates.sort_by_key(|(d, _)| *d);
+
+        let mut cameras: Vec<CameraData> = candidates.into_iter().map(|(_, c)| c).collect();
+
+        // Fix up: first camera must clear the full target (Skybox or SolidColor).
+        // DepthOnly / Nothing on camera[0] would leave the GBuffer uninitialized.
+        if let Some(first) = cameras.first_mut() {
+            if matches!(first.clear_flags, ClearFlags::DepthOnly | ClearFlags::Nothing) {
+                first.clear_flags = ClearFlags::Skybox;
+            }
+        }
+
+        cameras
     }
 
     fn extract_camera(&self, world: &ECSWorld, prefer_main: bool) -> CameraData {

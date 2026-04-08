@@ -135,11 +135,17 @@ impl RenderPass for TonemapPass {
         self.config.time = ctx.frame.time;
         ctx.queue.write_buffer(params_buf, 0, bytemuck::bytes_of(&self.config));
 
+        // First camera clears the surface; subsequent cameras load it and blit on top.
+        let surface_load = if ctx.frame.is_first_camera {
+            wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+        } else {
+            wgpu::LoadOp::Load
+        };
         let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("tonemap_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: ctx.surface_view, resolve_target: None, depth_slice: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations { load: surface_load, store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: None,
             ..Default::default()

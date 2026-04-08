@@ -211,6 +211,11 @@ impl RenderPass for SkyboxPass {
     }
 
     fn execute(&mut self, ctx: &mut RenderContext) {
+        // DepthOnly / Nothing cameras don't replace the background — skip sky.
+        use fluxion_core::ClearFlags;
+        if matches!(ctx.frame.camera.clear_flags, ClearFlags::DepthOnly | ClearFlags::Nothing) {
+            return;
+        }
         // Choose panorama view/sampler or fallbacks
         let panorama_view = self.panorama_view.as_ref()
             .or(self.fallback_view.as_ref());

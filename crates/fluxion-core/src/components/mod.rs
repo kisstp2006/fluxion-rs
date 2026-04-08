@@ -15,6 +15,7 @@
 
 pub mod mesh_renderer;
 pub mod camera;
+pub mod camera_manager;
 pub mod light;
 pub mod particle_emitter;
 pub mod rigid_body;
@@ -30,6 +31,7 @@ pub mod audio_source;
 
 pub use mesh_renderer::{MeshRenderer, MaterialSlot, PrimitiveType};
 pub use camera::{Camera, ProjectionMode, ClearFlags};
+pub use camera_manager::CameraManager;
 pub use light::{Light, LightType};
 pub use particle_emitter::{Particle, ParticleEmitter};
 pub use rigid_body::{RigidBody, PhysicsShape, BodyType};

@@ -476,6 +476,12 @@ fn entity_to_id(id: EntityId) -> i64 {
 }
 
 fn id_to_entity(_world: &ECSWorld, id: i64) -> Option<EntityId> {
+    entity_from_id(id)
+}
+
+/// Resolve a Rune i64 entity handle to an EntityId using the per-frame cache.
+/// Returns `None` if the id is unknown or the cache is not set.
+pub fn entity_from_id(id: i64) -> Option<EntityId> {
     let bits = id as u64;
     ENTITY_CACHE.with(|cache| cache.borrow().get(&bits).copied())
 }
