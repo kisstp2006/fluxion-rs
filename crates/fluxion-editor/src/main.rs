@@ -325,27 +325,28 @@ impl EditorApp {
 
         let scripts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts");
         let mut host = EditorHost::new(scripts_dir).expect("EditorHost init failed");
-        // Rebuild camera manager for the default scene spawned inside EditorHost::new().
-        host.camera_manager.rebuild(&host.world);
 
         // Enable gizmos in editor mode
         renderer.gizmos_enabled = true;
 
-        // Resolve and load the default scene if it exists
+        // Resolve and load the default scene, or fall back to a blank default scene.
         let scene_path = if !choice.config.default_scene.is_empty() {
             let sp = choice.root.join(&choice.config.default_scene);
             if sp.exists() {
                 if let Ok(data) = load_scene_file(sp.to_str().unwrap_or("")) {
-                    host.world.clear();
                     let _ = load_scene_into_world(&mut host.world, &data, true, &host.registry);
                     host.camera_manager.rebuild(&host.world);
                     log::info!("Loaded scene: {}", sp.display());
                 }
                 Some(sp)
             } else {
+                host::EditorHost::spawn_default_scene_pub(&mut host.world);
+                host.camera_manager.rebuild(&host.world);
                 None
             }
         } else {
+            host::EditorHost::spawn_default_scene_pub(&mut host.world);
+            host.camera_manager.rebuild(&host.world);
             None
         };
 
@@ -484,17 +485,11 @@ impl EditorInner {
         // Bake any dirty CsgShape components → upload scaled GPU mesh.
         self.renderer.upload_csg_meshes(&mut self.host.world);
 
-        // Track which entity is the active editor camera (for hierarchy hiding).
-        {
-            use fluxion_core::{Transform, Camera};
-            let mut cam_entity = None;
-            self.host.world.query_active::<(&Transform, &Camera), _>(|id, (_, c)| {
-                if c.is_active && cam_entity.is_none() {
-                    cam_entity = Some(id);
-                }
-            });
-            crate::rune_bindings::set_editor_cam_entity(cam_entity);
-        }
+        // Editor camera is purely virtual (CameraOverride) since Phase 4 — no ECS entity to hide.
+        crate::rune_bindings::set_editor_cam_entity(None);
+
+        // Sync selected entity to renderer so populate_gizmos can highlight its camera frustum.
+        self.renderer.selected_entity = crate::rune_bindings::get_selected_id();
 
         // Render 3-D scene to offscreen viewport texture(s).
         // Pane 0 is always the perspective view; panes 1-3 are ortho (Top/Front/Right).
@@ -509,26 +504,24 @@ impl EditorInner {
         let editor_cam_override: Option<fluxion_renderer::CameraOverride> =
             if self.editor_mode != crate::toolbar::EditorMode::Playing
         {
-            use fluxion_core::Camera;
-            let pos   = crate::rune_bindings::get_editor_cam_pos();
-            let yaw   = crate::rune_bindings::get_editor_cam_yaw()  as f32;
-            let pitch = crate::rune_bindings::get_editor_cam_pitch() as f32;
-            let eye   = glam::Vec3::new(pos[0] as f32, pos[1] as f32, pos[2] as f32);
+            let cam_state = crate::rune_bindings::get_editor_cam_state();
+            let eye   = glam::Vec3::new(
+                cam_state.pos[0] as f32,
+                cam_state.pos[1] as f32,
+                cam_state.pos[2] as f32,
+            );
+            let yaw   = cam_state.yaw   as f32;
+            let pitch = cam_state.pitch as f32;
             let rot   = glam::Quat::from_euler(glam::EulerRot::YXZ, yaw, pitch, 0.0);
             let view  = glam::Mat4::look_at_rh(eye, eye + rot * glam::Vec3::NEG_Z, rot * glam::Vec3::Y);
-            // Use the first active Camera entity's projection settings for a faithful preview.
             let w = self.renderer.width;
             let h = self.renderer.height;
-            let mut proj = glam::Mat4::perspective_rh(
-                60_f32.to_radians(),
+            let proj = glam::Mat4::perspective_rh(
+                (cam_state.fov as f32).to_radians(),
                 w as f32 / h.max(1) as f32,
-                0.1, 1000.0,
+                cam_state.near as f32,
+                cam_state.far  as f32,
             );
-            self.host.world.query_active::<&Camera, _>(|_, cam| {
-                if cam.is_active {
-                    proj = cam.projection_matrix_ex(w, h);
-                }
-            });
             Some(fluxion_renderer::CameraOverride { view, proj, position: eye })
         } else {
             None
@@ -872,6 +865,13 @@ impl EditorInner {
                     let world    = &self.host.world    as *const _;
                     let registry = &self.host.registry as *const _;
                     unsafe { self.host.undo.redo(&*world, &*registry); }
+                }
+                s if s.starts_with("camera_preview:") => {
+                    let id_str = &s["camera_preview:".len()..];
+                    if let Ok(bits) = id_str.parse::<i64>() {
+                        log::info!("[Editor] Camera preview requested for entity {bits}");
+                        // TODO: render PiP overlay into viewport corner using entity bits.
+                    }
                 }
                 s if s.starts_with("load_scene:") => {
                     let rel = &s["load_scene:".len()..];

@@ -127,6 +127,10 @@ pub struct FluxionRenderer {
 
     /// Count of opaque mesh draw calls in the last rendered frame.
     pub last_draw_call_count: u32,
+
+    /// Currently selected entity — used by populate_gizmos to highlight its camera frustum.
+    /// Should be set each frame by the editor before calling render_to_pane.
+    pub selected_entity: Option<EntityId>,
 }
 
 impl FluxionRenderer {
@@ -295,6 +299,7 @@ impl FluxionRenderer {
             max_lights,
             width: w, height: h,
             gizmos_enabled: false,
+            selected_entity: None,
             viewport_texture: None,
             viewport_extra_textures: [None, None, None],
             last_view_matrix: glam::Mat4::IDENTITY,
@@ -1692,7 +1697,14 @@ impl FluxionRenderer {
 
     fn extract_frame_data(&mut self, world: &ECSWorld, time: &Time, prefer_main: bool, editor_cam_active: bool) -> FrameData {
         // ── Camera ────────────────────────────────────────────────────────────
-        let camera = self.extract_camera(world, prefer_main);
+        // When the editor camera override is active the ECS camera is irrelevant
+        // (it will be replaced immediately after this call).  Skip the ECS query
+        // so we don't emit a spurious "No active camera" warning in edit mode.
+        let camera = if editor_cam_active {
+            CameraData::identity()
+        } else {
+            self.extract_camera(world, prefer_main)
+        };
         // Cache for editor gizmo overlay.
         self.last_view_matrix = camera.view;
         self.last_proj_matrix = camera.projection;
@@ -1780,7 +1792,7 @@ impl FluxionRenderer {
         });
 
         if self.gizmos_enabled {
-            self.populate_gizmos(world, editor_cam_active);
+            self.populate_gizmos(world, editor_cam_active, self.selected_entity);
         }
         let debug_lines = debug_draw::drain_debug_lines();
 
@@ -1827,22 +1839,35 @@ impl FluxionRenderer {
 
     /// Draw component gizmos for every entity in the world that has a recognisable component.
     /// Pushes into `fluxion_core::debug_draw` global (drained immediately after).
-    /// `editor_cam_active` — when true the viewport is driven by the virtual editor camera,
-    /// so Camera entity frustums are suppressed (they belong to the scene, not the viewport).
-    fn populate_gizmos(&self, world: &ECSWorld, editor_cam_active: bool) {
+    /// `editor_cam_active` — when true the viewport is driven by the virtual editor camera.
+    /// `selected` — the currently selected entity; its Camera frustum is drawn in yellow,
+    /// all other Camera frustums are drawn in a dimmer gray.
+    fn populate_gizmos(&self, world: &ECSWorld, editor_cam_active: bool, selected: Option<EntityId>) {
         let (w, h) = (self.width as f32, self.height as f32);
         let aspect = if h > 0.0 { w / h } else { 1.0 };
 
         // Editor grid (XZ plane)
         debug_draw::draw_grid(100.0, 100, Color::Custom(0.18, 0.20, 0.22, 1.0));
 
-        // ── Camera frustum ────────────────────────────────────────────────────
-        // Only show camera frustums in play mode (when no editor-camera override is active).
-        // In edit mode the viewport is driven by the virtual editor cam, so the scene Camera
-        // entity frustum is just confusing visual clutter at the origin.
-        if !editor_cam_active {
-        world.query_active::<(&Transform, &Camera), _>(|_id, (t, cam)| {
+        // ── Camera frustum gizmos ─────────────────────────────────────────────
+        // In edit mode (editor_cam_active): draw all camera frustums.
+        //   - Selected camera entity → yellow (full brightness).
+        //   - All other cameras      → gray, 50% alpha.
+        // In play mode (editor_cam_active == false): keep old behavior (yellow for all).
+        {
+        world.query_active::<(&Transform, &Camera), _>(|id, (t, cam)| {
             if !cam.is_active { return; }
+            let is_selected = selected.map_or(false, |sel| sel == id);
+            let color = if !editor_cam_active || is_selected {
+                Color::Yellow
+            } else {
+                Color::Custom(0.5, 0.5, 0.5, 0.5)
+            };
+            let ortho_color = if !editor_cam_active || is_selected {
+                Color::Custom(0.9, 0.8, 0.1, 1.0)
+            } else {
+                Color::Custom(0.4, 0.4, 0.4, 0.5)
+            };
             let fwd   = t.world_forward();
             let up    = t.world_up();
             let right = fwd.cross(up).normalize_or_zero();
@@ -1853,23 +1878,21 @@ impl FluxionRenderer {
                     debug_draw::draw_frustum(
                         t.world_position, fwd, up2, right,
                         cam.fov, aspect, cam.near, vis_far,
-                        Color::Yellow,
+                        color,
                     );
                 }
                 ProjectionMode::Orthographic => {
-                    // Draw a simple box for ortho cameras
                     let hw = cam.ortho_size * aspect;
                     let hh = cam.ortho_size;
-                    let c  = Color::Custom(0.9, 0.8, 0.1, 1.0);
                     debug_draw::draw_aabb(
                         t.world_position - glam::Vec3::new(hw, hh, 0.1),
                         t.world_position + glam::Vec3::new(hw, hh, vis_far),
-                        c,
+                        ortho_color,
                     );
                 }
             }
         });
-        } // end !editor_cam_active
+        }
 
         // ── Light gizmos ──────────────────────────────────────────────────────
         world.query_active::<(&Transform, &Light), _>(|_id, (t, light)| {

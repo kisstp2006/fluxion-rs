@@ -94,8 +94,6 @@ impl EditorHost {
         let mut registry = ComponentRegistry::new();
         registry.register_builtins();
 
-        Self::spawn_default_scene(&mut world);
-
         // Collect Rune panel scripts from scripts_dir.
         let script_paths: Vec<PathBuf> = if scripts_dir.is_dir() {
             let mut paths: Vec<PathBuf> = std::fs::read_dir(&scripts_dir)

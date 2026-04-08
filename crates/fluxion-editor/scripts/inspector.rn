@@ -811,6 +811,81 @@ fn draw_script_bundle(sel) {
     }
 }
 
+// ── Camera component extras UI ──────────────────────────────────────────────
+
+fn draw_camera_extras(sel) {
+    fluxion::ui::separator();
+
+    // ── Tag ───────────────────────────────────────────────────────────────
+    let tag  = fluxion::camera::get_tag(sel);
+    let ntag = fluxion::ui::input_text("Tag##cam_tag", tag.clone());
+    if ntag != tag { fluxion::camera::set_tag(sel, ntag); }
+
+    // ── Depth (render order) ──────────────────────────────────────────────
+    let depth  = fluxion::camera::get_depth(sel);
+    let ndepth = fluxion::ui::drag_int("Depth##cam_depth", depth);
+    if ndepth != depth { fluxion::camera::set_depth(sel, ndepth); }
+
+    // ── Culling Mask (16-bit bitmask, 2 rows of 8 checkboxes) ─────────────
+    fluxion::ui::separator();
+    fluxion::ui::colored_label("Culling Mask", 0.75, 0.75, 0.75);
+    let mask = fluxion::camera::get_culling_mask(sel);
+    let new_mask = mask;
+    let layer_names = [
+        "Default", "TransparentFX", "Ignore Raycast", "Layer 3",
+        "Water",   "UI",            "Layer 6",        "Layer 7",
+        "Layer 8", "Layer 9",       "Layer 10",       "Layer 11",
+        "Layer 12","Layer 13",      "Layer 14",       "Layer 15",
+    ];
+    // Row 0: layers 0-7
+    fluxion::ui::horizontal_begin();
+    let ci = 0;
+    while ci < 8 {
+        let bit = 1 << ci;
+        let checked = (new_mask & bit) != 0;
+        let nc = fluxion::ui::checkbox(`##cm_${ci}`, checked);
+        if nc != checked {
+            if nc { new_mask = new_mask | bit; } else { new_mask = new_mask ^ bit; }
+        }
+        fluxion::ui::prop_tooltip(layer_names[ci].clone());
+        ci += 1;
+    }
+    fluxion::ui::horizontal_end();
+    // Row 1: layers 8-15
+    fluxion::ui::horizontal_begin();
+    let ci = 8;
+    while ci < 16 {
+        let bit = 1 << ci;
+        let checked = (new_mask & bit) != 0;
+        let nc = fluxion::ui::checkbox(`##cm_${ci}`, checked);
+        if nc != checked {
+            if nc { new_mask = new_mask | bit; } else { new_mask = new_mask ^ bit; }
+        }
+        fluxion::ui::prop_tooltip(layer_names[ci].clone());
+        ci += 1;
+    }
+    fluxion::ui::horizontal_end();
+    if new_mask != mask { fluxion::camera::set_culling_mask(sel, new_mask); }
+
+    // ── Set as Main Camera button ─────────────────────────────────────────
+    fluxion::ui::separator();
+    let is_main = fluxion::camera::is_main(sel);
+    if is_main {
+        fluxion::ui::colored_label("✓ Main Camera", 0.35, 0.85, 0.35);
+    } else {
+        if fluxion::ui::small_button("Set as Main Camera##cam_main") {
+            fluxion::camera::set_main(sel);
+        }
+    }
+
+    // ── Preview toggle ────────────────────────────────────────────────────
+    fluxion::ui::separator();
+    if fluxion::ui::small_button("Preview##cam_preview") {
+        fluxion::world::push_action(`camera_preview:${sel}`);
+    }
+    fluxion::ui::prop_tooltip("Show this camera's POV in the viewport corner");
+}
+
 // ── MeshRenderer material slot UI ────────────────────────────────────────────
 
 fn draw_mesh_renderer_extras(sel) {
@@ -890,6 +965,9 @@ pub fn panel() {
             } else if c == "MeshRenderer" {
                 draw_component_fields(sel, c.clone());
                 draw_mesh_renderer_extras(sel);
+            } else if c == "Camera" {
+                draw_component_fields(sel, c.clone());
+                draw_camera_extras(sel);
             } else {
                 draw_component_fields(sel, c.clone());
             }

@@ -136,13 +136,9 @@ thread_local! {
     static ASSET_VIEW_MODE: RefCell<String> = RefCell::new(String::from("tile"));
 
     // ── Editor camera state (persisted between frames, mutated by editor_camera.rn) ──
-    static EDITOR_CAM_POS:    RefCell<[f64; 3]> = RefCell::new([0.0, 2.0, 8.0]);
-    static EDITOR_CAM_YAW:    Cell<f64>         = Cell::new(0.0);
-    static EDITOR_CAM_PITCH:  Cell<f64>         = Cell::new(-0.15);
-    static EDITOR_CAM_TARGET: RefCell<[f64; 3]> = RefCell::new([0.0, 0.0, 0.0]);
-    static EDITOR_CAM_SPEED:  Cell<f64>         = Cell::new(5.0);
+    static EDITOR_CAM: RefCell<EditorCameraState> = RefCell::new(EditorCameraState::default());
     /// True when the editor camera has been mutated this frame (main.rs reads this to push to Transform).
-    static EDITOR_CAM_DIRTY:  Cell<bool>        = Cell::new(false);
+    static EDITOR_CAM_DIRTY: Cell<bool> = Cell::new(false);
 
     // ── Viewport stats ────────────────────────────────────────────────────────
     /// (draw_calls, entity_count) — updated each frame from main.rs.
@@ -372,8 +368,10 @@ pub fn set_snap_translate_value(v: f64) { SNAP_TRANSLATE.with(|c| c.set(v)); }
 pub fn set_snap_rotate_value(v: f64)    { SNAP_ROTATE   .with(|c| c.set(v)); }
 pub fn set_snap_scale_value(v: f64)     { SNAP_SCALE    .with(|c| c.set(v)); }
 
-/// Live-set editor camera speed from settings_module.
-pub fn set_editor_cam_speed(v: f64) { EDITOR_CAM_SPEED.with(|c| c.set(v)); }
+/// Live-set editor camera speed from settings_module (e.g. applied from EditorPrefs).
+pub fn set_editor_cam_speed(v: f64) {
+    EDITOR_CAM.with(|c| c.borrow_mut().speed = v);
+}
 
 /// Initialize asset view mode from EditorPrefs (called on project open and prefs save).
 pub fn set_asset_view_mode(mode: &str) {
@@ -422,26 +420,62 @@ pub fn get_transform_tool_str() -> String {
 
 // ── Editor camera host API ────────────────────────────────────────────────────
 
+/// Isolated state for the editor fly-cam. Independent of any game Camera entity.
+#[derive(Clone)]
+pub struct EditorCameraState {
+    pub pos:   [f64; 3],
+    pub yaw:   f64,
+    pub pitch: f64,
+    pub fov:   f64,
+    pub near:  f64,
+    pub far:   f64,
+    pub speed: f64,
+    pub target: [f64; 3],
+}
+
+impl Default for EditorCameraState {
+    fn default() -> Self {
+        Self {
+            pos:    [0.0, 2.0, 8.0],
+            yaw:    0.0,
+            pitch:  -0.15,
+            fov:    60.0,
+            near:   0.05,
+            far:    2000.0,
+            speed:  5.0,
+            target: [0.0, 0.0, 0.0],
+        }
+    }
+}
+
+/// Read a snapshot of the full editor camera state (for main.rs to build CameraOverride).
+pub fn get_editor_cam_state() -> EditorCameraState {
+    EDITOR_CAM.with(|c| c.borrow().clone())
+}
+
 /// Read editor camera position [x,y,z] (for main.rs to push to renderer).
 pub fn get_editor_cam_pos() -> [f64; 3] {
-    EDITOR_CAM_POS.with(|c| *c.borrow())
+    EDITOR_CAM.with(|c| c.borrow().pos)
 }
 
 /// Read editor camera yaw (radians).
 pub fn get_editor_cam_yaw() -> f64 {
-    EDITOR_CAM_YAW.with(|c| c.get())
+    EDITOR_CAM.with(|c| c.borrow().yaw)
 }
 
 /// Read editor camera pitch (radians).
 pub fn get_editor_cam_pitch() -> f64 {
-    EDITOR_CAM_PITCH.with(|c| c.get())
+    EDITOR_CAM.with(|c| c.borrow().pitch)
 }
 
-/// Initialize editor camera position from the active Camera entity transform (called once at startup).
+/// Initialize editor camera from the active Camera entity transform (called once at startup).
 pub fn init_editor_cam(pos: [f64; 3], yaw: f64, pitch: f64) {
-    EDITOR_CAM_POS  .with(|c| *c.borrow_mut() = pos);
-    EDITOR_CAM_YAW  .with(|c| c.set(yaw));
-    EDITOR_CAM_PITCH.with(|c| c.set(pitch));
+    EDITOR_CAM.with(|c| {
+        let mut s = c.borrow_mut();
+        s.pos   = pos;
+        s.yaw   = yaw;
+        s.pitch = pitch;
+    });
     EDITOR_CAM_DIRTY.with(|c| c.set(false));
 }
 
@@ -2325,54 +2359,82 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         ACTION_SIGNALS.with(|s| s.borrow_mut().push("exit".to_string()));
     }).build()?;
 
+    m.function("push_action", |signal: String| {
+        ACTION_SIGNALS.with(|s| s.borrow_mut().push(signal));
+    }).build()?;
+
     // ── Editor camera state (read/write by editor_camera.rn) ─────────────────
 
     m.function("get_editor_cam_pos", || -> Vec<f64> {
-        EDITOR_CAM_POS.with(|c| c.borrow().to_vec())
+        EDITOR_CAM.with(|c| c.borrow().pos.to_vec())
     }).build()?;
 
     m.function("set_editor_cam_pos", |vals: Vec<f64>| {
         if vals.len() >= 3 {
-            EDITOR_CAM_POS.with(|c| *c.borrow_mut() = [vals[0], vals[1], vals[2]]);
+            EDITOR_CAM.with(|c| c.borrow_mut().pos = [vals[0], vals[1], vals[2]]);
             EDITOR_CAM_DIRTY.with(|c| c.set(true));
         }
     }).build()?;
 
     m.function("get_editor_cam_yaw", || -> f64 {
-        EDITOR_CAM_YAW.with(|c| c.get())
+        EDITOR_CAM.with(|c| c.borrow().yaw)
     }).build()?;
 
     m.function("set_editor_cam_yaw", |v: f64| {
-        EDITOR_CAM_YAW.with(|c| c.set(v));
+        EDITOR_CAM.with(|c| c.borrow_mut().yaw = v);
         EDITOR_CAM_DIRTY.with(|c| c.set(true));
     }).build()?;
 
     m.function("get_editor_cam_pitch", || -> f64 {
-        EDITOR_CAM_PITCH.with(|c| c.get())
+        EDITOR_CAM.with(|c| c.borrow().pitch)
     }).build()?;
 
     m.function("set_editor_cam_pitch", |v: f64| {
-        EDITOR_CAM_PITCH.with(|c| c.set(v));
+        EDITOR_CAM.with(|c| c.borrow_mut().pitch = v);
         EDITOR_CAM_DIRTY.with(|c| c.set(true));
     }).build()?;
 
     m.function("get_editor_cam_target", || -> Vec<f64> {
-        EDITOR_CAM_TARGET.with(|c| c.borrow().to_vec())
+        EDITOR_CAM.with(|c| c.borrow().target.to_vec())
     }).build()?;
 
     m.function("set_editor_cam_target", |vals: Vec<f64>| {
         if vals.len() >= 3 {
-            EDITOR_CAM_TARGET.with(|c| *c.borrow_mut() = [vals[0], vals[1], vals[2]]);
+            EDITOR_CAM.with(|c| c.borrow_mut().target = [vals[0], vals[1], vals[2]]);
             EDITOR_CAM_DIRTY.with(|c| c.set(true));
         }
     }).build()?;
 
     m.function("get_editor_cam_speed", || -> f64 {
-        EDITOR_CAM_SPEED.with(|c| c.get())
+        EDITOR_CAM.with(|c| c.borrow().speed)
     }).build()?;
 
     m.function("set_editor_cam_speed", |v: f64| {
-        EDITOR_CAM_SPEED.with(|c| c.set(v.max(0.1)));
+        EDITOR_CAM.with(|c| c.borrow_mut().speed = v.max(0.1));
+    }).build()?;
+
+    m.function("get_editor_cam_fov", || -> f64 {
+        EDITOR_CAM.with(|c| c.borrow().fov)
+    }).build()?;
+
+    m.function("set_editor_cam_fov", |v: f64| {
+        EDITOR_CAM.with(|c| c.borrow_mut().fov = v.clamp(1.0, 170.0));
+    }).build()?;
+
+    m.function("get_editor_cam_near", || -> f64 {
+        EDITOR_CAM.with(|c| c.borrow().near)
+    }).build()?;
+
+    m.function("set_editor_cam_near", |v: f64| {
+        EDITOR_CAM.with(|c| c.borrow_mut().near = v.max(0.001));
+    }).build()?;
+
+    m.function("get_editor_cam_far", || -> f64 {
+        EDITOR_CAM.with(|c| c.borrow().far)
+    }).build()?;
+
+    m.function("set_editor_cam_far", |v: f64| {
+        EDITOR_CAM.with(|c| c.borrow_mut().far = v.max(1.0));
     }).build()?;
 
     // ── Gameplay script helpers (used by inspector.rn / assets.rn) ────────────
