@@ -1302,7 +1302,7 @@ impl FluxionRenderer {
             ));
         }
 
-        let mut frame = self.extract_frame_data(world, time, false);
+        let mut frame = self.extract_frame_data(world, time, false, false);
         self.last_draw_call_count = frame.draw_calls.len() as u32;
 
         // ── Apply Environment component overrides ─────────────────────────────
@@ -1430,7 +1430,8 @@ impl FluxionRenderer {
             *target = Some(GpuTexture::render_target(&self.device, &label, w, h, format));
         }
 
-        let mut frame = self.extract_frame_data(world, time, prefer_main);
+        let had_cam_override = cam_override.is_some();
+        let mut frame = self.extract_frame_data(world, time, prefer_main, had_cam_override);
         frame.debug_view = debug_view;
         if pane == 0 { self.last_draw_call_count = frame.draw_calls.len() as u32; }
 
@@ -1612,9 +1613,9 @@ impl FluxionRenderer {
         };
         let surface_view = surface_texture.texture.create_view(&Default::default());
 
-        let mut frame = self.extract_frame_data(world, time, false);
+        let mut frame = self.extract_frame_data(world, time, false, false);
 
-        // ── Apply Environment component overrides ─────────────────────────────
+        // ── Apply Environment component overrides ──────────────────────────────────────────
         let mut env_override: Option<Environment> = None;
         world.query_active::<&Environment, _>(|_, env| {
             if env_override.is_none() {
@@ -1704,7 +1705,7 @@ impl FluxionRenderer {
 
     // ── Private: ECS → FrameData ──────────────────────────────────────────────
 
-    fn extract_frame_data(&mut self, world: &ECSWorld, time: &Time, prefer_main: bool) -> FrameData {
+    fn extract_frame_data(&mut self, world: &ECSWorld, time: &Time, prefer_main: bool, editor_cam_active: bool) -> FrameData {
         // ── Camera ────────────────────────────────────────────────────────────
         let camera = self.extract_camera(world, prefer_main);
         // Cache for editor gizmo overlay.
@@ -1794,7 +1795,7 @@ impl FluxionRenderer {
         });
 
         if self.gizmos_enabled {
-            self.populate_gizmos(world);
+            self.populate_gizmos(world, editor_cam_active);
         }
         let debug_lines = debug_draw::drain_debug_lines();
 
@@ -1838,7 +1839,9 @@ impl FluxionRenderer {
 
     /// Draw component gizmos for every entity in the world that has a recognisable component.
     /// Pushes into `fluxion_core::debug_draw` global (drained immediately after).
-    fn populate_gizmos(&self, world: &ECSWorld) {
+    /// `editor_cam_active` — when true the viewport is driven by the virtual editor camera,
+    /// so Camera entity frustums are suppressed (they belong to the scene, not the viewport).
+    fn populate_gizmos(&self, world: &ECSWorld, editor_cam_active: bool) {
         let (w, h) = (self.width as f32, self.height as f32);
         let aspect = if h > 0.0 { w / h } else { 1.0 };
 
@@ -1846,6 +1849,10 @@ impl FluxionRenderer {
         debug_draw::draw_grid(100.0, 100, Color::Custom(0.18, 0.20, 0.22, 1.0));
 
         // ── Camera frustum ────────────────────────────────────────────────────
+        // Only show camera frustums in play mode (when no editor-camera override is active).
+        // In edit mode the viewport is driven by the virtual editor cam, so the scene Camera
+        // entity frustum is just confusing visual clutter at the origin.
+        if !editor_cam_active {
         world.query_active::<(&Transform, &Camera), _>(|_id, (t, cam)| {
             if !cam.is_active { return; }
             let fwd   = t.world_forward();
@@ -1874,6 +1881,7 @@ impl FluxionRenderer {
                 }
             }
         });
+        } // end !editor_cam_active
 
         // ── Light gizmos ──────────────────────────────────────────────────────
         world.query_active::<(&Transform, &Light), _>(|_id, (t, light)| {

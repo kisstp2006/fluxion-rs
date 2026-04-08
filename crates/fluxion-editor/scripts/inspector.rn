@@ -146,41 +146,70 @@ fn draw_field(sel, c, f, ft, ro, lbl, hint, min, max, tip, fid) {
 }
 
 // ── draw_script_field — widget dispatch for JSON-backed script struct fields.
+// row = [name, value_json, hint, label, min, max, tooltip, hidden, readonly]
 // Uses world::set_script_field for persistence (bypasses reflect system).
 
-fn draw_script_field(sel, script_name, fname, fval, decl_type, decl_hint, decl_min, decl_max) {
-    let fid = `##sf_${fname}`;
-    if decl_type == "material" || decl_type == "mesh" || decl_type == "audio" || decl_type == "scene" {
-        let nv = fluxion::ui::asset_path_picker(`${fname}${fid}`, fval.clone(), decl_type.clone());
-        if nv != fval { fluxion::world::set_script_field(sel, script_name.clone(), fname.clone(), nv); }
-    } else if decl_type == "entity_ref" {
-        let as_f  = fluxion::world::parse_f64(fval.clone());
-        let cur_id = if as_f[0] == 1.0 { as_f[1] as i64 } else { -1 };
-        let nv = fluxion::ui::entity_picker(`${fname}${fid}`, cur_id);
-        if nv != cur_id { fluxion::world::set_script_field(sel, script_name.clone(), fname.clone(), `${nv}`); }
-    } else if decl_type == "bool" || fval == "true" || fval == "false" {
-        let cur     = fval == "true";
-        let checked = fluxion::ui::checkbox(`${fname}${fid}`, cur);
-        if checked != cur {
-            fluxion::world::set_script_field(sel, script_name.clone(), fname.clone(),
-                if checked { "true" } else { "false" });
+fn draw_script_field(sel, script_name, row) {
+    let fname    = row[0].clone();
+    let fval     = row[1].clone();
+    let hint     = if row.len() > 2 { row[2].clone() } else { "" };
+    let label    = if row.len() > 3 { row[3].clone() } else { "" };
+    let meta_min = if row.len() > 4 { fluxion::world::parse_f64(row[4].clone()) } else { [0.0, 0.0] };
+    let meta_max = if row.len() > 5 { fluxion::world::parse_f64(row[5].clone()) } else { [0.0, 0.0] };
+    let tooltip  = if row.len() > 6 { row[6].clone() } else { "" };
+    let hidden   = if row.len() > 7 { row[7] == "1" } else { false };
+    let readonly = if row.len() > 8 { row[8] == "1" } else { false };
+
+    if hidden { return; }
+
+    let display  = if label != "" { label.clone() } else { fname.clone() };
+    let fid      = `##sf_${fname}`;
+    let lbl      = `${display}${fid}`;
+    let fmin     = if meta_min[0] == 1.0 { meta_min[1] } else { 0.0 };
+    let fmax     = if meta_max[0] == 1.0 { meta_max[1] } else { 0.0 };
+
+    if hint == "material" || hint == "mesh" || hint == "audio" || hint == "scene" || hint == "texture" {
+        if readonly {
+            fluxion::ui::small(`${display}: ${fval}`);
+        } else {
+            let nv = fluxion::ui::asset_path_picker(lbl.clone(), fval.clone(), hint.clone());
+            if nv != fval { fluxion::world::set_script_field(sel, script_name.clone(), fname.clone(), nv); }
+        }
+    } else if hint == "toggle" || fval == "true" || fval == "false" {
+        let cur = fval == "true";
+        if readonly {
+            fluxion::ui::small(`${display}: ${fval}`);
+        } else {
+            let checked = fluxion::ui::checkbox(lbl.clone(), cur);
+            if checked != cur {
+                fluxion::world::set_script_field(sel, script_name.clone(), fname.clone(),
+                    if checked { "true" } else { "false" });
+            }
         }
     } else if fval == "null" {
-        fluxion::ui::small(`${fname}: (unset)`);
+        fluxion::ui::small(`${display}: (unset)`);
     } else {
         let as_f = fluxion::world::parse_f64(fval.clone());
         if as_f[0] == 1.0 {
-            let nv = if decl_hint == "slider" && decl_max > decl_min {
-                fluxion::ui::slider(`${fname}${fid}`, as_f[1], decl_min, decl_max, 0.0)
+            if readonly {
+                fluxion::ui::small(`${display}: ${as_f[1]}`);
+            } else if hint == "slider" && fmax > fmin {
+                let nv = fluxion::ui::slider(lbl.clone(), as_f[1], fmin, fmax, 0.0);
+                if nv != as_f[1] { fluxion::world::set_script_field(sel, script_name.clone(), fname.clone(), `${nv}`); }
             } else {
-                fluxion::ui::drag_float(`${fname}${fid}`, as_f[1], 0.1, decl_min, decl_max)
-            };
-            if nv != as_f[1] { fluxion::world::set_script_field(sel, script_name.clone(), fname.clone(), `${nv}`); }
+                let nv = fluxion::ui::drag_float(lbl.clone(), as_f[1], 0.1, fmin, fmax);
+                if nv != as_f[1] { fluxion::world::set_script_field(sel, script_name.clone(), fname.clone(), `${nv}`); }
+            }
         } else {
-            let nv = fluxion::ui::input_text(`${fname}${fid}`, fval.clone());
-            if nv != fval { fluxion::world::set_script_field(sel, script_name.clone(), fname.clone(), nv); }
+            if readonly {
+                fluxion::ui::small(`${display}: ${fval}`);
+            } else {
+                let nv = fluxion::ui::input_text(lbl.clone(), fval.clone());
+                if nv != fval { fluxion::world::set_script_field(sel, script_name.clone(), fname.clone(), nv); }
+            }
         }
     }
+    if tooltip != "" { fluxion::ui::prop_tooltip(tooltip.clone()); }
 }
 
 /// Render all fields of one component on `entity_id`, respecting
@@ -765,35 +794,13 @@ fn draw_script_bundle(sel) {
             }
 
             // ── Script-defined struct fields ──────────────────────────────────
+            // Each row: [name, value_json, hint, label, min, max, tooltip, hidden, readonly]
             let fields = fluxion::world::script_fields(sel, name.clone());
-            let decls  = fluxion::world::script_field_decl(name.clone());
             if !fields.is_empty() {
                 fluxion::ui::separator();
                 let fi = 0;
                 while fi < fields.len() {
-                    let fname = fields[fi][0].clone();
-                    let fval  = fields[fi][1].clone();
-
-                    // Resolve declared metadata for this field name.
-                    let decl_type = "";
-                    let decl_hint = "";
-                    let decl_min  = 0.0;
-                    let decl_max  = 0.0;
-                    let di = 0;
-                    while di < decls.len() {
-                        if decls[di][0] == fname {
-                            decl_type = decls[di][1].clone();
-                            decl_hint = decls[di][2].clone();
-                            let pm = fluxion::world::parse_f64(decls[di][3].clone());
-                            let px = fluxion::world::parse_f64(decls[di][4].clone());
-                            if pm[0] == 1.0 { decl_min = pm[1]; }
-                            if px[0] == 1.0 { decl_max = px[1]; }
-                        }
-                        di += 1;
-                    }
-
-                    draw_script_field(sel, name.clone(), fname, fval,
-                        decl_type, decl_hint, decl_min, decl_max);
+                    draw_script_field(sel, name.clone(), fields[fi].clone());
                     fi += 1;
                 }
             }
