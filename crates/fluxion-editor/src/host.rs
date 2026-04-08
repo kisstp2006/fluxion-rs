@@ -798,6 +798,9 @@ impl EditorHost {
                         } else {
                             None
                         };
+                        let is_main_set = edit.component == "Camera"
+                            && edit.field == "is_main"
+                            && edit.value == fluxion_core::reflect::ReflectValue::Bool(true);
                         if let Err(e) = self.registry.set_reflect_field(
                             &edit.component,
                             &self.world,
@@ -806,9 +809,25 @@ impl EditorHost {
                             edit.value,
                         ) {
                             log::warn!("EditorHost::flush_pending_edits: {e}");
-                        } else if let Some(inv) = inverse {
-                            let label = format!("Edit {}.{}", edit.component, edit.field);
-                            self.undo.push(label, vec![inv]);
+                        } else {
+                            if let Some(inv) = inverse {
+                                let label = format!("Edit {}.{}", edit.component, edit.field);
+                                self.undo.push(label, vec![inv]);
+                            }
+                            // Enforce single-main-camera: clear is_main on every other Camera.
+                            if is_main_set {
+                                let owner = edit.entity;
+                                let others: Vec<fluxion_core::EntityId> = self.world
+                                    .all_entities()
+                                    .filter(|&e| e != owner
+                                        && self.world.get_component::<Camera>(e).is_some())
+                                    .collect();
+                                for other in others {
+                                    if let Some(mut cam) = self.world.get_component_mut::<Camera>(other) {
+                                        cam.is_main = false;
+                                    }
+                                }
+                            }
                         }
                     }
                 }

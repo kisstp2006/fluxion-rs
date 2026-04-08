@@ -351,16 +351,16 @@ impl EditorApp {
             log::warn!("on_editor_init: {e}");
         }
 
-        // Seed editor camera state from the active Camera entity's Transform.
+        // Seed editor camera state from the first Camera entity's Transform if present,
+        // else use a sensible default position (5 units back, slightly above origin).
         {
             use fluxion_core::{Transform, Camera};
-            let mut pos   = [0.0f64; 3];
+            let mut pos   = [0.0f64, 2.0f64, 5.0f64];
             let mut yaw   = 0.0f64;
-            let mut pitch = 0.0f64;
+            let mut pitch = -0.261799f64; // -15 degrees
             host.world.query_active::<(&Transform, &Camera), _>(|_, (t, c)| {
                 if c.is_active {
                     pos = [t.position.x as f64, t.position.y as f64, t.position.z as f64];
-                    // Extract yaw/pitch from the transform rotation (assumed Euler XYZ).
                     let (p, y, _) = t.rotation.to_euler(glam::EulerRot::XYZ);
                     yaw   = y as f64;
                     pitch = p as f64;
@@ -498,6 +498,39 @@ impl EditorInner {
         // Only render panes that are active in the current layout.
         use crate::rune_bindings::viewport_module::{get_layout, PaneKind};
         let layout = get_layout();
+
+        // In editing/paused mode, pane 0 uses the virtual editor camera as an override so that
+        // game Camera entities are never touched by the editor and keep their game-defined
+        // position/rotation at all times. In play mode, no override → extract_camera picks the
+        // game camera (preferring is_main=true if available).
+        let editor_cam_override: Option<fluxion_renderer::CameraOverride> =
+            if self.editor_mode != crate::toolbar::EditorMode::Playing
+        {
+            use fluxion_core::Camera;
+            let pos   = crate::rune_bindings::get_editor_cam_pos();
+            let yaw   = crate::rune_bindings::get_editor_cam_yaw()  as f32;
+            let pitch = crate::rune_bindings::get_editor_cam_pitch() as f32;
+            let eye   = glam::Vec3::new(pos[0] as f32, pos[1] as f32, pos[2] as f32);
+            let rot   = glam::Quat::from_euler(glam::EulerRot::YXZ, yaw, pitch, 0.0);
+            let view  = glam::Mat4::look_at_rh(eye, eye + rot * glam::Vec3::NEG_Z, rot * glam::Vec3::Y);
+            // Use the first active Camera entity's projection settings for a faithful preview.
+            let w = self.renderer.width;
+            let h = self.renderer.height;
+            let mut proj = glam::Mat4::perspective_rh(
+                60_f32.to_radians(),
+                w as f32 / h.max(1) as f32,
+                0.1, 1000.0,
+            );
+            self.host.world.query_active::<&Camera, _>(|_, cam| {
+                if cam.is_active {
+                    proj = cam.projection_matrix_ex(w, h);
+                }
+            });
+            Some(fluxion_renderer::CameraOverride { view, proj, position: eye })
+        } else {
+            None
+        };
+
         for &pane in layout.active_panes() {
             let cam_override = if pane > 0 {
                 // Build a simple orthographic override for ortho panes.
@@ -540,14 +573,16 @@ impl EditorInner {
                 };
                 Some(CameraOverride { view, proj, position: pos })
             } else {
-                None
+                // Pane 0: use editor virtual camera in editing/paused; None in play mode.
+                editor_cam_override.clone()
             };
             let dbg = if pane == 0 {
                 crate::rune_bindings::viewport_module::get_debug_view()
             } else {
                 0
             };
-            let prefer_main = pane == 0 && self.editor_mode == crate::toolbar::EditorMode::Playing;
+            // prefer_main only matters when cam_override is None (i.e. play mode).
+            let prefer_main = pane == 0 && cam_override.is_none();
             if let Err(e) = self.renderer.render_to_pane(&self.host.world, &self.host.time, pane, cam_override, prefer_main, dbg) {
                 log::error!("render_to_pane({pane}): {e}");
             }
@@ -870,26 +905,7 @@ impl EditorInner {
             self.window.set_cursor_visible(visible);
         }
 
-        // Apply editor camera position/orientation to the Camera entity Transform.
-        // Only done in Editing/Paused modes — Playing mode lets the game control the camera.
-        if *editor_mode != crate::toolbar::EditorMode::Playing
-            && crate::rune_bindings::take_editor_cam_dirty()
-        {
-            use fluxion_core::{Transform, Camera};
-            let pos   = crate::rune_bindings::get_editor_cam_pos();
-            let yaw   = crate::rune_bindings::get_editor_cam_yaw()  as f32;
-            let pitch = crate::rune_bindings::get_editor_cam_pitch() as f32;
-            let rotation = glam::Quat::from_euler(glam::EulerRot::YXZ, yaw, pitch, 0.0);
-            let mut applied = false;
-            self.host.world.query_active::<(&mut Transform, &Camera), _>(|_, (t, c)| {
-                if c.is_active && !applied {
-                    t.position   = glam::Vec3::new(pos[0] as f32, pos[1] as f32, pos[2] as f32);
-                    t.rotation   = rotation;
-                    t.dirty      = true;
-                    applied      = true;
-                }
-            });
-        }
+        // (Editor camera is now rendered via CameraOverride — no longer writes to Camera entity)
 
         // Sync editor mode and transform tool from Rune state.
         let mode_str = crate::rune_bindings::get_editor_mode_str();
@@ -1257,7 +1273,22 @@ impl EditorInner {
                     log::error!("Scene load failed: {e}");
                     return;
                 }
-                host::EditorHost::ensure_camera_exists(&mut self.host.world);
+                // Re-seed editor camera from scene's Camera entity (or default).
+                {
+                    use fluxion_core::{Transform, Camera};
+                    let mut pos   = [0.0f64, 2.0f64, 5.0f64];
+                    let mut yaw   = 0.0f64;
+                    let mut pitch = -0.261799f64;
+                    self.host.world.query_active::<(&Transform, &Camera), _>(|_, (t, c)| {
+                        if c.is_active {
+                            pos = [t.position.x as f64, t.position.y as f64, t.position.z as f64];
+                            let (p, y, _) = t.rotation.to_euler(glam::EulerRot::XYZ);
+                            yaw   = y as f64;
+                            pitch = p as f64;
+                        }
+                    });
+                    crate::rune_bindings::init_editor_cam(pos, yaw, pitch);
+                }
                 self.scene_path  = Some(path);
                 self.scene_dirty = false;
                 log::info!("Scene loaded");

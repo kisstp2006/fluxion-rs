@@ -1,0 +1,74 @@
+// ============================================================
+// test_gameplay.rn — Rune gameplay scripting test
+//
+// HOW TO USE IN THE EDITOR:
+//   1. Open a project and create a scene with at least one entity
+//      (e.g. a cube with a MeshRenderer component).
+//   2. Select the entity, add a "ScriptBundle" component in the Inspector.
+//   3. Set the script path to:
+//        assets/scripts/test_gameplay.rn
+//      (relative to your project root)
+//   4. Press ▶ Play.
+//
+// WHAT TO OBSERVE:
+//   - Console: "[TestScript] start() on '<entity-name>'" appears once.
+//   - The entity spins continuously around its Y axis (90°/s).
+//   - WASD moves the entity horizontally, Space/ShiftLeft move up/down.
+//   - Console: "[TestScript] frame=… t=…s dt=…s" logs every ~60 frames.
+//   - Inspector shows a "rotate_speed" slider field after the first tick.
+//
+// MODULES EXERCISED:
+//   fluxion::script   — self_entity(), declare_field(), field()
+//   fluxion::entity   — name(), get/set_position, get/set_rotation_euler
+//   fluxion::input    — key_down()
+//   fluxion::time     — frame(), elapsed()
+//   fluxion::math     — pi()
+//   fluxion::debug    — log()
+// ============================================================
+
+pub fn start() {
+    let id   = fluxion::script::self_entity();
+    let name = fluxion::entity::name(id);
+    fluxion::debug::log(`[TestScript] start() on '${name}'  (id=${id})`);
+}
+
+pub fn update(dt) {
+    let id = fluxion::script::self_entity();
+
+    // ── Declare an inspector-editable speed field ─────────────────────────────
+    fluxion::script::declare_field("rotate_speed", "f32", "slider", 0.0, 720.0);
+
+    // ── Rotate Y axis (default 90 deg/s = π/2 rad/s) ─────────────────────────
+    let rot = fluxion::entity::get_rotation_euler(id);
+    let rad_per_s = fluxion::math::pi() * 0.5;
+    fluxion::entity::set_rotation_euler(id, [rot[0], rot[1] + rad_per_s * dt, rot[2]]);
+
+    // ── WASD + Space/Shift movement ───────────────────────────────────────────
+    let pos = fluxion::entity::get_position(id);
+    let spd = 5.0 * dt;
+
+    let dx = if fluxion::input::key_down("KeyD")     {  spd }
+             else if fluxion::input::key_down("KeyA") { -spd }
+             else { 0.0 };
+    let dz = if fluxion::input::key_down("KeyW")     { -spd }
+             else if fluxion::input::key_down("KeyS") {  spd }
+             else { 0.0 };
+    let dy = if fluxion::input::key_down("Space")         {  spd }
+             else if fluxion::input::key_down("ShiftLeft") { -spd }
+             else { 0.0 };
+
+    if dx != 0.0 || dy != 0.0 || dz != 0.0 {
+        fluxion::entity::set_position(id, [pos[0] + dx, pos[1] + dy, pos[2] + dz]);
+    }
+
+    // ── Periodic heartbeat log (~every 60 frames) ─────────────────────────────
+    let frame   = fluxion::time::frame();
+    let elapsed = fluxion::time::elapsed();
+    if frame % 60 == 0 {
+        fluxion::debug::log(`[TestScript] frame=${frame}  t=${elapsed:.2}s  dt=${dt:.4}s`);
+    }
+}
+
+pub fn on_destroy() {
+    fluxion::debug::log("[TestScript] on_destroy() called");
+}
