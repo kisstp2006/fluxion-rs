@@ -112,17 +112,11 @@ impl Default for TemplateRegistry {
 }
 
 /// Global template registry instance
-static mut GLOBAL_REGISTRY: Option<TemplateRegistry> = None;
-static REGISTRY_INIT: std::sync::Once = std::sync::Once::new();
+static GLOBAL_REGISTRY: std::sync::OnceLock<TemplateRegistry> = std::sync::OnceLock::new();
 
 /// Get the global template registry
 pub fn get_template_registry() -> &'static TemplateRegistry {
-    unsafe {
-        REGISTRY_INIT.call_once(|| {
-            GLOBAL_REGISTRY = Some(TemplateRegistry::new());
-        });
-        GLOBAL_REGISTRY.as_ref().unwrap()
-    }
+    GLOBAL_REGISTRY.get_or_init(TemplateRegistry::new)
 }
 
 /// Get all template IDs

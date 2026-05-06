@@ -240,8 +240,8 @@ impl AudioEngine {
         let host   = cpal::default_host();
         let device = host.default_output_device()
             .context("no default audio output device")?;
-        let name   = device.name().ok();
-        log::info!("fluxion-audio: device {:?}", name);
+        let dev_name = device.description().ok().map(|d| d.name().to_string());
+        log::info!("fluxion-audio: device {:?}", dev_name);
 
         let config: SupportedStreamConfig = device
             .default_output_config()
@@ -260,7 +260,7 @@ impl AudioEngine {
         stream.play().context("failed to start audio stream")?;
 
         Ok(Self {
-            device_name: name,
+            device_name: dev_name,
             mixer,
             _stream: stream,
             clip_cache: Mutex::new(HashMap::new()),

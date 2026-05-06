@@ -6,7 +6,6 @@
 // ============================================================
 
 use super::TemplateOptions;
-use crate::project::ProjectConfig;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -100,12 +99,18 @@ impl TemplateInstaller {
     /// Save project configuration to .fluxproj file
     fn save_project_config(&self, config: &crate::project::ProjectConfig) -> Result<(), String> {
         let config_path = Path::new(&self.options.directory).join(".fluxproj");
+
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create project directory: {}", e))?;
+        }
+
         let config_json = serde_json::to_string_pretty(config)
             .map_err(|e| format!("Failed to serialize project config: {}", e))?;
-        
+
         std::fs::write(&config_path, config_json)
             .map_err(|e| format!("Failed to write project config: {}", e))?;
-        
+
         Ok(())
     }
 }
