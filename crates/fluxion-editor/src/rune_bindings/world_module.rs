@@ -1185,6 +1185,32 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
+    // E4 — has_prefab_source(id) → bool. Cheap immediate read (no defer)
+    // so the hierarchy panel can gate the "Revert to Prefab" menu item.
+    m.function("has_prefab_source", |id: i64| -> bool {
+        with_ctx(|world, _| {
+            id_to_entity(world, id)
+                .and_then(|e| world.get_prefab_source(e))
+                .is_some()
+        }).unwrap_or(false)
+    }).build()?;
+
+    // E4 — revert_to_prefab(id). Queues a deferred edit consumed by
+    // EditorHost::flush_pending_edits, which loads the source prefab and
+    // re-applies its component data, clearing all instance overrides.
+    m.function("revert_to_prefab", |id: i64| {
+        with_ctx(|world, _| {
+            if let Some(entity) = id_to_entity(world, id) {
+                PENDING.with(|p| p.borrow_mut().push(PendingEdit {
+                    entity,
+                    component: "__revert_to_prefab__".to_string(),
+                    field:     String::new(),
+                    value:     fluxion_core::reflect::ReflectValue::Bool(true),
+                }));
+            }
+        });
+    }).build()?;
+
     // instantiate_prefab(path: str) -> i64
     // Loads a .scene file and spawns its entities as children of a new root entity.
     // Returns the root entity id (i64) on success, or -1 on failure.
@@ -2959,7 +2985,7 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                         vec![
                             s.slot_index.to_string(),
                             s.name.clone(),
-                            s.material_path.clone().unwrap_or_default(),
+                            s.material.clone().unwrap_or_default(),
                         ]
                     }).collect();
                     Some(result)
@@ -2996,7 +3022,7 @@ pub fn build_world_module() -> anyhow::Result<Module> {
         });
     }).build()?;
 
-    m.function("get_material_path", |entity_id: i64| -> String {
+    m.function("get_material", |entity_id: i64| -> String {
         if entity_id < 0 { return String::new(); }
         ENTITY_CACHE.with(|cache| {
             let map = cache.borrow();
@@ -3005,19 +3031,19 @@ pub fn build_world_module() -> anyhow::Result<Module> {
                     let ptr = w.get()?;
                     let world = unsafe { ptr.as_ref() };
                     let mr = world.get_component::<fluxion_core::MeshRenderer>(eid)?;
-                    Some(mr.material_path.clone().unwrap_or_default())
+                    Some(mr.material.clone().unwrap_or_default())
                 }).unwrap_or_default()
             } else { String::new() }
         })
     }).build()?;
 
-    m.function("set_material_path", |entity_id: i64, path: String| {
+    m.function("set_material", |entity_id: i64, path: String| {
         if entity_id < 0 { return; }
         ENTITY_CACHE.with(|cache| {
             if let Some(&eid) = cache.borrow().get(&(entity_id as u64)) {
                 PENDING.with(|p| p.borrow_mut().push(PendingEdit {
                     entity:    eid,
-                    component: "__set_material_path__".to_string(),
+                    component: "__set_material__".to_string(),
                     field:     path,
                     value:     ReflectValue::Bool(true),
                 }));

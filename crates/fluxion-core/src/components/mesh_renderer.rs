@@ -2,10 +2,12 @@
 // MeshRenderer component
 //
 // Tells the renderer to draw a mesh at this entity's transform.
-// Holds asset paths (resolved at load time) and optional GPU handles
+// Holds asset references (currently project-relative paths; the
+// values will switch to GUIDs in Week 6b) and optional GPU handles
 // (filled by the renderer lazily).
 //
-// C# / Unity equivalent: MeshRenderer + MeshFilter combined.
+// Field rename in Week 6a: `mesh_path` → `mesh`, `material_path`
+// → `material`. Same `Option<String>` type, same path semantics.
 // ============================================================
 
 use serde::{Deserialize, Serialize};
@@ -34,8 +36,8 @@ pub struct MaterialSlot {
     pub slot_index: u8,
     /// Human-readable slot name extracted from the glTF material name (e.g. "Body", "Eyes").
     pub name: String,
-    /// Project-relative path to the `.fluxmat` file assigned to this slot.
-    pub material_path: Option<String>,
+    /// Path to the `.fluxmat` file assigned to this slot. Will become a GUID in Week 6b.
+    pub material: Option<String>,
     /// GPU material handle — filled by the renderer at load time, not serialized.
     #[serde(skip)]
     pub material_handle: Option<u32>,
@@ -43,7 +45,7 @@ pub struct MaterialSlot {
 
 impl MaterialSlot {
     pub fn new(slot_index: u8, name: impl Into<String>) -> Self {
-        Self { slot_index, name: name.into(), material_path: None, material_handle: None }
+        Self { slot_index, name: name.into(), material: None, material_handle: None }
     }
 }
 
@@ -64,24 +66,27 @@ pub struct MeshRenderer {
     // ── Asset references (serialized) ─────────────────────────────────────────
 
     /// Path to a mesh file (.glb, .gltf, .fluxmesh).
-    /// If `None`, use `primitive` instead.
-    #[reflect(asset_type = "mesh", header = "Mesh", tooltip = "The 3D mesh asset to render.")]
-    pub mesh_path: Option<String>,
+    /// If `None`, use `primitive` instead. Will become a GUID in Week 6b.
+    #[reflect(asset_type = "mesh", header = "Mesh",
+              tooltip = "The 3D mesh asset to render.")]
+    pub mesh: Option<String>,
 
     /// Path to a material file (.fluxmat) for single-material meshes.
     /// If `None`, the default PBR material is used.
     /// When `material_slots` is non-empty this field is ignored.
-    #[reflect(asset_type = "material", header = "Material", tooltip = "Override material for single-material meshes.")]
-    pub material_path: Option<String>,
+    /// Will become a GUID in Week 6b.
+    #[reflect(asset_type = "material", header = "Material",
+              tooltip = "Override material for single-material meshes.")]
+    pub material: Option<String>,
 
     /// Per-submesh material overrides for multi-primitive meshes.
     /// Each slot corresponds to one glTF primitive / submesh by index.
-    /// If empty, falls back to `material_path` (single-material mode).
+    /// If empty, falls back to `material` (single-material mode).
     #[serde(default)]
     #[reflect(skip)]
     pub material_slots: Vec<MaterialSlot>,
 
-    /// Use a built-in primitive shape. Ignored if `mesh_path` is set.
+    /// Use a built-in primitive shape. Ignored if `mesh` is set.
     #[reflect(skip)]
     pub primitive: Option<PrimitiveType>,
 
@@ -125,15 +130,15 @@ impl MeshRenderer {
     }
 
     pub fn from_mesh_path(path: &str) -> Self {
-        MeshRenderer { mesh_path: Some(path.to_string()), ..Self::default() }
+        MeshRenderer { mesh: Some(path.to_string()), ..Self::default() }
     }
 }
 
 impl Default for MeshRenderer {
     fn default() -> Self {
         MeshRenderer {
-            mesh_path:       None,
-            material_path:   None,
+            mesh:            None,
+            material:        None,
             material_slots:  Vec::new(),
             primitive:       Some(PrimitiveType::Cube), // default: a cube
             cast_shadow:     true,

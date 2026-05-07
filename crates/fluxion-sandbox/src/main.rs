@@ -403,7 +403,8 @@ fn bootstrap_world(world: &mut ECSWorld) -> (Option<SceneEntities>, Option<PathB
             let path_str = p.to_string_lossy();
             let mut registry = ComponentRegistry::new();
             registry.register_builtins();
-            match load_scene_file(path_str.as_ref()) {
+            // Sandbox passes None — no project AssetDatabase available; v4→v5 migration is skipped.
+            match load_scene_file(path_str.as_ref(), None) {
                 Ok(data) => {
                     let settings = data.settings.clone();
                     match load_scene_into_world(world, &data, true, &registry) {

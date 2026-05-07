@@ -58,6 +58,9 @@ pub enum ReflectValue {
     /// Project-relative path to an asset file (texture, mesh, audio, …).
     /// Shown as an asset-picker widget in the editor (drag-and-drop from asset browser).
     AssetPath(Option<String>),
+    /// `Vec<String>` — collection of plain strings (tags, layer names, …).
+    /// Inspector renders as a simple list with add / remove buttons (E1).
+    VecStr(Vec<String>),
 }
 
 // ── Field metadata ─────────────────────────────────────────────────────────────
@@ -100,6 +103,9 @@ pub enum ReflectFieldType {
     /// Reference to another entity by ID (stored as i64, -1 = none).
     /// Unity equivalent: `public GameObject go;`
     EntityRef,
+    /// `Vec<String>` — list of plain strings. Editor falls back to a
+    /// read-only multi-line view until a dedicated widget ships.
+    VecStr,
 }
 
 /// How the editor should render a numeric or Vec3 field.
@@ -327,6 +333,7 @@ pub fn reflect_value_to_json(v: &ReflectValue) -> Value {
         ReflectValue::Vec2(a)       => Value::Array(a.iter().map(|&x| Value::from(x)).collect()),
         ReflectValue::Enum(s)       => Value::String(s.clone()),
         ReflectValue::AssetPath(o)  => o.as_ref().map(|s| Value::String(s.clone())).unwrap_or(Value::Null),
+        ReflectValue::VecStr(items) => Value::Array(items.iter().map(|s| Value::String(s.clone())).collect()),
     }
 }
 
@@ -353,6 +360,7 @@ pub fn field_type_str(ft: ReflectFieldType) -> &'static str {
         ReflectFieldType::Audio    => "audio",
         ReflectFieldType::Scene    => "scene",
         ReflectFieldType::EntityRef => "entity_ref",
+        ReflectFieldType::VecStr   => "vec_str",
     }
 }
 

@@ -22,6 +22,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 
+pub mod migration;
+pub use migration::{migrate, CURRENT_SCENE_VERSION};
+
 // ── Data types (JSON-compatible with existing .scene files) ───────────────────
 
 /// Top-level scene file structure.
@@ -107,17 +110,28 @@ pub struct SerializedComponent {
 
 /// Parse scene JSON and topologically sort entities (parents before children).
 /// Returns an error string if the JSON is malformed or the hierarchy has cycles.
-pub fn parse_and_sort_scene(json: &str) -> Result<SceneFileData, String> {
+pub fn parse_and_sort_scene(
+    json: &str,
+    db: Option<&crate::assets::AssetDatabase>,
+) -> Result<SceneFileData, String> {
     let mut scene: SceneFileData = serde_json::from_str(json)
         .map_err(|e| format!("Scene JSON parse error: {e}"))?;
+    // E2 — apply schema migrations before topo-sort so any structural fixes
+    // (entity reorders, renames, defaulted fields) are visible to downstream
+    // consumers. No-op when scene.version == CURRENT_SCENE_VERSION.
+    // Pass `db` so v4→v5 (path → GUID translation) can run.
+    migration::migrate(&mut scene, db);
     scene.entities = topo_sort_entities(scene.entities)?;
     Ok(scene)
 }
 
 /// Load a `.scene` from raw bytes (native + WASM). Same JSON as [`parse_and_sort_scene`].
-pub fn load_scene_from_bytes(data: &[u8]) -> Result<SceneFileData, String> {
+pub fn load_scene_from_bytes(
+    data: &[u8],
+    db: Option<&crate::assets::AssetDatabase>,
+) -> Result<SceneFileData, String> {
     let text = std::str::from_utf8(data).map_err(|e| format!("Scene file is not valid UTF-8: {e}"))?;
-    parse_and_sort_scene(text)
+    parse_and_sort_scene(text, db)
 }
 
 /// Serialize a SceneFileData to a pretty-printed JSON string.
@@ -181,10 +195,13 @@ pub fn topo_sort_entities(entities: Vec<SerializedEntity>) -> Result<Vec<Seriali
 // ── Native file I/O (not available on WASM — use fetch API instead) ───────────
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn load_scene_file(path: &str) -> Result<SceneFileData, String> {
+pub fn load_scene_file(
+    path: &str,
+    db: Option<&crate::assets::AssetDatabase>,
+) -> Result<SceneFileData, String> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read scene '{path}': {e}"))?;
-    parse_and_sort_scene(&raw)
+    parse_and_sort_scene(&raw, db)
 }
 
 /// Atomically write a scene file. Writes to a temp file then renames,

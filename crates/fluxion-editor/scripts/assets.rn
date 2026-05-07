@@ -114,7 +114,7 @@ fn handle_grid_action(action, path) {
     } else if action == "ctx:Edit Material" || action == "ctx:Assign to Selected" {
         let entity = fluxion::world::selected();
         if entity != -1 {
-            fluxion::world::set_material_path(entity, path.clone());
+            fluxion::world::set_material(entity, path.clone());
         }
         fluxion::world::set_selected_asset(path.clone());
     } else if action == "ctx:Rename" {

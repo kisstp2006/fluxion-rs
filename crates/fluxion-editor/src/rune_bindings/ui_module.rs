@@ -2376,11 +2376,19 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                     egui::vec2(16.0, 16.0));
                 ui.put(icon_rect, crate::icons::img(icon_name, 14.0, tint));
 
-                // filename text
+                // filename text — `v` may be a GUID (B5/Week 6b) or a path
+                // (transitional, before next save+migrate). Resolve GUID→path
+                // via the renderer's thread-local resolver so the user always
+                // sees the friendly filename.
+                let display_path: String = if v.is_empty() {
+                    String::new()
+                } else {
+                    fluxion_renderer::asset_context::resolve_path(&v).unwrap_or_else(|| v.clone())
+                };
                 let fname: String = if v.is_empty() {
                     format!("None ({})", if type_flt.is_empty() { "Asset" } else { type_flt })
                 } else {
-                    v.split(['/', '\\']).last().unwrap_or(&v).to_string()
+                    display_path.split(['/', '\\']).last().unwrap_or(&display_path).to_string()
                 };
                 let fname_color = if v.is_empty() {
                     egui::Color32::from_rgb(120, 120, 130)
@@ -2419,7 +2427,14 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             || dropped_t == type_flt
                             || (type_flt == "mesh" && dropped_t == "model");
                         if type_ok {
-                            v = dropped.clone();
+                            // B5/Week 6b — translate the dropped project-
+                            // relative path into the asset's GUID before it
+                            // lands on the component, so the next save writes
+                            // the canonical reference. If the path is unknown
+                            // to the database, store the path as a fallback
+                            // (the migrator will translate on next load).
+                            v = fluxion_renderer::asset_context::resolve_guid(dropped)
+                                .unwrap_or_else(|| dropped.clone());
                         }
                     }
                 }
@@ -5265,7 +5280,8 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                         ui.set_min_width(130.0);
                                         for &item in &[
                                             "Rename", "Duplicate",
-                                            "Create Prefab", "Delete", "Unparent",
+                                            "Create Prefab", "Revert to Prefab",
+                                            "Delete", "Unparent",
                                         ] {
                                             if ui.button(item).clicked() {
                                                 LTREE_CTX_ACTION.with(|c| {

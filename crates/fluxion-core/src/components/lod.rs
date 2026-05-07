@@ -9,7 +9,7 @@
 //   1. Finds all entities with LodGroup + Transform.
 //   2. Computes distance to active camera.
 //   3. Picks the appropriate LOD level (highest detail within budget).
-//   4. Updates MeshRenderer::mesh_path + clears mesh_handle so the
+//   4. Updates MeshRenderer::mesh + clears mesh_handle so the
 //      renderer hydrates the new mesh on the next frame.
 //
 // Unity equivalent: LODGroup + LOD[].
@@ -29,7 +29,7 @@ pub struct LodLevel {
 
     /// Mesh file path (e.g. "models/tree_lod1.glb").
     /// `None` = cull (don't render at this distance).
-    pub mesh_path: Option<String>,
+    pub mesh: Option<String>,
 }
 
 // ── LodGroup ──────────────────────────────────────────────────────────────────
@@ -60,8 +60,8 @@ impl LodGroup {
         threshold: f32,
     ) -> Self {
         Self::new(vec![
-            LodLevel { screen_distance: 0.0,      mesh_path: Some(high_mesh.to_string()) },
-            LodLevel { screen_distance: threshold, mesh_path: Some(low_mesh.to_string()) },
+            LodLevel { screen_distance: 0.0,      mesh: Some(high_mesh.to_string()) },
+            LodLevel { screen_distance: threshold, mesh: Some(low_mesh.to_string()) },
         ])
     }
 
@@ -73,9 +73,9 @@ impl LodGroup {
         cull_dist: f32,
     ) -> Self {
         Self::new(vec![
-            LodLevel { screen_distance: 0.0,        mesh_path: Some(high_mesh.to_string()) },
-            LodLevel { screen_distance: switch_dist, mesh_path: Some(low_mesh.to_string()) },
-            LodLevel { screen_distance: cull_dist,   mesh_path: None },
+            LodLevel { screen_distance: 0.0,        mesh: Some(high_mesh.to_string()) },
+            LodLevel { screen_distance: switch_dist, mesh: Some(low_mesh.to_string()) },
+            LodLevel { screen_distance: cull_dist,   mesh: None },
         ])
     }
 }
@@ -149,13 +149,13 @@ impl LodSystem {
             let new_path = {
                 let Some(lod) = world.get_component_mut::<LodGroup>(entity) else { continue };
                 lod.levels.get(new_level as usize)
-                    .and_then(|l| l.mesh_path.clone())
+                    .and_then(|l| l.mesh.clone())
             };
 
             if let Some(mut mr) = world.get_component_mut::<MeshRenderer>(entity) {
-                let old_path = mr.mesh_path.clone();
+                let old_path = mr.mesh.clone();
                 if old_path.as_deref() != new_path.as_deref() {
-                    mr.mesh_path   = new_path;
+                    mr.mesh   = new_path;
                     mr.mesh_handle = None;   // force renderer to re-hydrate
                 }
             }

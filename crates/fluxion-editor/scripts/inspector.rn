@@ -407,7 +407,7 @@ fn draw_model_inspector(path) {
     let entity = fluxion::world::selected();
     if entity != -1 {
         if fluxion::ui::icon_button("box", 14.0, 0.7, 0.65, 0.55) {
-            fluxion::world::set_str(entity, "MeshRenderer", "mesh_path", path.clone());
+            fluxion::world::set_str(entity, "MeshRenderer", "mesh", path.clone());
         }
         fluxion::ui::label(" Apply to Selected Entity");
     } else {
@@ -565,7 +565,7 @@ fn draw_material_inspector(path) {
     let entity = fluxion::world::selected();
     if entity != -1 {
         if fluxion::ui::icon_button("droplet", 14.0, 0.4, 0.75, 0.95) {
-            fluxion::world::set_material_path(entity, path.clone());
+            fluxion::world::set_material(entity, path.clone());
         }
         fluxion::ui::label(" Assign to Selected");
     }
@@ -874,11 +874,11 @@ fn draw_camera_extras(sel) {
 // ── MeshRenderer material slot UI ────────────────────────────────────────────
 
 fn draw_mesh_renderer_extras(sel) {
-    // ── Single material_path ──────────────────────────────────────────────
-    let mp  = fluxion::world::get_material_path(sel);
+    // ── Single material reference (path today, GUID in 6b) ────────────────
+    let mp  = fluxion::world::get_material(sel);
     let nmp = fluxion::ui::asset_path_picker("Material##mr_mat", mp.clone(), "material");
     if nmp != mp {
-        fluxion::world::set_material_path(sel, nmp);
+        fluxion::world::set_material(sel, nmp);
     }
 
     // ── Multi-slot materials ──────────────────────────────────────────────

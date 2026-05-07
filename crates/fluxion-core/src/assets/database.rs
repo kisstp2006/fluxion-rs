@@ -135,6 +135,13 @@ pub struct AssetDatabase {
     deps_forward: HashMap<String, BTreeSet<String>>,
     /// Reverse dependency map: asset path → set of assets that reference it.
     deps_reverse: HashMap<String, BTreeSet<String>>,
+    /// Per-format importer pipeline (B1). Resolves an extension to a cooker;
+    /// falls back to passthrough so the database stays behavior-compatible
+    /// while specialized cookers come online.
+    importers: super::importer::ImporterRegistry,
+    /// Cooked-asset cache (B2). Lazy-loaded on first scan; maps GUID to the
+    /// `<guid>-<contenthash>.fxa` filename inside `.fluxion-cache/`.
+    cache: super::cache::CacheManifest,
 }
 
 impl Default for AssetDatabase {
@@ -147,6 +154,8 @@ impl Default for AssetDatabase {
             dirs:         BTreeSet::new(),
             deps_forward: HashMap::new(),
             deps_reverse: HashMap::new(),
+            importers:    super::importer::ImporterRegistry::default(),
+            cache:        super::cache::CacheManifest::default(),
         }
     }
 }
@@ -156,11 +165,61 @@ impl AssetDatabase {
         Self::default()
     }
 
+    // ── Importer pipeline (B1) ────────────────────────────────────────────────
+
+    /// Register a custom importer. Specialized cookers (texture, glTF, audio,
+    /// …) call this during editor / cooker startup. Order is significant only
+    /// when two importers claim the same extension — first registered wins.
+    pub fn register_importer(&mut self, importer: Box<dyn super::importer::Importer>) {
+        self.importers.register(importer);
+    }
+
+    /// Look up the importer responsible for an extension. Always returns a
+    /// concrete importer (passthrough fallback when no specialized one matches).
+    pub fn resolve_importer(&self, ext: &str) -> &dyn super::importer::Importer {
+        self.importers.resolve(ext)
+    }
+
+    // ── Cooked-asset cache (B2) ───────────────────────────────────────────────
+
+    /// Absolute path to `.fluxion-cache/` for the most recently scanned project.
+    /// Empty if [`Self::scan`] hasn't been called yet.
+    pub fn cache_dir(&self) -> std::path::PathBuf {
+        super::cache::CacheManifest::cache_dir(&self.root)
+    }
+
+    /// Resolve a GUID to the absolute path of its cooked artifact, or `None`
+    /// if no cooked entry exists yet. The runtime / renderer / cooker reads
+    /// from here instead of the source asset.
+    pub fn cooked_path(&self, guid: &str) -> Option<std::path::PathBuf> {
+        let entry = self.cache.get(guid)?;
+        Some(self.cache_dir().join(&entry.cooked_filename))
+    }
+
+    /// Borrow the in-memory cache manifest. Used by the cooker to update
+    /// entries during a cook pass; callers persist via [`Self::save_cache`].
+    pub fn cache_mut(&mut self) -> &mut super::cache::CacheManifest {
+        &mut self.cache
+    }
+
+    /// Persist the cache manifest to `.fluxion-cache/manifest.json`.
+    /// Best-effort — logs but doesn't propagate I/O errors.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_cache(&self) {
+        if let Err(e) = self.cache.save(&self.root) {
+            log::warn!("[AssetCache] save failed: {e}");
+        }
+    }
+
     // ── Scan (native only) ────────────────────────────────────────────────────
 
     /// Scan `{root}/assets/` recursively (falls back to `root` itself if
     /// `assets/` doesn't exist).  Reads or creates `.fluxmeta` sidecars for
     /// every file so GUIDs are stable across restarts and renames.
+    ///
+    /// Side effects (B2 scaffolding):
+    ///   - Ensures `.fluxion-cache/` exists alongside `assets/`.
+    ///   - Loads `manifest.json` if present, otherwise starts empty.
     ///
     /// This replaces the previous contents of the database entirely.
     #[cfg(not(target_arch = "wasm32"))]
@@ -169,6 +228,13 @@ impl AssetDatabase {
         self.path_index.clear();
         self.guid_index.clear();
         self.root = root.to_path_buf();
+
+        // B2 — make sure the cache infrastructure is in place. Failure is
+        // non-fatal: the rest of the database still works without a cache.
+        if let Err(e) = super::cache::CacheManifest::ensure_dir(root) {
+            log::warn!("[AssetCache] cache dir setup failed: {e}");
+        }
+        self.cache = super::cache::CacheManifest::load(root);
 
         let scan_root = {
             let r = root.join("assets");
@@ -210,10 +276,64 @@ impl AssetDatabase {
             }
         }
 
+        // B3 — reimport-on-change detection. For each scanned file, compare
+        // (mtime, content-hash) against the cache manifest entry. Hash is
+        // computed only when mtime differs (rare on a hot scan). Cooking
+        // doesn't happen yet — the importer registry is passthrough — so this
+        // pass just maintains the manifest. Concrete cookers (B6/B7) plug in
+        // here to actually produce cooked artifacts when an entry is dirty.
+        let mut changed = 0usize;
+        let mut new_assets = 0usize;
+        for rec in &self.records {
+            let abs = scan_root.join(&rec.path);
+            let live_mtime = file_mtime_ms(&abs);
+            let cached = self.cache.get(&rec.guid).cloned();
+
+            // Mtime match → assume content unchanged, skip the read.
+            if let Some(ref e) = cached {
+                if e.source_mtime_ms == live_mtime {
+                    continue;
+                }
+            }
+
+            // Mtime differs (or no entry) — confirm via content hash.
+            let bytes = match std::fs::read(&abs) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let live_hash = super::importer::fxhash64(&bytes);
+
+            let entry = super::cache::CacheEntry {
+                cooked_filename: cached.as_ref().map(|e| e.cooked_filename.clone()).unwrap_or_default(),
+                source_mtime_ms: live_mtime,
+                source_hash:     live_hash,
+            };
+
+            match cached {
+                None => {
+                    new_assets += 1;
+                    log::debug!("[AssetCache] new: {}", rec.path);
+                }
+                Some(prev) if prev.source_hash != live_hash => {
+                    changed += 1;
+                    log::info!("[AssetCache] changed: {}", rec.path);
+                }
+                _ => {
+                    // Same hash, just touched — silently update mtime.
+                }
+            }
+            self.cache.insert(rec.guid.clone(), entry);
+        }
+        if changed > 0 || new_assets > 0 {
+            // Persist only when something actually changed; saves I/O on idle rescans.
+            if let Err(e) = self.cache.save(&self.root) {
+                log::warn!("[AssetCache] manifest save failed: {e}");
+            }
+        }
+
         log::debug!(
-            "[AssetDatabase] scan complete — {} assets under {:?}",
-            self.records.len(),
-            scan_root
+            "[AssetDatabase] scan complete — {} assets under {:?} ({} changed, {} new)",
+            self.records.len(), scan_root, changed, new_assets,
         );
 
         self.build_dependency_index();
@@ -315,6 +435,21 @@ impl AssetDatabase {
     pub fn get_by_guid(&self, guid: &str) -> Option<&AssetRecord> {
         let path = self.guid_index.get(guid)?;
         self.get_by_path(path)
+    }
+
+    /// Resolve a GUID to its project-relative path, if known.
+    /// B5 — used by [`super::handle::resolve_to_guid`] and the runtime
+    /// asset loader to translate stable [`AssetId`]s back to disk paths.
+    pub fn path_by_guid(&self, guid: &str) -> Option<&str> {
+        self.guid_index.get(guid).map(String::as_str)
+    }
+
+    /// Resolve a project-relative path to its stable GUID, if known.
+    /// B5 — used by [`super::handle::resolve_to_guid`] when migrating
+    /// path-string scene fields to GUID-keyed [`AssetId`]s.
+    pub fn guid_by_path(&self, path: &str) -> Option<&str> {
+        let idx = self.path_index.get(&norm_path(path))?;
+        self.records.get(*idx).map(|r| r.guid.as_str())
     }
 
     /// Like `list_dir` but filtered by asset type string ("" = all).
@@ -424,8 +559,13 @@ impl AssetDatabase {
             .unwrap_or_default()
     }
 
-    /// Build forward and reverse dependency indices by scanning text-based assets.
-    /// Searches `.scene` and `.fluxmat` files for known asset-path strings.
+    /// Build forward and reverse dependency indices by parsing JSON assets.
+    ///
+    /// B4 — replaces the previous `text.contains()` scan, which produced
+    /// false positives on substring matches inside comments, numeric strings,
+    /// or path-fragments. We now parse the source as `serde_json::Value`,
+    /// walk every string node, and treat each one that resolves to a known
+    /// asset path as a dependency. Non-JSON assets are skipped silently.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn build_dependency_index(&mut self) {
         self.deps_forward.clear();
@@ -436,32 +576,46 @@ impl AssetDatabase {
             if r.is_dir() { r } else { self.root.clone() }
         };
 
-        let all_paths: Vec<String> = self.records.iter().map(|r| r.path.clone()).collect();
+        let known: std::collections::HashSet<String> =
+            self.records.iter().map(|r| r.path.clone()).collect();
 
         for rec in &self.records {
-            match rec.asset_type {
-                AssetType::Scene | AssetType::Material | AssetType::Json => {
-                    let abs = scan_root.join(&rec.path);
-                    let Ok(text) = std::fs::read_to_string(&abs) else { continue };
-                    let mut refs: BTreeSet<String> = BTreeSet::new();
-                    for candidate in &all_paths {
-                        if candidate == &rec.path { continue; }
-                        if text.contains(candidate.as_str()) {
-                            refs.insert(candidate.clone());
-                        }
-                    }
-                    if !refs.is_empty() {
-                        let src = rec.path.clone();
-                        for dep in &refs {
-                            self.deps_reverse
-                                .entry(dep.clone())
-                                .or_default()
-                                .insert(src.clone());
-                        }
-                        self.deps_forward.insert(src, refs);
-                    }
+            // JSON-shaped assets only. Binary formats (textures, models)
+            // declare their dependencies via [`Importer::import`] in B6/B7.
+            let parse_as_json = matches!(
+                rec.asset_type,
+                AssetType::Scene | AssetType::Material | AssetType::Prefab | AssetType::Json,
+            );
+            if !parse_as_json {
+                continue;
+            }
+
+            let abs = scan_root.join(&rec.path);
+            let Ok(text) = std::fs::read_to_string(&abs) else { continue };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+
+            let mut strings: Vec<String> = Vec::new();
+            walk_json_strings(&json, &mut strings);
+
+            let mut refs: BTreeSet<String> = BTreeSet::new();
+            for s in strings {
+                let n = norm_path(&s);
+                // Skip self-references and string values that don't look like asset paths.
+                if n == rec.path || !known.contains(&n) {
+                    continue;
                 }
-                _ => {}
+                refs.insert(n);
+            }
+
+            if !refs.is_empty() {
+                let src = rec.path.clone();
+                for dep in &refs {
+                    self.deps_reverse
+                        .entry(dep.clone())
+                        .or_default()
+                        .insert(src.clone());
+                }
+                self.deps_forward.insert(src, refs);
             }
         }
     }
@@ -545,6 +699,32 @@ pub fn new_guid() -> String {
 }
 
 // ── ISO-8601 timestamp (no chrono dep) ───────────────────────────────────────
+
+/// Recursively collect every string value in a JSON document. Used by the
+/// dependency walker (B4) to discover asset references regardless of where
+/// they sit in the schema (entities[].components[].data.modelPath, etc.).
+fn walk_json_strings(v: &serde_json::Value, out: &mut Vec<String>) {
+    match v {
+        serde_json::Value::String(s) => out.push(s.clone()),
+        serde_json::Value::Array(arr) => for x in arr { walk_json_strings(x, out); },
+        serde_json::Value::Object(map) => for (_, x) in map { walk_json_strings(x, out); },
+        _ => {}
+    }
+}
+
+/// File modification time as milliseconds since UNIX_EPOCH.
+/// Returns 0 on any I/O error — comparison against a cached `0` will look
+/// "unchanged" only if the file genuinely lacks a usable mtime, in which case
+/// the hash check is the authoritative tie-breaker.
+#[cfg(not(target_arch = "wasm32"))]
+fn file_mtime_ms(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 fn iso_now() -> String {
     let secs = SystemTime::now()

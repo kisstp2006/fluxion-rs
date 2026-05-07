@@ -18,6 +18,7 @@
 
 pub mod renderer;
 pub mod render_graph;
+pub mod asset_context;
 pub mod passes;
 pub mod material;
 pub mod texture;

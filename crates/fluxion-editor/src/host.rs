@@ -791,6 +791,34 @@ impl EditorHost {
                         Err(e) => log::warn!("Prefab load failed '{path}': {e}"),
                     }
                 }
+                "__revert_to_prefab__" => {
+                    // E4 — load the entity's source prefab from disk and
+                    // re-apply its component data, clearing all overrides.
+                    if !edit.entity.is_valid() { continue; }
+                    let Some(rel_path) = self.world.get_prefab_source(edit.entity).map(str::to_string) else {
+                        log::warn!("revert_to_prefab: entity has no prefab_source");
+                        continue;
+                    };
+                    let abs_path = if std::path::Path::new(&rel_path).is_absolute() {
+                        std::path::PathBuf::from(&rel_path)
+                    } else {
+                        self.project_root.join(&rel_path)
+                    };
+                    match fluxion_core::scene::load_prefab_file(abs_path.to_str().unwrap_or("")) {
+                        Ok(prefab) => {
+                            match fluxion_core::scene::revert_to_prefab(
+                                &mut self.world, edit.entity, &prefab, &self.registry,
+                            ) {
+                                Ok(()) => log::info!(
+                                    "Reverted entity {} to prefab '{}'",
+                                    edit.entity.to_bits(), rel_path,
+                                ),
+                                Err(e) => log::warn!("Revert to prefab failed: {e}"),
+                            }
+                        }
+                        Err(e) => log::warn!("Prefab load failed '{}': {e}", abs_path.display()),
+                    }
+                }
                 "__set_script_field__" => {
                     if edit.entity.is_valid() {
                         // Packed as "script_name\x00field_name\x00value_str"
@@ -905,7 +933,7 @@ impl EditorHost {
                             } else { None };
                             if let Some(mut mr) = self.world.get_component_mut::<fluxion_core::MeshRenderer>(edit.entity) {
                                 if let Some(slot) = mr.material_slots.get_mut(idx) {
-                                    slot.material_path = new_path.clone();
+                                    slot.material = new_path.clone();
                                     slot.material_handle = None;
                                 }
                             }
@@ -916,12 +944,12 @@ impl EditorHost {
                         }
                     }
                 }
-                "__set_material_path__" => {
+                "__set_material__" => {
                     if edit.entity.is_valid() {
                         let path = edit.field.clone();
                         let new_path = if path.is_empty() { None } else { Some(path.clone()) };
                         if let Some(mut mr) = self.world.get_component_mut::<fluxion_core::MeshRenderer>(edit.entity) {
-                            mr.material_path = new_path.clone();
+                            mr.material = new_path.clone();
                             mr.material_handle = None;
                         }
                         if let Some(new_path_str) = new_path {

@@ -598,15 +598,21 @@ impl FluxionRenderer {
             // ── Multi-slot materials ────────────────────────────────────────
             let slot_count = mr.material_slots.len();
             if slot_count > 0 {
-                // Collect (index, path) pairs first to avoid borrow issues.
-                let slot_paths: Vec<(usize, Option<String>)> = mr.material_slots.iter()
+                // Collect (index, GUID) pairs first to avoid borrow issues.
+                let slot_guids: Vec<(usize, Option<String>)> = mr.material_slots.iter()
                     .enumerate()
-                    .map(|(i, s)| (i, s.material_path.clone()))
+                    .map(|(i, s)| (i, s.material.clone()))
                     .collect();
                 drop(mr); // release borrow
 
-                for (idx, maybe_path) in slot_paths {
-                    let Some(rel) = maybe_path else { continue; };
+                for (idx, maybe_guid) in slot_guids {
+                    let Some(guid) = maybe_guid else { continue; };
+                    // GUID → path (B5/Week 6b). Without an AssetDatabase the
+                    // renderer can't open the file; skip silently.
+                    let Some(rel) = crate::asset_context::resolve_path(&guid) else {
+                        log::warn!("MaterialSlot[{idx}].material GUID '{guid}' not in AssetDatabase");
+                        continue;
+                    };
                     let logical = assets::join_logical(base, &rel);
                     let exists = source.exists(&logical) || source.exists(&rel);
                     if !exists { continue; }
@@ -623,8 +629,12 @@ impl FluxionRenderer {
                 continue;
             }
 
-            // ── Single material_path ────────────────────────────────────────
-            if let Some(rel) = mr.material_path.clone() {
+            // ── Single material ────────────────────────────────────────
+            if let Some(guid) = mr.material.clone() {
+                let Some(rel) = crate::asset_context::resolve_path(&guid) else {
+                    log::warn!("MeshRenderer.material GUID '{guid}' not in AssetDatabase");
+                    continue;
+                };
                 let logical = assets::join_logical(base, &rel);
                 if !source.exists(&logical) && !source.exists(&rel) {
                     continue;
@@ -645,6 +655,9 @@ impl FluxionRenderer {
 
     /// Hot-reload a `.fluxmat` file — rebuilds its GPU material and patches all
     /// `MeshRenderer` components that reference it (both single-slot and multi-slot).
+    /// `path` is the project-relative path of the modified material on disk;
+    /// components store the asset GUID (B5/Week 6b), so we resolve the path
+    /// to a GUID once and match by GUID for the rest of the function.
     pub fn reload_material(
         &mut self,
         world: &mut ECSWorld,
@@ -662,21 +675,29 @@ impl FluxionRenderer {
             src,
         )?;
 
-        // Find which entities reference this path and collect their handles.
+        // Translate the disk path to its GUID so we can match against
+        // components without reading every entity's GUID back out to a path.
+        let target_guid = crate::asset_context::resolve_guid(path);
+        let target = target_guid.as_deref();
+        if target.is_none() {
+            log::warn!("reload_material: path '{path}' not in AssetDatabase — no entities will hot-reload.");
+        }
+
+        // Find which entities reference this GUID and collect their handles.
         let entities: Vec<EntityId> = world.all_entities().collect();
         let mut handles_to_replace: Vec<u32> = Vec::new();
 
         for id in &entities {
             if let Some(mr) = world.get_component::<MeshRenderer>(*id) {
                 // Single-slot check
-                if mr.material_path.as_deref() == Some(path) {
+                if target.is_some() && mr.material.as_deref() == target {
                     if let Some(h) = mr.material_handle {
                         handles_to_replace.push(h);
                     }
                 }
                 // Multi-slot check
                 for slot in &mr.material_slots {
-                    if slot.material_path.as_deref() == Some(path) {
+                    if target.is_some() && slot.material.as_deref() == target {
                         if let Some(h) = slot.material_handle {
                             handles_to_replace.push(h);
                         }
@@ -685,16 +706,16 @@ impl FluxionRenderer {
             }
         }
 
-        // Also collect entities that reference this path but have no handle yet
-        // (freshly assigned material — handle was cleared to None by set_material_path).
+        // Also collect entities that reference this GUID but have no handle yet
+        // (freshly assigned material — handle was cleared to None by set_material).
         let mut entities_needing_new_handle: Vec<(EntityId, bool, usize)> = Vec::new(); // (id, is_slot, slot_idx)
         for id in &entities {
             if let Some(mr) = world.get_component::<MeshRenderer>(*id) {
-                if mr.material_path.as_deref() == Some(path) && mr.material_handle.is_none() {
+                if target.is_some() && mr.material.as_deref() == target && mr.material_handle.is_none() {
                     entities_needing_new_handle.push((*id, false, 0));
                 }
                 for (i, slot) in mr.material_slots.iter().enumerate() {
-                    if slot.material_path.as_deref() == Some(path) && slot.material_handle.is_none() {
+                    if target.is_some() && slot.material.as_deref() == target && slot.material_handle.is_none() {
                         entities_needing_new_handle.push((*id, true, i));
                     }
                 }
@@ -773,23 +794,29 @@ impl FluxionRenderer {
             src,
         )?;
 
+        // B5/Week 6b — components reference the material by GUID. Resolve
+        // both incoming paths (rel and abs) to GUIDs once; either may match.
+        let target_rel = crate::asset_context::resolve_guid(rel_path);
+        let target_abs = crate::asset_context::resolve_guid(abs_path);
+
         let entities: Vec<EntityId> = world.all_entities().collect();
         let mut handles_to_replace: Vec<u32> = Vec::new();
         let mut entities_needing_new_handle: Vec<(EntityId, bool, usize)> = Vec::new();
 
         for id in &entities {
             if let Some(mr) = world.get_component::<MeshRenderer>(*id) {
-                let matches = |p: Option<&str>| -> bool {
-                    p == Some(rel_path) || p == Some(abs_path)
+                let matches = |g: Option<&str>| -> bool {
+                    let Some(g) = g else { return false; };
+                    target_rel.as_deref() == Some(g) || target_abs.as_deref() == Some(g)
                 };
-                if matches(mr.material_path.as_deref()) {
+                if matches(mr.material.as_deref()) {
                     match mr.material_handle {
                         Some(h) => handles_to_replace.push(h),
                         None    => entities_needing_new_handle.push((*id, false, 0)),
                     }
                 }
                 for (i, slot) in mr.material_slots.iter().enumerate() {
-                    if matches(slot.material_path.as_deref()) {
+                    if matches(slot.material.as_deref()) {
                         match slot.material_handle {
                             Some(h) => handles_to_replace.push(h),
                             None    => entities_needing_new_handle.push((*id, true, i)),
@@ -843,7 +870,7 @@ impl FluxionRenderer {
             let Some(mut mr) = world.get_component_mut::<MeshRenderer>(child) else {
                 continue;
             };
-            if mr.mesh_path.is_none() && mr.mesh_handle.is_some() {
+            if mr.mesh.is_none() && mr.mesh_handle.is_some() {
                 mr.material_handle = Some(handle);
             }
         }
@@ -858,11 +885,15 @@ impl FluxionRenderer {
         if mr.scene_inline_material.is_some() {
             return true;
         }
-        let Some(rel) = mr.material_path.as_ref() else {
+        let Some(guid) = mr.material.as_ref() else {
             return false;
         };
-        let full = assets::join_logical(base, rel);
-        source.exists(&full) || source.exists(rel)
+        // GUID → path via thread-local resolver (B5/Week 6b).
+        let Some(rel) = crate::asset_context::resolve_path(guid) else {
+            return false;
+        };
+        let full = assets::join_logical(base, &rel);
+        source.exists(&full) || source.exists(&rel)
     }
 
     fn upload_gltf_textures(&mut self, uploads: &[crate::mesh::gltf_loader::GltfTextureUpload]) {
@@ -956,8 +987,8 @@ impl FluxionRenderer {
                 world.add_component(
                     child,
                     MeshRenderer {
-                        mesh_path: None,
-                        material_path: None,
+                        mesh: None,
+                        material: None,
                         primitive: None,
                         cast_shadow,
                         receive_shadow,
@@ -1180,7 +1211,13 @@ impl FluxionRenderer {
             if mr.mesh_handle.is_some() {
                 continue;
             }
-            let Some(rel_owned) = mr.mesh_path.clone() else {
+            let Some(guid) = mr.mesh.clone() else {
+                continue;
+            };
+            // GUID → path (B5/Week 6b). Without an AssetDatabase the renderer
+            // can't open the file; skip silently and log.
+            let Some(rel_owned) = crate::asset_context::resolve_path(&guid) else {
+                log::warn!("MeshRenderer.mesh GUID '{guid}' not in AssetDatabase — skipping mesh load.");
                 continue;
             };
             let ext = Path::new(&rel_owned)

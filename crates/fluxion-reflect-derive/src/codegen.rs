@@ -28,6 +28,9 @@ enum ReflectKind {
     Vec2,    // [f32; 2]
     Str,
     OptionStr,
+    /// `Vec<String>` — collection field. Round-trips through
+    /// `ReflectValue::VecStr` (E1).
+    VecStr,
     Enum,    // serde round-trip
     /// `Option<String>` typed as Material path
     Material,
@@ -56,6 +59,7 @@ impl ReflectKind {
             Self::USize    => quote!(#core::reflect::ReflectFieldType::USize),
             Self::Str      => quote!(#core::reflect::ReflectFieldType::Str),
             Self::OptionStr => quote!(#core::reflect::ReflectFieldType::OptionStr),
+            Self::VecStr   => quote!(#core::reflect::ReflectFieldType::VecStr),
             Self::I32      => quote!(#core::reflect::ReflectFieldType::I32),
             Self::Vec2     => quote!(#core::reflect::ReflectFieldType::Vec2),
             Self::Enum     => quote!(#core::reflect::ReflectFieldType::Enum),
@@ -81,6 +85,7 @@ impl ReflectKind {
             Self::USize    => quote!(Some(#core::reflect::ReflectValue::USize(#field_expr))),
             Self::Str      => quote!(Some(#core::reflect::ReflectValue::Str(#field_expr.clone()))),
             Self::OptionStr => quote!(Some(#core::reflect::ReflectValue::OptionStr(#field_expr.clone()))),
+            Self::VecStr   => quote!(Some(#core::reflect::ReflectValue::VecStr(#field_expr.clone()))),
             Self::I32      => quote!(Some(#core::reflect::ReflectValue::I32(#field_expr))),
             Self::Vec2     => quote!(Some(#core::reflect::ReflectValue::Vec2(#field_expr))),
             Self::Enum     => quote!(Some(#core::reflect::ReflectValue::Enum(
@@ -140,6 +145,9 @@ impl ReflectKind {
             },
             Self::OptionStr => quote! {
                 (#name_str, #core::reflect::ReflectValue::OptionStr(v)) => { #field_ident = v; }
+            },
+            Self::VecStr => quote! {
+                (#name_str, #core::reflect::ReflectValue::VecStr(v)) => { #field_ident = v; }
             },
             Self::I32 => quote! {
                 (#name_str, #core::reflect::ReflectValue::I32(v)) => { #field_ident = v; }
@@ -202,6 +210,23 @@ fn detect_kind_inner(ty: &Type, _attrs: &FieldAttrs) -> ReflectKind {
                 Some("Vec3")   => ReflectKind::Vec3,
                 Some("Quat")   => ReflectKind::Quat,
                 Some("Option") => ReflectKind::OptionStr,
+                Some("Vec") => {
+                    // E1 — only `Vec<String>` is currently supported. Any
+                    // other inner type falls back to Enum (which serdes via
+                    // round-trip JSON), so existing components with e.g.
+                    // `Vec<f32>` keep working at the inspector level until
+                    // a dedicated kind lands.
+                    if let Some(seg) = segs.last() {
+                        if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                            if let Some(syn::GenericArgument::Type(Type::Path(inner))) = args.args.first() {
+                                if inner.path.segments.last().map(|s| s.ident == "String").unwrap_or(false) {
+                                    return ReflectKind::VecStr;
+                                }
+                            }
+                        }
+                    }
+                    ReflectKind::Enum
+                }
                 _ => ReflectKind::Enum,
             }
         }
@@ -344,20 +369,29 @@ pub fn derive_reflect_impl(input: DeriveInput) -> TokenStream {
     }).collect();
 
     // ── get_field match arms ──────────────────────────────────────────────────
-    let get_arms: Vec<TokenStream> = fields_info.iter().map(|fi| {
-        let name_lit  = &fi.ident_str;
+    // Each field gets one arm for its canonical name plus one extra for every
+    // `#[reflect(rename_from = "old_name")]` alias. This is how the schema
+    // migration framework (E2) keeps old scenes loadable after a rename.
+    let get_arms: Vec<TokenStream> = fields_info.iter().flat_map(|fi| {
         let ident     = format_ident!("{}", fi.ident_str);
         let field_ref = quote!(self.#ident);
         let expr      = fi.kind.get_expr(&field_ref, &core);
-        quote!(#name_lit => #expr,)
+        let mut names: Vec<String> = vec![fi.ident_str.clone()];
+        names.extend(fi.attrs.rename_from.iter().cloned());
+        names.into_iter().map(move |n| {
+            let name_lit = n;
+            let expr = expr.clone();
+            quote!(#name_lit => #expr,)
+        }).collect::<Vec<_>>()
     }).collect();
 
     // ── set_field match arms ──────────────────────────────────────────────────
-    let set_arms: Vec<TokenStream> = fields_info.iter().filter(|fi| !fi.attrs.read_only).map(|fi| {
-        let name_lit  = &fi.ident_str;
-        let ident     = format_ident!("{}", fi.ident_str);
+    let set_arms: Vec<TokenStream> = fields_info.iter().filter(|fi| !fi.attrs.read_only).flat_map(|fi| {
+        let ident = format_ident!("{}", fi.ident_str);
         let self_field = quote!(self.#ident);
-        fi.kind.set_arm(name_lit, &self_field, &core)
+        let mut names: Vec<String> = vec![fi.ident_str.clone()];
+        names.extend(fi.attrs.rename_from.iter().cloned());
+        names.into_iter().map(|n| fi.kind.set_arm(&n, &self_field, &core)).collect::<Vec<_>>()
     }).collect();
 
     // ── final impl ────────────────────────────────────────────────────────────

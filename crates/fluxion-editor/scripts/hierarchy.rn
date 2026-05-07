@@ -107,6 +107,15 @@ fn dispatch_action(action, sel) {
             let name_val = fluxion::world::entity_name(id);
             fluxion::ui::input_dialog_open("Save Prefab As", `assets/prefabs/${name_val}.scene`);
             fluxion::world::set_prefab_pending(id);
+        } else if ctx_act == "Revert to Prefab" {
+            // E4 — apply to all targets that are actually prefab instances.
+            // Non-instances are silently skipped (the menu item is shown for
+            // every entity to keep the menu consistent; the binding gates).
+            for t in targets {
+                if fluxion::world::has_prefab_source(t) {
+                    fluxion::world::revert_to_prefab(t);
+                }
+            }
         } else if ctx_act == "Rename" {
             fluxion::world::set_selected(id);
             fluxion::world::clear_selected_asset();

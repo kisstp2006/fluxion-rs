@@ -10,7 +10,11 @@
       "Bash(grep -n \"render_ui_only\\\\|^        \\\\}\\); *$\\\\|let mut do_save_scene\\\\|drain_action_signals\" \"c:/Users/tibig/Documents/gameengines/fluxion-rs/crates/fluxion-editor/src/main.rs\")",
       "Bash(grep -E \"\\\\\\\\\\\\$\\\\\\\\{|\\\\\\\\\\\\.unwrap\\\\\\\\\\(\\\\\\\\\\)|is_some\" \"c:/Users/tibig/Documents/gameengines/fluxion-rs/crates/fluxion-editor/scripts/\"*.rn)",
       "Bash(cargo metadata *)",
-      "Bash(python -c \"import json,sys; m=json.load\\(sys.stdin\\); pkg=[p for p in m['packages'] if p['name']=='egui_dock'][0]; print\\('features:', list\\(pkg.get\\('features',{}\\).keys\\(\\)\\)\\)\")"
+      "Bash(python -c \"import json,sys; m=json.load\\(sys.stdin\\); pkg=[p for p in m['packages'] if p['name']=='egui_dock'][0]; print\\('features:', list\\(pkg.get\\('features',{}\\).keys\\(\\)\\)\\)\")",
+      "Bash(grep -v \"^Binary\\\\|target/\\\\|^\\\\s*//\")",
+      "Bash(grep -n \"impl Reflect for MeshRenderer\\\\|#\\\\\\\\[derive.*Reflect\" \"c:/Users/tibig/Documents/gameengines/fluxion-rs/crates/fluxion-core/src/components/mesh_renderer.rs\" \"c:/Users/tibig/Documents/gameengines/fluxion-rs/crates/fluxion-core/src/reflect_impls.rs\")",
+      "Bash(grep -v \"physics_material_path\\\\|target/\\\\|//.*mesh_path\\\\|//.*material_path\\\\|^Binary\\\\|templates.rs\")",
+      "Bash(grep -n \"self\\\\.\\\\\\\\\\(hydrate\\\\\\\\|gltf\\\\\\\\|load_gltf\\\\\\\\\\)\" \"c:/Users/tibig/Documents/gameengines/fluxion-rs/crates/fluxion-renderer/src/renderer.rs\")"
     ]
   }
 }

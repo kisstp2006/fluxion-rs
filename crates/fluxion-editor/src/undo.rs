@@ -147,14 +147,6 @@ impl UndoStack {
         self.last_push_at = Some(Instant::now());
     }
 
-    /// Convenience: push a field-edit undo (backwards compat with existing callers).
-    pub fn push(&mut self, label: impl Into<String>, inverse: Vec<PendingEdit>) {
-        if inverse.is_empty() {
-            return;
-        }
-        self.push_action(label, UndoAction::FieldEdits(inverse));
-    }
-
     /// Push a single field-edit inverse with temporal coalescing.
     ///
     /// If the previous undo entry was a single-field `FieldEdits` on the same

@@ -40,6 +40,12 @@ pub struct FieldAttrs {
     pub header: Option<String>,
     /// [Tooltip("...")] — hover description (Unity-style).
     pub tooltip: Option<String>,
+    /// Old field names that this field has been renamed from. Used by the
+    /// schema-migration framework (E2): when `set_field` is called with a
+    /// canonical name that doesn't match, we also try every name in
+    /// `rename_from` so old scenes load without manual migration.
+    /// Multiple aliases supported via repeated `rename_from = "..."`.
+    pub rename_from: Vec<String>,
 }
 
 impl FieldAttrs {
@@ -101,6 +107,10 @@ impl FieldAttrs {
                     let value = meta.value()?;
                     let s: syn::LitStr = value.parse()?;
                     out.display_name = Some(s.value());
+                } else if meta.path.is_ident("rename_from") {
+                    let value = meta.value()?;
+                    let s: syn::LitStr = value.parse()?;
+                    out.rename_from.push(s.value());
                 } else if meta.path.is_ident("variants") {
                     // `#[reflect(variants("A", "B", "C"))]`
                     // parse_nested_meta can't handle bare string literals,

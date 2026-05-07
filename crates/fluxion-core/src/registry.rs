@@ -317,6 +317,7 @@ impl ComponentRegistry {
                     FT::Material | FT::Mesh | FT::Scene     => "string | undefined",
                     FT::Audio                               => "string",
                     FT::EntityRef                           => "number",
+                    FT::VecStr                              => "string[]",
                 };
                 let readonly = if f.read_only { "readonly " } else { "" };
                 out.push_str(&format!("  /** {} */\n", f.display_name));
@@ -367,15 +368,20 @@ impl ComponentRegistry {
         });
 
         // ── MeshRenderer ──────────────────────────────────────────────────────
+        // Reads the v4+ key names: `mesh` (was `modelPath`) and `material`
+        // (was `materialPath`). Older scenes are upgraded by the
+        // `scene/migration.rs` v3→v4 fixer before they reach this code.
         self.register("MeshRenderer", |data, world, entity| {
             let cast_shadow    = data.get("castShadow").and_then(|v| v.as_bool()).unwrap_or(true);
             let receive_shadow = data.get("receiveShadow").and_then(|v| v.as_bool()).unwrap_or(true);
             let layer          = data.get("layer").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
-            let mesh_path      = data.get("modelPath").and_then(|v| v.as_str()).map(str::to_string);
-            let material_path  = data.get("materialPath").and_then(|v| v.as_str()).map(str::to_string);
-            let inline         = data.get("material").cloned();
+            // String values for these two keys may be a path today (v4) and
+            // become a GUID in Week 6b — same `Option<String>` shape either way.
+            let mesh           = data.get("mesh").and_then(|v| v.as_str()).map(str::to_string);
+            let material       = data.get("material").and_then(|v| v.as_str()).map(str::to_string);
+            let inline         = data.get("inlineMaterial").cloned();
 
-            let primitive = if mesh_path.is_some() {
+            let primitive = if mesh.is_some() {
                 None
             } else {
                 let pt = data
@@ -387,8 +393,8 @@ impl ComponentRegistry {
             };
 
             world.add_component(entity, MeshRenderer {
-                mesh_path,
-                material_path,
+                mesh,
+                material,
                 primitive,
                 cast_shadow,
                 receive_shadow,

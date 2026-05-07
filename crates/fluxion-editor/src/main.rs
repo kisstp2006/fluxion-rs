@@ -380,7 +380,7 @@ impl EditorApp {
                     }
                     None => sp.to_string_lossy().into_owned(),
                 };
-                if let Ok(data) = load_scene_file(&load_target) {
+                if let Ok(data) = load_scene_file(&load_target, Some(&host.asset_db)) {
                     let _ = load_scene_into_world(&mut host.world, &data, true, &host.registry);
                     host.camera_manager.rebuild(&host.world);
                     log::info!("Loaded scene: {}", sp.display());
@@ -539,6 +539,12 @@ impl EditorApp {
 
 impl EditorInner {
     fn frame(&mut self) {
+        // B5/Week 6b — make the project's AssetDatabase visible to the
+        // renderer thread-local resolver so MeshRenderer.mesh / .material
+        // GUIDs can be translated to disk paths during this frame's render.
+        // Guard clears the pointer on drop, even on panic.
+        let _renderer_db = fluxion_renderer::asset_context::set_db(&self.host.asset_db);
+
         // Engine tick (skip physics while in Editing mode to avoid moving things)
         if self.editor_mode == EditorMode::Playing {
             self.host.tick();
@@ -1525,7 +1531,7 @@ impl EditorInner {
             }
             None => path.clone(),
         };
-        match load_scene_file(load_path.to_str().unwrap_or("")) {
+        match load_scene_file(load_path.to_str().unwrap_or(""), Some(&self.host.asset_db)) {
             Ok(data) => {
                 self.host.world.clear();
                 if let Err(e) = load_scene_into_world(

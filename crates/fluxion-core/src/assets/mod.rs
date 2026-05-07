@@ -1,5 +1,11 @@
 pub mod database;
+pub mod importer;
+pub mod cache;
+pub mod handle;
 pub use database::{AssetDatabase, AssetRecord, AssetType, new_guid};
+pub use importer::{Importer, ImportedAsset, ImporterRegistry, MetaImportSettings, PassthroughImporter};
+pub use cache::{CacheEntry, CacheManifest, cooked_filename};
+pub use handle::{AssetId, resolve_to_guid};
 
 // ============================================================
 // fluxion-core — Asset pipeline (FluxionJS parity)
