@@ -300,7 +300,8 @@ impl ApplicationHandler for EditorApp {
                                     }
                                 }
                                 PhysicalKey::Code(KeyCode::Comma) if ctrl => {
-                                    crate::rune_bindings::settings_module::set_show_editor_prefs_flag(true);
+                                    let cur = crate::rune_bindings::settings_module::get_show_editor_prefs();
+                                    crate::rune_bindings::settings_module::set_show_editor_prefs_flag(!cur);
                                 }
                                 PhysicalKey::Code(KeyCode::Delete) => g.delete_selected(),
                                 _ => {}

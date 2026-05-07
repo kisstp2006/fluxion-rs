@@ -57,6 +57,64 @@ thread_local! {
     /// main.rs whenever a scene is saved or loaded. Read by the menubar Rune
     /// script via `fluxion::settings::recent_scenes()`.
     static RECENT_SCENES_CACHE: RefCell<Vec<String>> = RefCell::new(Vec::new());
+
+    /// "Click Reset All again to confirm" two-step state for the project
+    /// settings window. Set by the first click; the second click within
+    /// [`RESET_CONFIRM_WINDOW`] performs the reset; otherwise it auto-clears.
+    static RESET_PROJECT_AT: Cell<Option<std::time::Instant>> = Cell::new(None);
+    static RESET_PREFS_AT:   Cell<Option<std::time::Instant>> = Cell::new(None);
+}
+
+/// Window in which a second "Reset All" click is treated as a confirmation.
+pub const RESET_CONFIRM_WINDOW_SECS: u64 = 4;
+
+/// First call: arms the confirmation and returns false. Second call within the
+/// window: returns true (caller should perform the reset). After the window:
+/// re-arms.
+pub fn reset_project_confirm() -> bool {
+    let now = std::time::Instant::now();
+    let armed = RESET_PROJECT_AT.with(|c| c.get());
+    let confirmed = match armed {
+        Some(t) if now.duration_since(t).as_secs() < RESET_CONFIRM_WINDOW_SECS => true,
+        _ => false,
+    };
+    if confirmed {
+        RESET_PROJECT_AT.with(|c| c.set(None));
+    } else {
+        RESET_PROJECT_AT.with(|c| c.set(Some(now)));
+    }
+    confirmed
+}
+
+pub fn reset_project_armed() -> bool {
+    let now = std::time::Instant::now();
+    RESET_PROJECT_AT.with(|c| match c.get() {
+        Some(t) if now.duration_since(t).as_secs() < RESET_CONFIRM_WINDOW_SECS => true,
+        _ => { c.set(None); false }
+    })
+}
+
+pub fn reset_prefs_confirm() -> bool {
+    let now = std::time::Instant::now();
+    let armed = RESET_PREFS_AT.with(|c| c.get());
+    let confirmed = match armed {
+        Some(t) if now.duration_since(t).as_secs() < RESET_CONFIRM_WINDOW_SECS => true,
+        _ => false,
+    };
+    if confirmed {
+        RESET_PREFS_AT.with(|c| c.set(None));
+    } else {
+        RESET_PREFS_AT.with(|c| c.set(Some(now)));
+    }
+    confirmed
+}
+
+pub fn reset_prefs_armed() -> bool {
+    let now = std::time::Instant::now();
+    RESET_PREFS_AT.with(|c| match c.get() {
+        Some(t) if now.duration_since(t).as_secs() < RESET_CONFIRM_WINDOW_SECS => true,
+        _ => { c.set(None); false }
+    })
 }
 
 /// Update the cached recent-scenes list. Called from main.rs after a successful

@@ -493,20 +493,84 @@ pub fn set_egui_ctx(ctx: &egui::Context) {
 #[inline] fn sc_red()      -> egui::Color32 { egui::Color32::from_rgb(241,76,76) }
 #[inline] fn sc_sidebar()  -> egui::Color32 { egui::Color32::from_rgb(37,37,38) }
 #[inline] fn sc_text()     -> egui::Color32 { egui::Color32::from_rgb(204,204,204) }
+#[inline] fn sc_section_bg() -> egui::Color32 { egui::Color32::from_rgb(34,34,34) }
+#[inline] fn sc_row_hover()  -> egui::Color32 { egui::Color32::from_rgb(40,40,40) }
 
-const S_ROW_H:   f32 = 22.0;
-const S_LABEL_W: f32 = 140.0;
+const S_ROW_H:   f32 = 24.0;
+const S_LABEL_W: f32 = 160.0;
 const S_RESET_W: f32 = 22.0;
+const S_DOT_W:   f32 = 10.0;
+const S_SIDEBAR_W: f32 = 160.0;
+
+// ── Polish helpers (settings UI) ──────────────────────────────────────────────
+
+/// Search-filter gate: hide settings rows whose label/desc do not match the
+/// current query. Returns true when the row should render.
+fn v3_search_pass(label: &str, desc: &str) -> bool {
+    use crate::rune_bindings::settings_module as sm;
+    let q = sm::settings_search_query();
+    if q.is_empty() { return true; }
+    let q_low = q.to_lowercase();
+    label.to_lowercase().contains(&q_low) || desc.to_lowercase().contains(&q_low)
+}
+
+/// Render the label area for one settings row. Adds a small yellow dot before
+/// the label when `is_mod` is true so the user can scan modified rows at a glance.
+fn v3_row_label(ui: &mut egui::Ui, label: &str, desc: &str, is_mod: bool) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(S_LABEL_W, S_ROW_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            // Allocate a fixed-width slot for the modified dot so labels stay aligned.
+            let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(S_DOT_W, S_ROW_H), egui::Sense::hover());
+            if is_mod {
+                ui.painter().circle_filled(dot_rect.center(), 3.0, sc_yellow());
+            }
+            ui.add(
+                egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0))
+                    .truncate(),
+            ).on_hover_text(desc);
+        },
+    );
+}
+
+/// Wrap a settings row body in a `Frame` that highlights on hover and gives the
+/// row a consistent vertical rhythm. Estimates the row rect from the current
+/// cursor position so the frame's `fill` is set BEFORE the body draws —
+/// otherwise the background would paint over the row content.
+fn v3_row_frame<R>(
+    ui: &mut egui::Ui,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let pointer = ui.input(|i| i.pointer.hover_pos());
+    let cursor = ui.cursor();
+    let avail_w = ui.available_width();
+    let row_rect = egui::Rect::from_min_max(
+        egui::pos2(cursor.min.x, cursor.min.y),
+        egui::pos2(cursor.min.x + avail_w, cursor.min.y + S_ROW_H + 2.0),
+    );
+    let hovered = pointer.map_or(false, |p| row_rect.contains(p));
+    let fill = if hovered { sc_row_hover() } else { egui::Color32::TRANSPARENT };
+    egui::Frame::default()
+        .fill(fill)
+        .inner_margin(egui::Margin { left: 4, right: 4, top: 1, bottom: 1 })
+        .show(ui, |ui| body(ui))
+        .inner
+}
 
 // ── Sidebar ────────────────────────────────────────────────────────────────────
 
-fn v3_sidebar(ui: &mut egui::Ui, cats: &[&str], counts: &[usize], active: &str) -> String {
+/// Sidebar entry: (display name, feather icon name) — icon is rendered to
+/// the left of the label so each category is recognizable at a glance.
+type SidebarCat = (&'static str, &'static str);
+
+fn v3_sidebar(ui: &mut egui::Ui, cats: &[SidebarCat], counts: &[usize], active: &str) -> String {
     let mut result = active.to_string();
-    for (i, cat) in cats.iter().enumerate() {
+    for (i, (cat, icon)) in cats.iter().enumerate() {
         let is_active = *cat == active;
         let cnt = counts.get(i).copied().unwrap_or(0);
         let (rect, resp) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), 26.0), egui::Sense::click()
+            egui::vec2(ui.available_width(), 28.0), egui::Sense::click()
         );
         let bg = if is_active { sc_accent_d() }
                  else if resp.hovered() { egui::Color32::from_rgb(45,45,45) }
@@ -519,16 +583,30 @@ fn v3_sidebar(ui: &mut egui::Ui, cats: &[&str], counts: &[usize], active: &str) 
             );
         }
         let tc = if is_active { sc_text() } else { sc_label() };
+        // Icon on the left (12 px square, vertically centered).
+        let icon_x = rect.min.x + 10.0;
+        let icon_size = 14.0;
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(icon_x, rect.center().y - icon_size * 0.5),
+            egui::vec2(icon_size, icon_size),
+        );
+        if let Some(bytes) = crate::icons::icon_bytes(icon) {
+            egui::Image::from_bytes(crate::icons::icon_uri(icon), bytes)
+                .fit_to_exact_size(egui::vec2(icon_size, icon_size))
+                .tint(tc)
+                .paint_at(ui, icon_rect);
+        }
+        // Label with left padding for the icon.
         ui.painter().text(
-            egui::pos2(rect.min.x + 10.0, rect.center().y),
+            egui::pos2(icon_rect.max.x + 8.0, rect.center().y),
             egui::Align2::LEFT_CENTER, *cat,
             egui::FontId::proportional(12.0), tc,
         );
+        // Modified-categories: small yellow dot, replaces the previous count.
         if cnt > 0 {
-            ui.painter().text(
-                egui::pos2(rect.max.x - 6.0, rect.center().y),
-                egui::Align2::RIGHT_CENTER, cnt.to_string(),
-                egui::FontId::proportional(10.0), sc_yellow(),
+            ui.painter().circle_filled(
+                egui::pos2(rect.max.x - 10.0, rect.center().y),
+                3.0, sc_yellow(),
             );
         }
         if resp.clicked() { result = cat.to_string(); }
@@ -539,9 +617,14 @@ fn v3_sidebar(ui: &mut egui::Ui, cats: &[&str], counts: &[usize], active: &str) 
 // ── Section header ─────────────────────────────────────────────────────────────
 
 fn v3_section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(6.0);
-    ui.label(egui::RichText::new(title).color(sc_text()).size(11.5).strong());
-    ui.separator();
+    ui.add_space(10.0);
+    egui::Frame::default()
+        .fill(sc_section_bg())
+        .inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 4 })
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(title).color(sc_text()).size(11.5).strong());
+        });
+    ui.add_space(2.0);
 }
 
 // ── Property rows ──────────────────────────────────────────────────────────────
@@ -549,42 +632,42 @@ fn v3_section(ui: &mut egui::Ui, title: &str) {
 fn v3_f32(ui: &mut egui::Ui, label: &str, desc: &str,
           val: f32, def: f32, speed: f64, min: f64, max: f64, dec: usize) -> Option<f32>
 {
+    if !v3_search_pass(label, desc) { return None; }
     let is_mod = (val - def).abs() > 1e-5;
     let mut res: Option<f32> = None;
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
-        );
-        let rw = if is_mod { S_RESET_W } else { 0.0 };
-        let mut v = val;
-        if ui.add_sized(
-            [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
-            egui::DragValue::new(&mut v).speed(speed).range(min..=max).max_decimals(dec)
-        ).changed() { res = Some(v); }
-        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
-            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
+    v3_row_frame(ui, |ui| {
+        ui.horizontal(|ui| {
+            v3_row_label(ui, label, desc, is_mod);
+            let rw = if is_mod { S_RESET_W } else { 0.0 };
+            let mut v = val;
+            if ui.add_sized(
+                [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
+                egui::DragValue::new(&mut v).speed(speed).range(min..=max).max_decimals(dec)
+            ).changed() { res = Some(v); }
+            if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+                .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
+        });
     });
     res
 }
 
 fn v3_bool(ui: &mut egui::Ui, label: &str, desc: &str, val: bool, def: bool) -> Option<bool> {
+    if !v3_search_pass(label, desc) { return None; }
     let is_mod = val != def;
     let mut res: Option<bool> = None;
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
-        );
-        let rw = if is_mod { S_RESET_W } else { 0.0 };
-        let avail = (ui.available_width() - rw).max(20.0);
-        let mut v = val;
-        ui.allocate_ui_with_layout(
-            egui::vec2(avail, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { if ui.checkbox(&mut v, "").changed() { res = Some(v); } }
-        );
-        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
-            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
+    v3_row_frame(ui, |ui| {
+        ui.horizontal(|ui| {
+            v3_row_label(ui, label, desc, is_mod);
+            let rw = if is_mod { S_RESET_W } else { 0.0 };
+            let avail = (ui.available_width() - rw).max(20.0);
+            let mut v = val;
+            ui.allocate_ui_with_layout(
+                egui::vec2(avail, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
+                |ui| { if ui.checkbox(&mut v, "").changed() { res = Some(v); } }
+            );
+            if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+                .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
+        });
     });
     res
 }
@@ -592,21 +675,21 @@ fn v3_bool(ui: &mut egui::Ui, label: &str, desc: &str, val: bool, def: bool) -> 
 fn v3_slider(ui: &mut egui::Ui, label: &str, desc: &str,
              val: f32, def: f32, min: f64, max: f64, dec: usize) -> Option<f32>
 {
+    if !v3_search_pass(label, desc) { return None; }
     let is_mod = (val - def).abs() > 1e-5;
     let mut res: Option<f32> = None;
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
-        );
-        let rw = if is_mod { S_RESET_W } else { 0.0 };
-        let mut v = val;
-        if ui.add_sized(
-            [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
-            egui::Slider::new(&mut v, min as f32..=max as f32).max_decimals(dec)
-        ).changed() { res = Some(v); }
-        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
-            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
+    v3_row_frame(ui, |ui| {
+        ui.horizontal(|ui| {
+            v3_row_label(ui, label, desc, is_mod);
+            let rw = if is_mod { S_RESET_W } else { 0.0 };
+            let mut v = val;
+            if ui.add_sized(
+                [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
+                egui::Slider::new(&mut v, min as f32..=max as f32).max_decimals(dec)
+            ).changed() { res = Some(v); }
+            if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+                .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
+        });
     });
     res
 }
@@ -614,41 +697,41 @@ fn v3_slider(ui: &mut egui::Ui, label: &str, desc: &str,
 fn v3_u32(ui: &mut egui::Ui, label: &str, desc: &str,
           val: u32, def: u32, min: u32, max: u32) -> Option<u32>
 {
+    if !v3_search_pass(label, desc) { return None; }
     let is_mod = val != def;
     let mut res: Option<u32> = None;
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
-        );
-        let rw = if is_mod { S_RESET_W } else { 0.0 };
-        let mut v = val;
-        if ui.add_sized(
-            [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
-            egui::DragValue::new(&mut v).range(min..=max)
-        ).changed() { res = Some(v); }
-        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
-            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
+    v3_row_frame(ui, |ui| {
+        ui.horizontal(|ui| {
+            v3_row_label(ui, label, desc, is_mod);
+            let rw = if is_mod { S_RESET_W } else { 0.0 };
+            let mut v = val;
+            if ui.add_sized(
+                [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
+                egui::DragValue::new(&mut v).range(min..=max)
+            ).changed() { res = Some(v); }
+            if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+                .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
+        });
     });
     res
 }
 
 fn v3_string(ui: &mut egui::Ui, label: &str, desc: &str, val: &str, def: &str) -> Option<String> {
+    if !v3_search_pass(label, desc) { return None; }
     let is_mod = val != def;
     let mut res: Option<String> = None;
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
-        );
-        let rw = if is_mod { S_RESET_W } else { 0.0 };
-        let mut s = val.to_string();
-        if ui.add_sized(
-            [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
-            egui::TextEdit::singleline(&mut s)
-        ).changed() { res = Some(s); }
-        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
-            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def.to_string()); }
+    v3_row_frame(ui, |ui| {
+        ui.horizontal(|ui| {
+            v3_row_label(ui, label, desc, is_mod);
+            let rw = if is_mod { S_RESET_W } else { 0.0 };
+            let mut s = val.to_string();
+            if ui.add_sized(
+                [(ui.available_width() - rw).max(20.0), S_ROW_H - 2.0],
+                egui::TextEdit::singleline(&mut s)
+            ).changed() { res = Some(s); }
+            if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+                .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def.to_string()); }
+        });
     });
     res
 }
@@ -656,27 +739,27 @@ fn v3_string(ui: &mut egui::Ui, label: &str, desc: &str, val: &str, def: &str) -
 fn v3_select(ui: &mut egui::Ui, label: &str, desc: &str,
              val: &str, def: &str, opts: &[&str]) -> Option<String>
 {
+    if !v3_search_pass(label, desc) { return None; }
     let is_mod = val != def;
     let mut res: Option<String> = None;
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
-        );
-        let rw = if is_mod { S_RESET_W } else { 0.0 };
-        let avail = (ui.available_width() - rw).max(20.0);
-        egui::ComboBox::from_id_salt(label)
-            .selected_text(val)
-            .width(avail)
-            .show_ui(ui, |ui| {
-                for opt in opts {
-                    if ui.selectable_label(val == *opt, *opt).clicked() {
-                        res = Some(opt.to_string());
+    v3_row_frame(ui, |ui| {
+        ui.horizontal(|ui| {
+            v3_row_label(ui, label, desc, is_mod);
+            let rw = if is_mod { S_RESET_W } else { 0.0 };
+            let avail = (ui.available_width() - rw).max(20.0);
+            egui::ComboBox::from_id_salt(label)
+                .selected_text(val)
+                .width(avail)
+                .show_ui(ui, |ui| {
+                    for opt in opts {
+                        if ui.selectable_label(val == *opt, *opt).clicked() {
+                            res = Some(opt.to_string());
+                        }
                     }
-                }
-            });
-        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
-            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def.to_string()); }
+                });
+            if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+                .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def.to_string()); }
+        });
     });
     res
 }
@@ -684,25 +767,25 @@ fn v3_select(ui: &mut egui::Ui, label: &str, desc: &str,
 fn v3_vec3(ui: &mut egui::Ui, label: &str, desc: &str,
            val: [f32;3], def: [f32;3], speed: f64) -> Option<[f32;3]>
 {
+    if !v3_search_pass(label, desc) { return None; }
     let is_mod = val != def;
     let mut res: Option<[f32;3]> = None;
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(S_LABEL_W, S_ROW_H), egui::Layout::left_to_right(egui::Align::Center),
-            |ui| { ui.add(egui::Label::new(egui::RichText::new(label).color(sc_label()).size(11.0)).truncate()).on_hover_text(desc); }
-        );
-        let rw = if is_mod { S_RESET_W } else { 0.0 };
-        let w3 = ((ui.available_width() - rw) / 3.0).max(20.0);
-        let mut v = val;
-        let mut changed = false;
-        for c in &mut v {
-            if ui.add_sized([w3, S_ROW_H - 2.0], egui::DragValue::new(c).speed(speed).max_decimals(3)).changed() {
-                changed = true;
+    v3_row_frame(ui, |ui| {
+        ui.horizontal(|ui| {
+            v3_row_label(ui, label, desc, is_mod);
+            let rw = if is_mod { S_RESET_W } else { 0.0 };
+            let w3 = ((ui.available_width() - rw) / 3.0).max(20.0);
+            let mut v = val;
+            let mut changed = false;
+            for c in &mut v {
+                if ui.add_sized([w3, S_ROW_H - 2.0], egui::DragValue::new(c).speed(speed).max_decimals(3)).changed() {
+                    changed = true;
+                }
             }
-        }
-        if changed { res = Some(v); }
-        if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
-            .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
+            if changed { res = Some(v); }
+            if is_mod && ui.add(crate::icons::img("rotate-ccw", S_RESET_W - 4.0, sc_yellow())
+                .sense(egui::Sense::click())).on_hover_text("Reset to default").clicked() { res = Some(def); }
+        });
     });
     res
 }
@@ -3459,6 +3542,11 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             Some(c) => c,
             None    => return false,
         };
+        // Esc closes the modal.
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            sm::close_project_settings_ui();
+            return false;
+        }
         let mut keep_open = true;
         {
             let screen = ctx.content_rect();
@@ -3480,19 +3568,10 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             ui.set_min_size(egui::vec2(w, h));
                             ui.set_max_width(w);
 
-                            // Header bar
+                            // Header bar — title only (Close + Reset moved to footer).
                             ui.horizontal(|ui| {
                                 ui.add(crate::icons::img("settings", 14.0, sc_text()));
                                 ui.label(egui::RichText::new(" Project Settings").size(13.0).color(sc_text()).strong());
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if crate::icons::btn(ui, "x", 14.0, sc_text(), "Close") {
-                                        sm::close_project_settings_ui();
-                                        keep_open = false;
-                                    }
-                                    if crate::icons::btn(ui, "rotate-ccw", 13.0, sc_red(), "Reset All to defaults") {
-                                        sm::reset_project_to_defaults();
-                                    }
-                                });
                             });
                             ui.separator();
 
@@ -3510,19 +3589,65 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             ui.separator();
 
                             // Sidebar + content
-                            let cats = ["Physics","Rendering","Audio","Input","Tags & Layers","Build"];
-                            let counts: Vec<usize> = cats.iter().map(|c| sm::project_category_modified_count(c)).collect();
+                            let cats: &[SidebarCat] = &[
+                                ("Physics",       "cpu"),
+                                ("Rendering",     "monitor"),
+                                ("Audio",         "volume-2"),
+                                ("Input",         "sliders"),
+                                ("Tags & Layers", "tag"),
+                                ("Build",         "package"),
+                            ];
+                            let counts: Vec<usize> = cats.iter()
+                                .map(|(c, _)| sm::project_category_modified_count(c))
+                                .collect();
+
+                            // Reserve bottom space for the footer status bar.
+                            const FOOTER_H: f32 = 32.0;
 
                             egui::Panel::left("proj_settings_sidebar_v3")
-                                .exact_size(160.0)
+                                .exact_size(S_SIDEBAR_W)
                                 .frame(egui::Frame::default()
                                     .fill(sc_sidebar())
                                     .inner_margin(egui::Margin::same(4))
                                 )
                                 .show_inside(ui, |ui| {
                                     let active = sm::project_tab();
-                                    let new_tab = v3_sidebar(ui, &cats, &counts, &active);
+                                    let new_tab = v3_sidebar(ui, cats, &counts, &active);
                                     if new_tab != active { sm::set_project_tab_ui(new_tab); }
+                                });
+
+                            egui::Panel::bottom("proj_settings_footer_v3")
+                                .exact_size(FOOTER_H)
+                                .frame(egui::Frame::default()
+                                    .fill(egui::Color32::from_rgb(36,36,36))
+                                    .inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 6 })
+                                )
+                                .show_inside(ui, |ui| {
+                                    let armed = sm::reset_project_armed();
+                                    ui.horizontal(|ui| {
+                                        if armed {
+                                            ui.colored_label(sc_red(), "⚠ Click Reset again to confirm — all settings will revert to defaults.");
+                                        } else {
+                                            ui.colored_label(egui::Color32::from_rgb(120,180,120), "✓ Changes saved automatically.");
+                                        }
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if crate::icons::btn(ui, "x", 14.0, sc_text(), "Close (Esc)") {
+                                                sm::close_project_settings_ui();
+                                                keep_open = false;
+                                            }
+                                            ui.add_space(8.0);
+                                            let reset_label = if armed { "Confirm Reset" } else { "Reset All" };
+                                            let reset_color = if armed { sc_red() } else { sc_yellow() };
+                                            if ui.add(
+                                                egui::Button::new(egui::RichText::new(reset_label).color(reset_color).size(11.0))
+                                                    .frame(true)
+                                            ).on_hover_text("Click twice within 4 s to revert all settings.").clicked() {
+                                                if sm::reset_project_confirm() {
+                                                    sm::reset_project_to_defaults();
+                                                }
+                                            }
+                                        });
+                                    });
                                 });
 
                             egui::ScrollArea::vertical()
@@ -3534,7 +3659,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                     if search.is_empty() {
                                         render_project_content_v3(ui, &sm::project_tab());
                                     } else {
-                                        for cat in &cats { render_project_content_v3(ui, cat); }
+                                        for (cat, _) in cats { render_project_content_v3(ui, cat); }
                                     }
                                     ui.add_space(8.0);
                                 });
@@ -3553,6 +3678,10 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
             Some(c) => c,
             None    => return false,
         };
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            sm::close_editor_prefs_ui();
+            return false;
+        }
         let mut keep_open = true;
         {
             let screen = ctx.content_rect();
@@ -3574,19 +3703,10 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             ui.set_min_size(egui::vec2(w, h));
                             ui.set_max_width(w);
 
-                            // Header bar
+                            // Header — title only.
                             ui.horizontal(|ui| {
                                 ui.add(crate::icons::img("settings", 14.0, sc_text()));
                                 ui.label(egui::RichText::new(" Editor Preferences").size(13.0).color(sc_text()).strong());
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if crate::icons::btn(ui, "x", 14.0, sc_text(), "Close") {
-                                        sm::close_editor_prefs_ui();
-                                        keep_open = false;
-                                    }
-                                    if crate::icons::btn(ui, "rotate-ccw", 13.0, sc_red(), "Reset All to defaults") {
-                                        sm::reset_prefs_to_defaults();
-                                    }
-                                });
                             });
                             ui.separator();
 
@@ -3603,19 +3723,62 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                             }
                             ui.separator();
 
-                            let cats = ["General","Camera","Console","Asset Browser"];
-                            let counts: Vec<usize> = cats.iter().map(|c| sm::prefs_category_modified_count(c)).collect();
+                            let cats: &[SidebarCat] = &[
+                                ("General",       "settings"),
+                                ("Camera",        "camera"),
+                                ("Console",       "terminal"),
+                                ("Asset Browser", "folder"),
+                            ];
+                            let counts: Vec<usize> = cats.iter()
+                                .map(|(c, _)| sm::prefs_category_modified_count(c))
+                                .collect();
+
+                            const FOOTER_H: f32 = 32.0;
 
                             egui::Panel::left("editor_prefs_sidebar_v3")
-                                .exact_size(140.0)
+                                .exact_size(S_SIDEBAR_W)
                                 .frame(egui::Frame::default()
                                     .fill(sc_sidebar())
                                     .inner_margin(egui::Margin::same(4))
                                 )
                                 .show_inside(ui, |ui| {
                                     let active = sm::prefs_tab();
-                                    let new_tab = v3_sidebar(ui, &cats, &counts, &active);
+                                    let new_tab = v3_sidebar(ui, cats, &counts, &active);
                                     if new_tab != active { sm::set_prefs_tab_ui(new_tab); }
+                                });
+
+                            egui::Panel::bottom("editor_prefs_footer_v3")
+                                .exact_size(FOOTER_H)
+                                .frame(egui::Frame::default()
+                                    .fill(egui::Color32::from_rgb(36,36,36))
+                                    .inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 6 })
+                                )
+                                .show_inside(ui, |ui| {
+                                    let armed = sm::reset_prefs_armed();
+                                    ui.horizontal(|ui| {
+                                        if armed {
+                                            ui.colored_label(sc_red(), "⚠ Click Reset again to confirm — all preferences will revert to defaults.");
+                                        } else {
+                                            ui.colored_label(egui::Color32::from_rgb(120,180,120), "✓ Changes saved automatically.");
+                                        }
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if crate::icons::btn(ui, "x", 14.0, sc_text(), "Close (Esc)") {
+                                                sm::close_editor_prefs_ui();
+                                                keep_open = false;
+                                            }
+                                            ui.add_space(8.0);
+                                            let reset_label = if armed { "Confirm Reset" } else { "Reset All" };
+                                            let reset_color = if armed { sc_red() } else { sc_yellow() };
+                                            if ui.add(
+                                                egui::Button::new(egui::RichText::new(reset_label).color(reset_color).size(11.0))
+                                                    .frame(true)
+                                            ).on_hover_text("Click twice within 4 s to revert all preferences.").clicked() {
+                                                if sm::reset_prefs_confirm() {
+                                                    sm::reset_prefs_to_defaults();
+                                                }
+                                            }
+                                        });
+                                    });
                                 });
 
                             egui::ScrollArea::vertical()
@@ -3627,7 +3790,7 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
                                     if search.is_empty() {
                                         render_prefs_content_v3(ui, &sm::prefs_tab());
                                     } else {
-                                        for cat in &cats { render_prefs_content_v3(ui, cat); }
+                                        for (cat, _) in cats { render_prefs_content_v3(ui, cat); }
                                     }
                                     ui.add_space(8.0);
                                 });
