@@ -28,10 +28,10 @@ pub struct LightUniform {
     pub range:      f32,
     pub color:      [f32; 3],
     pub intensity:  f32,
-    pub spot_angle: f32,  // cos(outer half-angle)
-    pub spot_inner: f32,  // cos(inner half-angle)
-    pub _pad0:      f32,
-    pub _pad1:      f32,
+    pub spot_angle:  f32,  // cos(outer half-angle)
+    pub spot_inner:  f32,  // cos(inner half-angle)
+    pub shadow_idx:  u32,  // 0 = no shadow, 1..4 = shadow atlas slot
+    pub shadow_bias: f32,
 }
 
 /// Entire light buffer uploaded as one UBO. Layout matches `LightBuffer` in WGSL.

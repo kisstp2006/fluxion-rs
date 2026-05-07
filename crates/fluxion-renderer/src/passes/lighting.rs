@@ -9,15 +9,26 @@ use bytemuck::{Pod, Zeroable};
 use crate::render_graph::{RenderPass, RenderContext, RenderResources};
 use crate::shader::library as shaders;
 
+use crate::render_graph::context::MAX_SHADOW_LIGHTS;
+
+/// One shadow-casting light's atlas tile info (GPU layout).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ShadowEntryGpu {
+    light_view_proj: [[f32; 4]; 4],
+    atlas_offset:    [f32; 2],
+    atlas_scale:     [f32; 2],
+}
+
 /// Shadow uniforms uploaded per-frame to group(3) binding(0) in pbr_lighting.wgsl.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ShadowUniforms {
-    light_view_proj: [[f32; 4]; 4],
-    has_shadow:      u32,
-    _pad0:           u32,
-    _pad1:           u32,
-    _pad2:           u32,
+    entries:      [ShadowEntryGpu; MAX_SHADOW_LIGHTS],
+    shadow_count: u32,
+    _pad0:        u32,
+    _pad1:        u32,
+    _pad2:        u32,
 }
 
 #[repr(C)] #[derive(Clone, Copy, Pod, Zeroable)]
@@ -271,12 +282,21 @@ impl RenderPass for LightingPass {
         };
         ctx.queue.write_buffer(camera_buf, 0, bytemuck::bytes_of(&data));
 
-        // Upload shadow uniforms (light-space matrix + has_shadow flag).
-        ctx.queue.write_buffer(shadow_buf, 0, bytemuck::bytes_of(&ShadowUniforms {
-            light_view_proj: ctx.frame.shadow_view_proj.to_cols_array_2d(),
-            has_shadow:      ctx.frame.has_shadow_caster as u32,
+        // Upload shadow uniforms (per-light atlas tile info).
+        let atlas_size = crate::render_graph::context::SHADOW_ATLAS_SIZE as f32;
+        let mut shadow_data = ShadowUniforms {
+            entries:      [ShadowEntryGpu::zeroed(); MAX_SHADOW_LIGHTS],
+            shadow_count: ctx.frame.shadow_entries.len() as u32,
             _pad0: 0, _pad1: 0, _pad2: 0,
-        }));
+        };
+        for (i, entry) in ctx.frame.shadow_entries.iter().enumerate().take(MAX_SHADOW_LIGHTS) {
+            shadow_data.entries[i] = ShadowEntryGpu {
+                light_view_proj: entry.light_view_proj.to_cols_array_2d(),
+                atlas_offset:    [entry.atlas_x as f32 / atlas_size, entry.atlas_y as f32 / atlas_size],
+                atlas_scale:     [entry.tile_size as f32 / atlas_size, entry.tile_size as f32 / atlas_size],
+            };
+        }
+        ctx.queue.write_buffer(shadow_buf, 0, bytemuck::bytes_of(&shadow_data));
 
         let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("lighting_pass"),

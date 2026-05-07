@@ -921,6 +921,8 @@ pub fn panel() {
         return;
     }
 
+    fluxion::ui::push_id(sel);
+
     let name = fluxion::world::entity_name(sel);
     fluxion::ui::heading(name.clone());
     fluxion::ui::separator();
@@ -999,6 +1001,8 @@ pub fn panel() {
             fluxion::world::add_component(sel, chosen);
         }
     }
+
+    fluxion::ui::pop_id();
 }
 
 } // pub mod inspector

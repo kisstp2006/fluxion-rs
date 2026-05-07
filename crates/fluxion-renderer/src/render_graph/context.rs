@@ -29,8 +29,21 @@ use crate::lighting::LightUniform;
 use crate::mesh::MeshRegistry;
 use crate::material::MaterialRegistry;
 
-/// Default shadow map resolution (pixels per side). Power of two.
-pub const SHADOW_MAP_SIZE: u32 = 2048;
+/// Shadow atlas: 2×2 grid of tiles, each SHADOW_TILE_SIZE pixels.
+pub const SHADOW_TILE_SIZE: u32 = 2048;
+pub const SHADOW_ATLAS_SIZE: u32 = SHADOW_TILE_SIZE * 2;
+pub const MAX_SHADOW_LIGHTS: usize = 4;
+
+/// One shadow-casting light entry for the shadow atlas.
+#[derive(Clone, Copy)]
+pub struct ShadowEntry {
+    pub light_view_proj: glam::Mat4,
+    pub light_index: usize,
+    pub atlas_x: u32,
+    pub atlas_y: u32,
+    pub tile_size: u32,
+    pub bias: f32,
+}
 
 /// GPU layout for [`SkyboxPass`](crate::passes::SkyboxPass).
 /// All offsets are manually verified for std140/WGSL alignment.
@@ -180,11 +193,8 @@ pub struct FrameData {
     pub particles:   Vec<ParticleInstance>,
     /// Debug line segments drained from `fluxion_core::drain_debug_lines()` each frame.
     pub debug_lines: Vec<DebugLine>,
-    /// Light-space view-projection matrix for the first shadow-casting directional light.
-    /// [`Mat4::IDENTITY`] when no shadow-casting light is active.
-    pub shadow_view_proj: Mat4,
-    /// Whether at least one light with `cast_shadow = true` is present this frame.
-    pub has_shadow_caster: bool,
+    /// Shadow atlas entries for shadow-casting lights (up to MAX_SHADOW_LIGHTS).
+    pub shadow_entries: Vec<ShadowEntry>,
     /// Skinned mesh draw calls (entities with Animator + SkinnedMeshRenderer).
     pub skinned_draw_calls: Vec<SkinnedDrawCall>,
     /// Debug view mode: 0=Lit, 1=Albedo, 2=Normal, 3=Roughness, 4=Metalness, 5=AO, 6=Emissive, 7=Unlit.
@@ -236,8 +246,8 @@ pub struct RenderResources {
     pub bloom_blur_a: GpuTexture, // blur ping
     pub bloom_blur_b: GpuTexture, // blur pong
 
-    // ── Shadow map ────────────────────────────────────────────────────────────
-    /// Depth texture rendered from the first directional shadow-casting light.
+    // ── Shadow atlas ─────────────────────────────────────────────────────────
+    /// Depth atlas for up to MAX_SHADOW_LIGHTS shadow-casting lights (2×2 tiles).
     pub shadow_map: GpuTexture,
 
     pub width:  u32,
@@ -268,7 +278,7 @@ impl RenderResources {
             bloom_blur_a:   rth("bloom_blur_a",   Rgba16Float),
             bloom_blur_b:   rth("bloom_blur_b",   Rgba16Float),
 
-            shadow_map: GpuTexture::depth(device, "shadow_map", SHADOW_MAP_SIZE, SHADOW_MAP_SIZE),
+            shadow_map: GpuTexture::depth(device, "shadow_atlas", SHADOW_ATLAS_SIZE, SHADOW_ATLAS_SIZE),
 
             width,
             height,

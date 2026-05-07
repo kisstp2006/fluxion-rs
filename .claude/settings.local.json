@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build *)",
+      "Bash(chmod +x /c/Users/tibig/Documents/gameengines/fluxion-rs/build.sh)",
+      "Bash(cmd //c \"build.bat run\")",
+      "Bash(cmd //c \".\\\\\\\\build.bat run\")",
+      "Bash(xargs grep *)"
+    ]
+  }
+}

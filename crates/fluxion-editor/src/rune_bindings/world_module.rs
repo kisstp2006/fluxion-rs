@@ -184,6 +184,7 @@ thread_local! {
 }
 
 /// A deferred field mutation queued by Rune, applied after the panel call.
+#[derive(Clone)]
 pub struct PendingEdit {
     pub entity:    EntityId,
     pub component: String,

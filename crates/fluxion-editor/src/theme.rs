@@ -71,6 +71,10 @@ pub fn apply_theme(ctx: &Context) {
         egui::TextStyle::Monospace,
         FontId::monospace(12.0),
     );
+    #[cfg(debug_assertions)]
+    {
+        style.debug.warn_if_rect_changes_id = false;
+    }
     ctx.set_global_style(style);
 }
 

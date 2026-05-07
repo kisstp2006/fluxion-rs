@@ -49,8 +49,8 @@ struct LightData {
     intensity:   f32,
     spot_angle:  f32,           // cos(outer half-angle)
     spot_inner:  f32,           // cos(inner half-angle) — penumbra boundary
-    _pad0:       f32,
-    _pad1:       f32,
+    shadow_idx:  u32,           // 0 = no shadow, 1..4 = shadow atlas slot
+    shadow_bias: f32,
 }
 
 struct LightBuffer {
@@ -80,37 +80,52 @@ struct LightBuffer {
 @group(2) @binding(4) var gbuf_depth:     texture_depth_2d;
 @group(2) @binding(5) var gbuf_sampler:   sampler;
 
-// ── Shadow map ────────────────────────────────────────────────────────────────
+// ── Shadow atlas ──────────────────────────────────────────────────────────────
+
+const MAX_SHADOW_LIGHTS: u32 = 4u;
+
+struct ShadowEntry {
+    light_view_proj: mat4x4<f32>,
+    atlas_offset:    vec2<f32>,
+    atlas_scale:     vec2<f32>,
+}
 
 struct ShadowUniforms {
-    light_view_proj: mat4x4<f32>,
-    has_shadow:      u32,
-    _pad0:           u32,
-    _pad1:           u32,
-    _pad2:           u32,
+    entries:      array<ShadowEntry, 4>,
+    shadow_count: u32,
+    _pad0:        u32,
+    _pad1:        u32,
+    _pad2:        u32,
 }
 
 @group(3) @binding(0) var<uniform> shadow_uni:     ShadowUniforms;
 @group(3) @binding(1) var          shadow_map:     texture_depth_2d;
 @group(3) @binding(2) var          shadow_sampler: sampler_comparison;
 
-// PCF shadow test — 3×3 kernel, returns [0..1] where 1 = fully lit.
-fn shadow_pcf(world_pos: vec3<f32>) -> f32 {
-    if shadow_uni.has_shadow == 0u { return 1.0; }
+// Per-light shadow test using atlas tile. shadow_idx is 1-based (0 = no shadow).
+// Returns [0..1] where 1 = fully lit.
+fn shadow_test(world_pos: vec3<f32>, shadow_idx: u32, bias: f32) -> f32 {
+    if shadow_idx == 0u || shadow_idx > shadow_uni.shadow_count { return 1.0; }
 
-    let light_clip = shadow_uni.light_view_proj * vec4<f32>(world_pos, 1.0);
-    // Perspective divide → NDC
+    let slot = shadow_idx - 1u;
+    let entry = shadow_uni.entries[slot];
+
+    let light_clip = entry.light_view_proj * vec4<f32>(world_pos, 1.0);
     var proj = light_clip.xyz / light_clip.w;
-    // Map NDC [-1,1] → UV [0,1]; flip Y for wgpu convention
-    let shadow_uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
-    let depth     = proj.z;
 
-    // Outside the shadow frustum → fully lit
-    if shadow_uv.x < 0.0 || shadow_uv.x > 1.0 ||
-       shadow_uv.y < 0.0 || shadow_uv.y > 1.0 ||
+    // NDC [-1,1] → local UV [0,1]; flip Y for wgpu
+    let local_uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
+    let depth    = proj.z;
+
+    // Outside light frustum → fully lit
+    if local_uv.x < 0.0 || local_uv.x > 1.0 ||
+       local_uv.y < 0.0 || local_uv.y > 1.0 ||
        depth < 0.0 || depth > 1.0 {
         return 1.0;
     }
+
+    // Map local UV to atlas UV
+    let atlas_uv = entry.atlas_offset + local_uv * entry.atlas_scale;
 
     let tex_size = vec2<f32>(textureDimensions(shadow_map));
     let texel    = 1.0 / tex_size;
@@ -122,8 +137,8 @@ fn shadow_pcf(world_pos: vec3<f32>) -> f32 {
             let offset = vec2<f32>(f32(dx), f32(dy)) * texel;
             shadow += textureSampleCompare(
                 shadow_map, shadow_sampler,
-                shadow_uv + offset,
-                depth - 0.005,  // small bias to prevent acne
+                atlas_uv + offset,
+                depth - bias,
             );
         }
     }
@@ -271,10 +286,8 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
         var attenuation: f32;
 
         if light.light_type == LIGHT_DIRECTIONAL {
-            // Directional: light direction is constant across the scene
             l           = -light.direction;
-            // First directional light uses the shadow map; others are unshadowed.
-            attenuation = select(1.0, shadow_pcf(world_pos), i == 0u);
+            attenuation = 1.0;
 
         } else if light.light_type == LIGHT_POINT {
             let to_light = light.position - world_pos;
@@ -293,6 +306,10 @@ fn fs_main(in: FragInput) -> @location(0) vec4<f32> {
             );
             attenuation = distance_attenuation(dist, light.range) * cone_atten * cone_atten;
         }
+
+        // Per-light shadow (any light type with shadow_idx > 0 casts shadows)
+        let shadow = shadow_test(world_pos, light.shadow_idx, light.shadow_bias);
+        attenuation *= shadow;
 
         let radiance   = light.color * light.intensity * attenuation;
         let brdf       = cook_torrance(n, v, l, albedo, roughness, metalness);

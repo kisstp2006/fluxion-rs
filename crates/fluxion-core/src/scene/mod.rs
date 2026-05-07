@@ -80,7 +80,15 @@ pub struct EditorCamera {
 pub struct SerializedEntity {
     pub id:     u32,
     pub name:   String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uuid:   Option<String>,
     pub parent: Option<u32>,
+    /// If this entity is a prefab instance, the project-relative path to the source prefab.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefab_source: Option<String>,
+    /// Per-field overrides relative to the prefab source. Key: "ComponentType.field_name".
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub prefab_overrides: HashMap<String, Value>,
     pub tags:   Vec<String>,
     pub components: Vec<SerializedComponent>,
 }
@@ -227,6 +235,17 @@ pub fn world_to_scene_data(
         let file_id    = entity_to_file_id[&eid];
         let entity_name = world.get_name(eid).to_string();
 
+        let uuid = Some(
+            world.get_uuid(eid)
+                .map(str::to_string)
+                .unwrap_or_else(crate::assets::database::new_guid)
+        );
+
+        let prefab_source = world.get_prefab_source(eid).map(str::to_string);
+        let prefab_overrides = world.get_prefab_overrides(eid)
+            .cloned()
+            .unwrap_or_default();
+
         let parent_file_id = world
             .get_parent(eid)
             .and_then(|pid| entity_to_file_id.get(&pid).copied());
@@ -251,7 +270,10 @@ pub fn world_to_scene_data(
         entities.push(SerializedEntity {
             id:     file_id,
             name:   entity_name,
+            uuid,
             parent: parent_file_id,
+            prefab_source,
+            prefab_overrides,
             tags,
             components,
         });
@@ -264,7 +286,11 @@ mod deserialize_world;
 mod prefab;
 
 pub use deserialize_world::{instantiate_entities, load_scene_into_world};
-pub use prefab::{parse_prefab_json, spawn_prefab_into_world, PrefabFileData};
+pub use prefab::{
+    parse_prefab_json, spawn_prefab_into_world, PrefabFileData,
+    compute_overrides, revert_to_prefab, apply_to_prefab,
+    load_prefab_file, save_prefab_file,
+};
 
 // Re-export ComponentRegistry here so scene users don't need to know about registry module.
 pub use crate::registry::ComponentRegistry;

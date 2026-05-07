@@ -1427,8 +1427,7 @@ impl FluxionRenderer {
                     sky:             base_frame.sky,
                     particles:       Vec::new(),
                     debug_lines:     Vec::new(),
-                    shadow_view_proj: base_frame.shadow_view_proj,
-                    has_shadow_caster: base_frame.has_shadow_caster,
+                    shadow_entries: base_frame.shadow_entries.clone(),
                     skinned_draw_calls: Vec::new(),
                     debug_view:      base_frame.debug_view,
                     camera_index:    cam_idx,
@@ -1762,15 +1761,16 @@ impl FluxionRenderer {
             let inner_cos = ((light.spot_angle * (1.0 - light.spot_penumbra)).to_radians() * 0.5).cos();
 
             lights.push(LightUniform {
-                position:   transform.world_position.to_array(),
+                position:    transform.world_position.to_array(),
                 light_type,
-                direction:  transform.world_forward().to_array(),
-                range:      light.range,
-                color:      light.color,
-                intensity:  light.intensity,
-                spot_angle: outer_cos,
-                spot_inner: inner_cos,
-                _pad0:      0.0, _pad1: 0.0,
+                direction:   transform.world_forward().to_array(),
+                range:       light.range,
+                color:       light.color,
+                intensity:   light.intensity,
+                spot_angle:  outer_cos,
+                spot_inner:  inner_cos,
+                shadow_idx:  if light.cast_shadow { 1 } else { 0 },
+                shadow_bias: light.shadow_bias,
             });
         });
 
@@ -1796,26 +1796,62 @@ impl FluxionRenderer {
         }
         let debug_lines = debug_draw::drain_debug_lines();
 
-        // ── Shadow view-projection (first directional cast_shadow light) ──────
-        let mut shadow_view_proj  = Mat4::IDENTITY;
-        let mut has_shadow_caster = false;
-        'shadow: for light in &lights {
-            if light.light_type == LIGHT_DIRECTIONAL {
-                // Only compute for the first directional light (shadow index 0).
-                let dir = glam::Vec3::from_array(light.direction);
-                // Orthographic frustum: 50m half-size, depth range 0..500m.
+        // ── Shadow atlas entries (up to MAX_SHADOW_LIGHTS cast_shadow lights) ─
+        use crate::render_graph::context::{ShadowEntry, SHADOW_TILE_SIZE, MAX_SHADOW_LIGHTS};
+        let tile_offsets: [(u32, u32); 4] = [
+            (0, 0), (SHADOW_TILE_SIZE, 0),
+            (0, SHADOW_TILE_SIZE), (SHADOW_TILE_SIZE, SHADOW_TILE_SIZE),
+        ];
+        let mut shadow_entries: Vec<ShadowEntry> = Vec::new();
+        for (li, light) in lights.iter().enumerate() {
+            if shadow_entries.len() >= MAX_SHADOW_LIGHTS { break; }
+            if light.shadow_idx == 0 { continue; }
+            let dir = glam::Vec3::from_array(light.direction);
+            let pos = glam::Vec3::from_array(light.position);
+            let up = if dir.y.abs() > 0.99 { glam::Vec3::X } else { glam::Vec3::Y };
+
+            let view_proj = if light.light_type == LIGHT_DIRECTIONAL {
                 let half  = 50.0f32;
                 let depth = 500.0f32;
-                // Light view: look from above along the light direction.
                 let eye    = -dir * (depth * 0.5);
-                let target = glam::Vec3::ZERO;
-                let up     = if dir.y.abs() > 0.99 { glam::Vec3::X } else { glam::Vec3::Y };
-                let light_view = Mat4::look_at_rh(eye, target, up);
+                let light_view = Mat4::look_at_rh(eye, glam::Vec3::ZERO, up);
                 let light_proj = Mat4::orthographic_rh(-half, half, -half, half, 0.0, depth);
-                shadow_view_proj  = light_proj * light_view;
-                has_shadow_caster = true;
-                break 'shadow;
-            }
+                light_proj * light_view
+            } else if light.light_type == LIGHT_SPOT {
+                let fov = light.spot_angle.acos() * 2.0;
+                let fov = fov.max(0.1).min(std::f32::consts::PI - 0.01);
+                let near = 0.1f32;
+                let far  = light.range.max(1.0);
+                let light_view = Mat4::look_at_rh(pos, pos + dir, up);
+                let light_proj = Mat4::perspective_rh(fov, 1.0, near, far);
+                light_proj * light_view
+            } else {
+                // Point light: hemisphere along dominant axis
+                let near = 0.1f32;
+                let far  = light.range.max(1.0);
+                let light_view = Mat4::look_at_rh(pos, pos + dir, up);
+                let light_proj = Mat4::perspective_rh(std::f32::consts::FRAC_PI_2 * 2.0, 1.0, near, far);
+                light_proj * light_view
+            };
+
+            let slot = shadow_entries.len();
+            let (ax, ay) = tile_offsets[slot];
+            shadow_entries.push(ShadowEntry {
+                light_view_proj: view_proj,
+                light_index: li,
+                atlas_x: ax,
+                atlas_y: ay,
+                tile_size: SHADOW_TILE_SIZE,
+                bias: light.shadow_bias,
+            });
+        }
+        // Assign actual 1-based shadow slot indices to lights.
+        // Also clear shadow_idx for lights that didn't get a slot.
+        for light in &mut lights {
+            light.shadow_idx = 0;
+        }
+        for (slot, entry) in shadow_entries.iter().enumerate() {
+            lights[entry.light_index].shadow_idx = (slot + 1) as u32;
         }
 
         FrameData {
@@ -1827,8 +1863,7 @@ impl FluxionRenderer {
             sky,
             particles,
             debug_lines,
-            shadow_view_proj,
-            has_shadow_caster,
+            shadow_entries,
             skinned_draw_calls: Vec::new(),
             debug_view: 0,
             camera_index:    0,

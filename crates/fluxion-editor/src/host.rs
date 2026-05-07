@@ -253,6 +253,85 @@ impl EditorHost {
         log::info!("[ScriptBundle] {}/{} gameplay scripts loaded", self.gameplay_scripts.len(), total);
     }
 
+    /// Tick all gameplay scripts at the physics fixed-step rate (play mode only).
+    ///
+    /// Called once per fixed substep from [`Self::tick`], BEFORE the physics step,
+    /// so scripts can apply forces / move kinematic bodies and have physics
+    /// consume those inputs in the same substep.
+    ///
+    /// Mirrors [`Self::tick_gameplay_scripts`] but invokes `behaviour.fixed_tick(dt)`
+    /// instead of `behaviour.tick(dt)`. Field inject/drain runs per script
+    /// per substep — same churn as the variable-rate path; can be hoisted to a
+    /// frame-level cache later if profiling shows it matters.
+    fn tick_gameplay_scripts_fixed(&mut self, fixed_dt: f32) {
+        if self.gameplay_scripts.is_empty() { return; }
+
+        // Make world + registry available to gameplay Rune modules.
+        let _guard = set_world_context(&self.world, &self.registry);
+
+        // Make input available via fluxion::input::key_down() / axis_horizontal() etc.
+        set_input_context(&mut self.input);
+
+        let keys: Vec<(fluxion_core::EntityId, String)> = self.gameplay_scripts.keys().cloned().collect();
+        for (entity_id, script_name) in keys {
+            set_self_entity(entity_id.to_bits() as i64);
+            set_self_script(&script_name);
+            // Inject current field values from ScriptEntry into the thread-local.
+            let current_fields: Vec<(String, serde_json::Value)> = self.world
+                .get_component::<fluxion_core::ScriptBundle>(entity_id)
+                .and_then(|b| b.scripts.iter().find(|e| e.name == script_name).map(|e| {
+                    e.fields.iter().map(|f| (f.name.clone(), f.value.clone())).collect()
+                }))
+                .unwrap_or_default();
+            set_script_fields(current_fields);
+            if let Some(behaviour) = self.gameplay_scripts.get_mut(&(entity_id, script_name.clone())) {
+                let tick_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    behaviour.fixed_tick(fixed_dt);
+                }));
+                match tick_result {
+                    Ok(()) => {
+                        if let Some(err) = behaviour.error() {
+                            set_script_error(entity_id.to_bits(), &script_name, err.to_string());
+                        } else {
+                            clear_script_error(entity_id.to_bits(), &script_name);
+                        }
+                    }
+                    Err(panic_val) => {
+                        let msg = panic_val.downcast_ref::<String>().map(|s| s.as_str())
+                            .or_else(|| panic_val.downcast_ref::<&str>().copied())
+                            .unwrap_or("unknown panic");
+                        let err_msg = format!("PANIC (fixed_update): {}", msg);
+                        log::error!("[ScriptBundle] {} / {}: {}", entity_id.to_bits(), script_name, err_msg);
+                        set_script_error(entity_id.to_bits(), &script_name, err_msg);
+                    }
+                }
+            }
+            clear_self_script();
+            // Drain updated fields back into ScriptEntry.
+            let updated = drain_script_fields();
+            if !updated.is_empty() {
+                if let Some(mut bundle) = self.world.get_component_mut::<fluxion_core::ScriptBundle>(entity_id) {
+                    if let Some(entry) = bundle.scripts.iter_mut().find(|e| e.name == script_name) {
+                        for (fname, fval) in updated {
+                            if let Some(f) = entry.fields.iter_mut().find(|f| f.name == fname) {
+                                f.value = fval;
+                            }
+                        }
+                    }
+                }
+            }
+            clear_self_entity();
+        }
+
+        // Drop guard before any world mutations.
+        drop(_guard);
+        clear_input_context();
+
+        // Pending spawns/destroys are intentionally NOT drained here — they
+        // are drained once per frame in [`Self::tick_gameplay_scripts`], so
+        // entities queued from `fixed_update` materialize after the substep loop.
+    }
+
     /// Tick all gameplay scripts (play mode only).
     fn tick_gameplay_scripts(&mut self) {
         if self.gameplay_scripts.is_empty() { return; }
@@ -346,15 +425,22 @@ impl EditorHost {
 
     pub fn tick(&mut self) {
         let (fixed_steps, _dt) = self.time.tick();
+        let fixed_dt = self.time.fixed_dt;
 
         // Apply .physmat overrides before physics sync (loads materials lazily).
         self.apply_physics_materials();
 
-        // Physics: fixed-step
-        if let Some(ref mut phys) = self.physics {
-            for _ in 0..fixed_steps {
+        // Fixed-step substep loop: gameplay fixed_update → transform propagation
+        // → physics. Order matches the sandbox runtime (fluxion-sandbox/src/main.rs)
+        // so a script that writes a Transform in fixed_update sees physics react
+        // in the same substep.
+        for _ in 0..fixed_steps {
+            self.tick_gameplay_scripts_fixed(fixed_dt);
+            // Propagate script-driven transform changes to children before physics reads them.
+            TransformSystem::update(&mut self.world);
+            if let Some(ref mut phys) = self.physics {
                 phys.sync_from_ecs(&self.world);
-                phys.step(self.time.fixed_dt);
+                phys.step(fixed_dt);
                 phys.sync_to_ecs(&self.world);
             }
         }
@@ -531,19 +617,33 @@ impl EditorHost {
                     let name = if edit.field.is_empty() { "Entity" } else { &edit.field };
                     let e = self.world.spawn(Some(name));
                     self.world.add_component(e, fluxion_core::Transform::new());
+                    self.undo.push_action(
+                        format!("Create {name}"),
+                        crate::undo::UndoAction::DespawnEntity { entity_bits: e.to_bits() },
+                    );
                 }
                 "__despawn__" => {
                     if edit.entity.is_valid() {
+                        let snap = crate::undo::snapshot_entity(&self.world, edit.entity, &self.registry);
+                        let label = format!("Delete {}", snap.name);
                         let was_camera = self.world.get_component::<Camera>(edit.entity).is_some();
                         self.world.despawn(edit.entity);
                         if was_camera {
                             self.camera_manager.rebuild(&self.world);
                         }
+                        self.undo.push_action(
+                            label,
+                            crate::undo::UndoAction::RespawnEntity { snapshot: snap },
+                        );
                     }
                 }
                 "__duplicate__" => {
                     if edit.entity.is_valid() {
-                        self.duplicate_entity(edit.entity);
+                        let new_e = self.duplicate_entity(edit.entity);
+                        self.undo.push_action(
+                            format!("Duplicate {}", self.world.get_name(edit.entity)),
+                            crate::undo::UndoAction::DespawnEntity { entity_bits: new_e.to_bits() },
+                        );
                     }
                 }
                 "__add_script__" => {
@@ -641,7 +741,9 @@ impl EditorHost {
                             settings: SceneSettings::default(),
                             editor_camera: None,
                             entities: vec![SerializedEntity {
-                                id: 1, name: entity_name, parent: None, tags, components,
+                                id: 1, name: entity_name, uuid: None, parent: None,
+                                prefab_source: None, prefab_overrides: std::collections::HashMap::new(),
+                                tags, components,
                             }],
                         };
                         match fluxion_core::scene::save_scene_file(abs_path.to_str().unwrap_or(""), &data) {
@@ -655,11 +757,12 @@ impl EditorHost {
                 }
                 "__instantiate_prefab__" => {
                     let path = &edit.field;
-                    match fluxion_core::scene::load_scene_file(path) {
-                        Ok(data) => {
-                            match fluxion_core::scene::instantiate_entities(
+                    match fluxion_core::scene::load_prefab_file(path) {
+                        Ok(prefab) => {
+                            match fluxion_core::scene::spawn_prefab_into_world(
                                 &mut self.world,
-                                &data.entities,
+                                &prefab,
+                                path,
                                 &self.registry,
                             ) {
                                 Ok(_) => log::info!("Prefab instantiated: {path}"),
@@ -698,6 +801,7 @@ impl EditorHost {
                 }
                 "__set_parent__" => {
                     if edit.entity.is_valid() {
+                        let old_parent_bits = self.world.get_parent(edit.entity).map(|p| p.to_bits());
                         let parent_id: i64 = edit.field.parse().unwrap_or(-1);
                         if parent_id < 0 {
                             self.world.set_parent(edit.entity, None, false);
@@ -709,6 +813,13 @@ impl EditorHost {
                                 self.world.set_parent(edit.entity, Some(parent), false);
                             }
                         }
+                        self.undo.push_action(
+                            format!("Reparent {}", self.world.get_name(edit.entity)),
+                            crate::undo::UndoAction::Reparent {
+                                entity_bits: edit.entity.to_bits(),
+                                old_parent_bits,
+                            },
+                        );
                     }
                 }
                 "__set_collision_layer__" => {

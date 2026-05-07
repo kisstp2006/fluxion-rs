@@ -86,6 +86,17 @@ pub struct ECSWorld {
     /// Used by the editor to list all components on an entity without
     /// knowing the concrete types at compile time.
     entity_component_names: HashMap<Entity, Vec<&'static str>>,
+
+    /// Stable UUIDs that persist across save/load cycles.
+    /// Assigned on first save or on load from scene files.
+    entity_uuids: HashMap<Entity, String>,
+
+    /// Prefab source path (project-relative) for entities instantiated from a prefab.
+    prefab_sources: HashMap<Entity, String>,
+
+    /// Per-entity field overrides relative to prefab source.
+    /// Key: entity, Value: map of "ComponentType.field_name" → JSON value.
+    prefab_overrides: HashMap<Entity, HashMap<String, serde_json::Value>>,
 }
 
 impl ECSWorld {
@@ -101,6 +112,9 @@ impl ECSWorld {
             hierarchy_revision:     0,
             all_entities:           Vec::new(),
             entity_component_names: HashMap::new(),
+            entity_uuids:           HashMap::new(),
+            prefab_sources:         HashMap::new(),
+            prefab_overrides:       HashMap::new(),
         }
     }
 
@@ -159,6 +173,9 @@ impl ECSWorld {
         self.inactive.remove(&entity);
         self.disabled_snapshot.remove(&entity);
         self.entity_component_names.remove(&entity);
+        self.entity_uuids.remove(&entity);
+        self.prefab_sources.remove(&entity);
+        self.prefab_overrides.remove(&entity);
         self.all_entities.retain(|&e| e != entity);
 
         // Remove from hecs
@@ -181,6 +198,58 @@ impl ECSWorld {
 
     pub fn set_name(&mut self, id: EntityId, name: &str) {
         self.names.insert(id.0, name.to_string());
+    }
+
+    // ────────────────────────────────────────────────────────────────────────────
+    // Stable UUIDs
+    // ────────────────────────────────────────────────────────────────────────────
+
+    pub fn get_uuid(&self, id: EntityId) -> Option<&str> {
+        self.entity_uuids.get(&id.0).map(|s| s.as_str())
+    }
+
+    pub fn set_uuid(&mut self, id: EntityId, uuid: String) {
+        self.entity_uuids.insert(id.0, uuid);
+    }
+
+    pub fn find_by_uuid(&self, uuid: &str) -> Option<EntityId> {
+        self.entity_uuids
+            .iter()
+            .find(|(_, v)| v.as_str() == uuid)
+            .map(|(&e, _)| EntityId(e))
+    }
+
+    // ────────────────────────────────────────────────────────────────────────────
+    // Prefab tracking
+    // ────────────────────────────────────────────────────────────────────────────
+
+    pub fn get_prefab_source(&self, id: EntityId) -> Option<&str> {
+        self.prefab_sources.get(&id.0).map(|s| s.as_str())
+    }
+
+    pub fn set_prefab_source(&mut self, id: EntityId, path: String) {
+        self.prefab_sources.insert(id.0, path);
+    }
+
+    pub fn clear_prefab_source(&mut self, id: EntityId) {
+        self.prefab_sources.remove(&id.0);
+        self.prefab_overrides.remove(&id.0);
+    }
+
+    pub fn is_prefab_instance(&self, id: EntityId) -> bool {
+        self.prefab_sources.contains_key(&id.0)
+    }
+
+    pub fn get_prefab_overrides(&self, id: EntityId) -> Option<&HashMap<String, serde_json::Value>> {
+        self.prefab_overrides.get(&id.0)
+    }
+
+    pub fn set_prefab_override(&mut self, id: EntityId, key: String, value: serde_json::Value) {
+        self.prefab_overrides.entry(id.0).or_default().insert(key, value);
+    }
+
+    pub fn clear_prefab_overrides(&mut self, id: EntityId) {
+        self.prefab_overrides.remove(&id.0);
     }
 
     /// Find the first entity with a given name. O(n) — use sparingly.

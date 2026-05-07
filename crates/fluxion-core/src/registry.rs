@@ -352,10 +352,10 @@ impl ComponentRegistry {
             if let Some(p) = data.get("position") {
                 if let Some(v) = parse_vec3(p) { t.position = v; }
             }
-            if let Some(r) = data.get("rotation") {
-                if let Some(e) = parse_vec3(r) {
-                    t.rotation = Quat::from_euler(EulerRot::XYZ, e.x, e.y, e.z);
-                }
+            if let Some(q) = data.get("quaternion").and_then(parse_quat) {
+                t.rotation = q;
+            } else if let Some(e) = data.get("rotation").and_then(parse_vec3) {
+                t.rotation = Quat::from_euler(EulerRot::XYZ, e.x, e.y, e.z);
             }
             if let Some(s) = data.get("scale") {
                 if let Some(v) = parse_vec3(s) { t.scale = v; }
@@ -613,6 +613,18 @@ fn parse_vec3(v: &Value) -> Option<glam::Vec3> {
         a[1].as_f64()? as f32,
         a[2].as_f64()? as f32,
     ))
+}
+
+fn parse_quat(v: &Value) -> Option<glam::Quat> {
+    let a = v.as_array()?;
+    if a.len() < 4 { return None; }
+    let q = glam::Quat::from_xyzw(
+        a[0].as_f64()? as f32,
+        a[1].as_f64()? as f32,
+        a[2].as_f64()? as f32,
+        a[3].as_f64()? as f32,
+    );
+    Some(q.normalize())
 }
 
 fn parse_color_rgb(v: &Value) -> Option<[f32; 3]> {

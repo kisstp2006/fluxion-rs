@@ -124,6 +124,10 @@ thread_local! {
     /// Owned child UI for vertical (top-down) layout.
     static VERT_CHILD:  RefCell<Option<Box<egui::Ui>>> = RefCell::new(None);
 
+    // ── ID scope state (push_id / pop_id) ──────────────────────────────────────────────
+    static ID_SCOPE_PARENT: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
+    static ID_SCOPE_CHILD:  RefCell<Option<Box<egui::Ui>>> = RefCell::new(None);
+
     // ── Two-column layout state ─────────────────────────────────────────────────────────
     /// Saved parent UI pointer while inside a columns layout.
     static COLS_PARENT: Cell<Option<NonNull<egui::Ui>>> = Cell::new(None);
@@ -1554,6 +1558,45 @@ pub fn build_ui_module() -> anyhow::Result<Module> {
         }
         HORIZ_CHILD .with(|c| *c.borrow_mut() = None);
         HORIZ_PARENT.with(|p| p.set(None));
+    }).build()?;
+
+    // push_id / pop_id — create an ID scope so all widgets inside get unique IDs.
+    m.function("push_id", |salt: i64| {
+        let parent_ptr = CURRENT_UI.with(|c| c.get());
+        ID_SCOPE_PARENT.with(|p| p.set(parent_ptr));
+        let Some(mut ptr) = parent_ptr else { return };
+        let child = unsafe {
+            let ui    = ptr.as_mut();
+            let avail = ui.available_size();
+            let cursor = ui.cursor().min;
+            let rect  = egui::Rect::from_min_size(
+                cursor,
+                egui::vec2(avail.x.max(1.0), avail.y.max(1.0)),
+            );
+            Box::new(ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .id_salt(salt),
+            ))
+        };
+        ID_SCOPE_CHILD.with(|c| *c.borrow_mut() = Some(child));
+        let child_ptr = ID_SCOPE_CHILD.with(|c| {
+            c.borrow().as_ref().map(|b| NonNull::from(b.as_ref()))
+        });
+        CURRENT_UI.with(|c| c.set(child_ptr));
+    }).build()?;
+
+    m.function("pop_id", || {
+        let child_rect = ID_SCOPE_CHILD.with(|c| c.borrow().as_ref().map(|u| u.min_rect()));
+        let parent_ptr = ID_SCOPE_PARENT.with(|p| p.get());
+        CURRENT_UI.with(|c| c.set(parent_ptr));
+        if let Some(mut ptr) = parent_ptr {
+            if let Some(cr) = child_rect {
+                unsafe { ptr.as_mut() }.allocate_rect(cr, egui::Sense::hover());
+            }
+        }
+        ID_SCOPE_CHILD.with(|c| *c.borrow_mut() = None);
+        ID_SCOPE_PARENT.with(|p| p.set(None));
     }).build()?;
 
     // scroll_begin / scroll_end — clip-scope guard.

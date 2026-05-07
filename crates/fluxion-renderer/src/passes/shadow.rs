@@ -1,14 +1,11 @@
 // ============================================================
-// fluxion-renderer — ShadowPass
+// fluxion-renderer — ShadowPass (multi-light atlas)
 //
-// Renders scene geometry from the first directional shadow-casting
-// light's point of view, writing a depth-only shadow map.
+// Renders scene geometry from each shadow-casting light's POV
+// into a 2×2 tile atlas (SHADOW_ATLAS_SIZE × SHADOW_ATLAS_SIZE).
+// Each shadow-casting light occupies one tile.
 //
-// The resulting shadow map texture is stored in RenderResources::shadow_map
-// and sampled by LightingPass via group(3) in pbr_lighting.wgsl.
-//
-// Only the first shadow-casting directional light is supported (single
-// cascade). CSM can be added later by replicating the pass N times.
+// The resulting atlas is sampled by LightingPass via group(3).
 // ============================================================
 
 use bytemuck::{Pod, Zeroable};
@@ -67,7 +64,6 @@ impl RenderPass for ShadowPass {
         let raw    = std::mem::size_of::<ModelUniforms>() as u64;
         let stride = (raw + align - 1) / align * align;
 
-        // ── Bind group layouts ────────────────────────────────────────────────
         let cam_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   Some("shadow_cam_bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -94,7 +90,6 @@ impl RenderPass for ShadowPass {
             }],
         });
 
-        // ── Buffers ───────────────────────────────────────────────────────────
         let cam_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("shadow_cam_ubo"),
             size:  std::mem::size_of::<ShadowCamera>() as u64,
@@ -109,7 +104,6 @@ impl RenderPass for ShadowPass {
             mapped_at_creation: false,
         });
 
-        // ── Bind groups ───────────────────────────────────────────────────────
         let cam_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("shadow_cam_bg"),
             layout:  &cam_bgl,
@@ -132,13 +126,11 @@ impl RenderPass for ShadowPass {
             }],
         });
 
-        // ── Shader ────────────────────────────────────────────────────────────
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("shadow_depth_shader"),
             source: wgpu::ShaderSource::Wgsl(shaders::SHADOW_DEPTH.into()),
         });
 
-        // ── Pipeline (depth-only, no color attachments) ───────────────────────
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label:              Some("shadow_pipeline_layout"),
             bind_group_layouts: &[Some(&cam_bgl), Some(&model_bgl)],
@@ -154,10 +146,10 @@ impl RenderPass for ShadowPass {
                 buffers:     &[Vertex::layout()],
                 compilation_options: Default::default(),
             },
-            fragment: None,  // depth-only — no fragment output
+            fragment: None,
             primitive: wgpu::PrimitiveState {
                 topology:           wgpu::PrimitiveTopology::TriangleList,
-                cull_mode:          Some(wgpu::Face::Front), // front-face cull reduces peter-panning
+                cull_mode:          Some(wgpu::Face::Front),
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -187,10 +179,8 @@ impl RenderPass for ShadowPass {
     }
 
     fn execute(&mut self, ctx: &mut RenderContext) {
-        // Shadow map is shared across all cameras — only render it for the first camera.
         if !ctx.frame.is_first_camera { return; }
-        // Skip if no shadow-casting light this frame.
-        if !ctx.frame.has_shadow_caster { return; }
+        if ctx.frame.shadow_entries.is_empty() { return; }
 
         let pipeline   = match self.pipeline.as_ref()   { Some(p) => p, None => return };
         let cam_buf    = match self.cam_buffer.as_ref()  { Some(b) => b, None => return };
@@ -199,12 +189,7 @@ impl RenderPass for ShadowPass {
         let model_bg   = match self.model_bg.as_ref()    { Some(g) => g, None => return };
         let stride     = self.model_stride;
 
-        // Upload light-space camera UBO.
-        ctx.queue.write_buffer(cam_buf, 0, bytemuck::bytes_of(&ShadowCamera {
-            light_view_proj: ctx.frame.shadow_view_proj.to_cols_array_2d(),
-        }));
-
-        // Upload model matrices for shadow-casting draws.
+        // Upload model matrices (shared across all shadow tiles).
         let raw = std::mem::size_of::<ModelUniforms>();
         let shadow_draws: Vec<_> = ctx.frame.draw_calls.iter()
             .filter(|d| d.cast_shadow)
@@ -225,31 +210,63 @@ impl RenderPass for ShadowPass {
                 &staging[..shadow_draws.len() * stride as usize]);
         }
 
-        // Begin depth-only render pass writing into shadow_map.
-        let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label:             Some("shadow_pass"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &ctx.resources.shadow_map.view,
-                depth_ops: Some(wgpu::Operations {
-                    load:  wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
+        // Clear the entire atlas once, then render each tile.
+        {
+            let _clear_pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("shadow_atlas_clear"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &ctx.resources.shadow_map.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
                 }),
-                stencil_ops: None,
-            }),
-            ..Default::default()
-        });
+                ..Default::default()
+            });
+        }
 
-        rpass.set_pipeline(pipeline);
-        rpass.set_bind_group(0, cam_bg, &[]);
+        // Render each shadow-casting light into its atlas tile.
+        for entry in &ctx.frame.shadow_entries {
+            ctx.queue.write_buffer(cam_buf, 0, bytemuck::bytes_of(&ShadowCamera {
+                light_view_proj: entry.light_view_proj.to_cols_array_2d(),
+            }));
 
-        for (i, draw) in shadow_draws.iter().enumerate() {
-            let mesh = match ctx.meshes.get(draw.mesh) { Some(m) => m, None => continue };
-            let dynamic_offset = (i as u64 * stride) as u32;
-            rpass.set_bind_group(1, model_bg, &[dynamic_offset]);
-            rpass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-            rpass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            rpass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            let mut rpass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label:             Some("shadow_tile_pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &ctx.resources.shadow_map.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load:  wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+
+            rpass.set_viewport(
+                entry.atlas_x as f32,
+                entry.atlas_y as f32,
+                entry.tile_size as f32,
+                entry.tile_size as f32,
+                0.0, 1.0,
+            );
+            rpass.set_scissor_rect(entry.atlas_x, entry.atlas_y, entry.tile_size, entry.tile_size);
+
+            rpass.set_pipeline(pipeline);
+            rpass.set_bind_group(0, cam_bg, &[]);
+
+            for (i, draw) in shadow_draws.iter().enumerate() {
+                let mesh = match ctx.meshes.get(draw.mesh) { Some(m) => m, None => continue };
+                let dynamic_offset = (i as u64 * stride) as u32;
+                rpass.set_bind_group(1, model_bg, &[dynamic_offset]);
+                rpass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                rpass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                rpass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
         }
     }
 }

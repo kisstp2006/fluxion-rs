@@ -79,13 +79,14 @@ impl Reflect for Transform {
         Ok(())
     }
 
-    /// Transform serializes only local position/rotation/scale (Euler XYZ degrees for readability).
     fn to_serialized_data(&self) -> serde_json::Value {
         let (ax, ay, az) = self.rotation.to_euler(EulerRot::XYZ);
+        let q = self.rotation;
         serde_json::json!({
-            "position": [self.position.x, self.position.y, self.position.z],
-            "rotation": [ax, ay, az],
-            "scale":    [self.scale.x, self.scale.y, self.scale.z],
+            "position":   [self.position.x, self.position.y, self.position.z],
+            "rotation":   [ax, ay, az],
+            "quaternion": [q.x, q.y, q.z, q.w],
+            "scale":      [self.scale.x, self.scale.y, self.scale.z],
         })
     }
 }

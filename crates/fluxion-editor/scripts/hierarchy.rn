@@ -81,10 +81,27 @@ fn dispatch_action(action, sel) {
         if parts.len() < 3 { return; }
         let id      = fluxion::world::parse_entity_id(parts[1]);
         let ctx_act = parts[2];
+
+        // Collect targets: if the clicked entity is part of a multi-selection,
+        // apply the action to all selected entities; otherwise just the one.
+        let targets = [];
+        let multi = fluxion::world::get_multi_selected();
+        if multi.len() > 1 && fluxion::world::is_multi_selected(id) {
+            for m in multi {
+                targets.push(m);
+            }
+        } else {
+            targets.push(id);
+        }
+
         if ctx_act == "Delete" {
-            fluxion::world::despawn(id);
+            for t in targets {
+                fluxion::world::despawn(t);
+            }
         } else if ctx_act == "Duplicate" {
-            fluxion::world::duplicate_entity(id);
+            for t in targets {
+                fluxion::world::duplicate_entity(t);
+            }
         } else if ctx_act == "Create Prefab" {
             fluxion::world::set_selected(id);
             let name_val = fluxion::world::entity_name(id);
@@ -94,7 +111,9 @@ fn dispatch_action(action, sel) {
             fluxion::world::set_selected(id);
             fluxion::world::clear_selected_asset();
         } else if ctx_act == "Unparent" {
-            fluxion::world::set_parent(id, -1);
+            for t in targets {
+                fluxion::world::set_parent(t, -1);
+            }
         }
     }
 }

@@ -128,21 +128,23 @@ impl HierarchyStore {
     }
 
     /// Returns `true` if `ancestor` is a (direct or indirect) ancestor of `entity`.
-    /// Used for cycle detection in `set_parent()`.
+    /// Uses a visited set to detect cycles instead of an arbitrary depth limit.
     pub fn is_ancestor_of(&self, ancestor: Entity, entity: Entity) -> bool {
         let mut current = entity;
-        // Walk up the parent chain. Max depth is bounded by hierarchy depth.
-        // In practice game hierarchies are shallow (< 20 levels).
-        for _ in 0..1024 {
+        let mut visited = std::collections::HashSet::new();
+        loop {
             match self.parents.get(&current).copied() {
                 None => return false,
                 Some(p) if p == ancestor => return true,
-                Some(p) => current = p,
+                Some(p) => {
+                    if !visited.insert(p) {
+                        log::error!("is_ancestor_of(): cycle detected in hierarchy!");
+                        return false;
+                    }
+                    current = p;
+                }
             }
         }
-        // If we get here, something is very wrong (existing cycle in the store)
-        log::error!("is_ancestor_of(): walked 1024 levels — possible existing cycle!");
-        false
     }
 
     /// Collect all descendants of `entity` (inclusive) in BFS order.

@@ -255,15 +255,15 @@ impl ApplicationHandler for EditorApp {
                                 PhysicalKey::Code(KeyCode::KeyS) if ctrl => g.save_scene(),
                                 PhysicalKey::Code(KeyCode::KeyN) if ctrl => g.new_scene(),
                                 PhysicalKey::Code(KeyCode::KeyZ) if ctrl => {
-                                    let world    = &g.host.world    as *const _;
+                                    let world    = &mut g.host.world    as *mut _;
                                     let registry = &g.host.registry as *const _;
-                                    // SAFETY: undo only reads world/registry; no aliased mutable refs exist.
-                                    unsafe { g.host.undo.undo(&*world, &*registry); }
+                                    // SAFETY: undo needs &mut world for structural ops; no aliased refs exist.
+                                    unsafe { g.host.undo.undo(&mut *world, &*registry); }
                                 }
                                 PhysicalKey::Code(KeyCode::KeyY) if ctrl => {
-                                    let world    = &g.host.world    as *const _;
+                                    let world    = &mut g.host.world    as *mut _;
                                     let registry = &g.host.registry as *const _;
-                                    unsafe { g.host.undo.redo(&*world, &*registry); }
+                                    unsafe { g.host.undo.redo(&mut *world, &*registry); }
                                 }
                                 PhysicalKey::Code(KeyCode::KeyD) if ctrl => {
                                     if g.host.duplicate_selected() {
@@ -878,14 +878,14 @@ impl EditorInner {
                     );
                 }
                 "do_undo" => {
-                    let world    = &self.host.world    as *const _;
+                    let world    = &mut self.host.world    as *mut _;
                     let registry = &self.host.registry as *const _;
-                    unsafe { self.host.undo.undo(&*world, &*registry); }
+                    unsafe { self.host.undo.undo(&mut *world, &*registry); }
                 }
                 "do_redo" => {
-                    let world    = &self.host.world    as *const _;
+                    let world    = &mut self.host.world    as *mut _;
                     let registry = &self.host.registry as *const _;
-                    unsafe { self.host.undo.redo(&*world, &*registry); }
+                    unsafe { self.host.undo.redo(&mut *world, &*registry); }
                 }
                 "lsp_start" => {
                     if let Some(bin) = lsp_manager::LspManager::resolve_binary() {

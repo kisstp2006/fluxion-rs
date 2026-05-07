@@ -14,6 +14,7 @@ use std::collections::HashMap;
 
 use log::warn;
 
+use crate::assets::database::new_guid;
 use crate::ecs::entity::EntityId;
 use crate::ecs::world::ECSWorld;
 use crate::registry::ComponentRegistry;
@@ -53,6 +54,16 @@ pub fn instantiate_entities(
     for ent in entities {
         let eid = world.spawn(Some(ent.name.as_str()));
         id_map.insert(ent.id, eid);
+
+        let uuid = ent.uuid.clone().unwrap_or_else(new_guid);
+        world.set_uuid(eid, uuid);
+
+        if let Some(ref src) = ent.prefab_source {
+            world.set_prefab_source(eid, src.clone());
+        }
+        for (key, val) in &ent.prefab_overrides {
+            world.set_prefab_override(eid, key.clone(), val.clone());
+        }
 
         for comp in &ent.components {
             if let Err(msg) = attach_component(world, eid, comp, registry) {
