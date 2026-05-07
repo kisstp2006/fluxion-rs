@@ -14,7 +14,11 @@ use crate::script_editor;
 // ── Tab data ─────────────────────────────────────────────────────────────────
 
 /// Data stored per dockable tab.
-#[derive(Debug, Clone)]
+///
+/// Serialize/Deserialize are required by [`save_dock_layout`] and
+/// [`restore_dock_layout`] so the user's panel arrangement survives across
+/// editor restarts (A5).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EditorTab {
     /// Display title shown on the tab header.
     pub title: String,
@@ -65,12 +69,37 @@ impl<'a> egui_dock::TabViewer for RuneTabViewer<'a> {
         // Guard clears CURRENT_UI on drop — safe on both normal return and panic.
         let _ui_guard: UiContextGuard = set_current_ui(ui);
 
-        let result = self.vm.call_fn(&parts, ());
-        if let Err(e) = result {
-            // Use {e:#} to show the full anyhow error chain (not just the wrapper message).
-            let msg = format!("{e:#}");
-            log::error!("Rune panel '{}': {msg}", tab.rune_fn);
-            ui.colored_label(egui::Color32::RED, format!("⚠ {}: {msg}", tab.rune_fn));
+        // A8/C1 — panic guard. A bug in any panel script (hierarchy.rn,
+        // inspector.rn, etc.) would otherwise unwind through egui_dock's
+        // viewer and kill the editor process. Catch the unwind, surface the
+        // panic message in-place, and let the user keep working in other tabs.
+        let vm_ptr = self.vm as *mut fluxion_rune_scripting::RuneVm;
+        let parts_ref = &parts;
+        let call_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: vm_ptr is derived from &mut self.vm and not aliased in
+            // this scope; the closure runs to completion before vm_ptr leaves.
+            unsafe { (*vm_ptr).call_fn(parts_ref, ()) }
+        }));
+        match call_outcome {
+            Ok(Ok(_)) => { /* normal */ }
+            Ok(Err(e)) => {
+                let msg = format!("{e:#}");
+                log::error!("Rune panel '{}': {msg}", tab.rune_fn);
+                ui.colored_label(egui::Color32::RED, format!("⚠ {}: {msg}", tab.rune_fn));
+            }
+            Err(panic_payload) => {
+                let msg = panic_payload.downcast_ref::<String>().map(|s| s.as_str())
+                    .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown panic");
+                log::error!("Rune panel '{}' PANICKED: {msg}", tab.rune_fn);
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 100, 100),
+                    format!("☠ {} panicked: {msg}", tab.rune_fn),
+                );
+                ui.label(egui::RichText::new(
+                    "Other panels keep running. Fix the script and reload (panel scripts hot-reload on save).",
+                ).size(11.0).color(egui::Color32::from_gray(180)));
+            }
         }
         // _ui_guard drops here (or on early return above), clearing CURRENT_UI.
     }
@@ -136,6 +165,47 @@ pub fn default_dock_state() -> DockState<EditorTab> {
     let _ = centre2;
 
     state
+}
+
+// ── Layout persistence (A5) ───────────────────────────────────────────────────
+
+/// Bump this whenever [`EditorTab`] gains/loses fields or [`default_dock_state`]
+/// changes meaningfully. Layouts saved with a different version are discarded
+/// silently in favour of [`default_dock_state`].
+pub const DOCK_LAYOUT_VERSION: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedLayout {
+    version: u32,
+    state:   DockState<EditorTab>,
+}
+
+/// Serialize the current dock layout to a JSON string for storage in
+/// [`fluxion_core::EditorPrefs::dock_layout`]. Returns `None` on serialization
+/// failure (logged) — caller should leave the prefs field unchanged.
+pub fn save_dock_layout(state: &DockState<EditorTab>) -> Option<String> {
+    let wrapped = PersistedLayout { version: DOCK_LAYOUT_VERSION, state: state.clone() };
+    match serde_json::to_string(&wrapped) {
+        Ok(s) => Some(s),
+        Err(e) => { log::warn!("Dock layout serialization failed: {e}"); None }
+    }
+}
+
+/// Restore a saved dock layout JSON. Returns `None` (and logs at info level)
+/// if the version doesn't match, so the caller falls back to
+/// [`default_dock_state`] and the user gets a fresh layout.
+pub fn restore_dock_layout(json: &str) -> Option<DockState<EditorTab>> {
+    match serde_json::from_str::<PersistedLayout>(json) {
+        Ok(p) if p.version == DOCK_LAYOUT_VERSION => Some(p.state),
+        Ok(p) => {
+            log::info!("Dock layout version mismatch (saved={}, current={}); using default.", p.version, DOCK_LAYOUT_VERSION);
+            None
+        }
+        Err(e) => {
+            log::warn!("Dock layout parse failed: {e} — using default");
+            None
+        }
+    }
 }
 
 // ── Show ──────────────────────────────────────────────────────────────────────

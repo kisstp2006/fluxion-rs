@@ -52,6 +52,17 @@ thread_local! {
     static SETTINGS_DEFAULTS_E: RefCell<Option<EditorPrefs>>   = RefCell::new(None);
     // Search query for the settings UI (shared between both panels).
     static SETTINGS_SEARCH: RefCell<String> = RefCell::new(String::new());
+
+    /// Cached recent-scenes list, updated by [`set_recent_scenes_cache`] from
+    /// main.rs whenever a scene is saved or loaded. Read by the menubar Rune
+    /// script via `fluxion::settings::recent_scenes()`.
+    static RECENT_SCENES_CACHE: RefCell<Vec<String>> = RefCell::new(Vec::new());
+}
+
+/// Update the cached recent-scenes list. Called from main.rs after a successful
+/// scene save / load.
+pub fn set_recent_scenes_cache(scenes: Vec<String>) {
+    RECENT_SCENES_CACHE.with(|c| *c.borrow_mut() = scenes);
 }
 
 // ── Built-in CVar definitions ────────────────────────────────────────────────
@@ -742,6 +753,22 @@ pub fn build_settings_module() -> anyhow::Result<Module> {
         let prefs = fluxion_core::load_editor_prefs();
         SETTINGS_PREFS.with(|p| *p.borrow_mut() = Some(prefs));
         SETTINGS_DIRTY_E.with(|d| d.set(false));
+    }).build()?;
+
+    // F1 — recent scenes. Returns absolute paths newest-first; menubar.rn
+    // turns them into "Open Recent" submenu items that emit
+    // "load_scene:<path>" action signals.
+    m.function("recent_scenes", || -> Vec<String> {
+        RECENT_SCENES_CACHE.with(|c| c.borrow().clone())
+    }).build()?;
+
+    m.function("clear_recent_scenes", || {
+        RECENT_SCENES_CACHE.with(|c| c.borrow_mut().clear());
+        let mut prefs = fluxion_core::load_editor_prefs();
+        prefs.recent_scenes.clear();
+        if let Err(e) = fluxion_core::save_editor_prefs(&prefs) {
+            log::warn!("clear_recent_scenes save failed: {e}");
+        }
     }).build()?;
 
     // ── CVar system ───────────────────────────────────────────────────────────

@@ -11,6 +11,22 @@ pub mod menubar {
 fn define_file_menu() {
     fluxion::ui::menu_register_item_priority("File", "New Scene          Ctrl+N", 10);
     fluxion::ui::menu_register_submenu("File", "Open Recent");
+
+    // Populate Open Recent from editor_prefs.recent_scenes (newest first).
+    let recent = fluxion::settings::recent_scenes();
+    if recent.is_empty() {
+        fluxion::ui::menu_register_item_priority("File.Open Recent", "(none)", 10);
+    } else {
+        let prio = 10;
+        for path in recent {
+            // Use the full path as the label so the click handler can recover it.
+            fluxion::ui::menu_register_item_priority("File.Open Recent", path, prio);
+            prio += 10;
+        }
+        fluxion::ui::menu_register_separator_priority("File.Open Recent", 9000);
+        fluxion::ui::menu_register_item_priority("File.Open Recent", "Clear Recent", 9100);
+    }
+
     fluxion::ui::menu_register_item_priority("File", "Open Scene...", 30);
     fluxion::ui::menu_register_separator_priority("File", 40);
     fluxion::ui::menu_register_item_priority("File", "Save Scene         Ctrl+S", 50);
@@ -61,6 +77,19 @@ pub fn panel() {
     if file_clicked == "File/Open Scene..."             { fluxion::world::do_open_scene(); }
     if file_clicked == "File/Save Scene         Ctrl+S" { fluxion::world::do_save_scene(); }
     if file_clicked == "File/Exit"                      { fluxion::world::exit_app(); }
+
+    // F1 — Open Recent submenu click handlers. The label IS the absolute
+    // path, so we can recover it by exact-match comparison.
+    if file_clicked == "File/Open Recent/Clear Recent" {
+        fluxion::settings::clear_recent_scenes();
+    } else if file_clicked.starts_with("File/Open Recent/") {
+        for path in fluxion::settings::recent_scenes() {
+            if file_clicked == `File/Open Recent/${path}` {
+                fluxion::world::push_action(`load_scene:${path}`);
+                break;
+            }
+        }
+    }
 
     let edit_clicked = fluxion::ui::menu_render("Edit");
     if edit_clicked == "Edit/Undo               Ctrl+Z" && can_undo { fluxion::world::trigger_undo(); }

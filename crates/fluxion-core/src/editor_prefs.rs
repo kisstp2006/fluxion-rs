@@ -41,6 +41,31 @@ pub struct EditorPrefs {
     /// External script editor: "vscode" | "vscodium" | "default".
     #[serde(default = "default_script_editor")]
     pub script_editor: String,
+    /// Most-recently-used scene paths (absolute), newest first. Capped at 10.
+    /// Populated by [`push_recent_scene`].
+    #[serde(default)]
+    pub recent_scenes: Vec<String>,
+    /// Serialized `egui_dock::DockState` JSON, restored on startup when
+    /// [`restore_layout`] is true. Set by the editor on graceful shutdown.
+    #[serde(default)]
+    pub dock_layout: Option<String>,
+}
+
+/// Maximum number of entries kept in [`EditorPrefs::recent_scenes`].
+pub const RECENT_SCENES_MAX: usize = 10;
+
+impl EditorPrefs {
+    /// Push a scene path to the front of the recent-scenes list, dedupe and trim.
+    /// Pass an absolute path string. No-op for empty paths.
+    pub fn push_recent_scene(&mut self, path: impl Into<String>) {
+        let path = path.into();
+        if path.is_empty() { return; }
+        self.recent_scenes.retain(|p| p != &path);
+        self.recent_scenes.insert(0, path);
+        if self.recent_scenes.len() > RECENT_SCENES_MAX {
+            self.recent_scenes.truncate(RECENT_SCENES_MAX);
+        }
+    }
 }
 
 fn default_theme()            -> String { "dark".to_string() }
@@ -66,6 +91,8 @@ impl Default for EditorPrefs {
             show_editor_camera:     false,
             asset_view_mode:        default_asset_view_mode(),
             script_editor:          default_script_editor(),
+            recent_scenes:          Vec::new(),
+            dock_layout:            None,
         }
     }
 }

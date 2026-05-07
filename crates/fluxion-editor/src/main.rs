@@ -269,6 +269,7 @@ impl ApplicationHandler for EditorApp {
                             g.pending_action = Some(PendingAction::Quit);
                             // Exit deferred — modal will set WANT_QUIT on user confirm.
                         } else {
+                            g.persist_dock_layout();
                             event_loop.exit();
                         }
                     }
@@ -313,6 +314,7 @@ impl ApplicationHandler for EditorApp {
                     WindowEvent::RedrawRequested => {
                         g.frame();
                         if WANT_QUIT.load(Ordering::Relaxed) {
+                            g.persist_dock_layout();
                             event_loop.exit();
                         }
                     }
@@ -503,6 +505,21 @@ impl EditorApp {
             prefs.clone(),
             inner.project_root.clone(),
         );
+        // F1 — seed the recent-scenes cache for the menubar Rune script.
+        crate::rune_bindings::settings_module::set_recent_scenes_cache(
+            prefs.recent_scenes.clone(),
+        );
+        // A5 — restore the user's dock layout if persistence is enabled and
+        // a previous layout is on disk. Falls back to default_dock_state if
+        // the saved layout has a stale version or fails to parse.
+        if prefs.restore_layout {
+            if let Some(json) = prefs.dock_layout.as_deref() {
+                if let Some(restored) = crate::dock::restore_dock_layout(json) {
+                    inner.dock_state = restored;
+                    log::info!("Dock layout restored from editor prefs");
+                }
+            }
+        }
         inner.editor_prefs = prefs;
 
         // Auto-launch the bundled Rune language server.
@@ -1364,8 +1381,16 @@ impl EditorInner {
                 self.autosave_timer += dt;
                 if self.autosave_timer >= interval as f32 {
                     self.autosave_timer = 0.0;
+                    let pre_dirty = self.scene_dirty;
                     self.save_scene();
-                    log::info!("Autosave triggered.");
+                    // F9 — autosave toast: route through the existing DualLogger
+                    // (which forwards to push_log → editor Console). One distinct
+                    // line instead of the previous post-hoc "Autosave triggered."
+                    if pre_dirty && !self.scene_dirty {
+                        log::info!("[Autosave] Saved at {}", chrono::Local::now().format("%H:%M:%S"));
+                    } else if pre_dirty {
+                        log::warn!("[Autosave] Save failed — will retry next interval.");
+                    }
                 }
             } else {
                 self.autosave_timer = 0.0;
@@ -1411,8 +1436,35 @@ impl EditorInner {
             Ok(()) => {
                 self.scene_dirty = false;
                 log::info!("Scene saved to {}", path.display());
+                self.record_recent_scene(&path);
             }
             Err(e) => log::error!("Save scene failed: {e}"),
+        }
+    }
+
+    /// A5 — persist the current dock layout into editor prefs and write to disk.
+    /// Called from the exit paths so the user's panel arrangement survives
+    /// across editor restarts. Best-effort: logs but doesn't fail on I/O errors.
+    fn persist_dock_layout(&mut self) {
+        if let Some(json) = crate::dock::save_dock_layout(&self.dock_state) {
+            self.editor_prefs.dock_layout = Some(json);
+            if let Err(e) = fluxion_core::save_editor_prefs(&self.editor_prefs) {
+                log::warn!("Failed to persist dock layout: {e}");
+            }
+        }
+    }
+
+    /// Push a scene path to the recent-scenes list and persist editor prefs.
+    /// Called after a successful save or load. Best-effort — failures are logged.
+    fn record_recent_scene(&mut self, path: &std::path::Path) {
+        if let Some(s) = path.to_str() {
+            self.editor_prefs.push_recent_scene(s.to_string());
+            crate::rune_bindings::settings_module::set_recent_scenes_cache(
+                self.editor_prefs.recent_scenes.clone(),
+            );
+            if let Err(e) = fluxion_core::save_editor_prefs(&self.editor_prefs) {
+                log::warn!("Failed to persist recent_scenes: {e}");
+            }
         }
     }
 
@@ -1498,9 +1550,10 @@ impl EditorInner {
                     crate::rune_bindings::init_editor_cam(pos, yaw, pitch);
                 }
                 self.host.camera_manager.rebuild(&self.host.world);
-                self.scene_path  = Some(path);
+                self.scene_path  = Some(path.clone());
                 self.scene_dirty = false;
                 log::info!("Scene loaded");
+                self.record_recent_scene(&path);
             }
             Err(e) => log::error!("Open scene failed: {e}"),
         }

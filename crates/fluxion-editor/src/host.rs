@@ -218,8 +218,18 @@ impl EditorHost {
     // ── Gameplay script management ──────────────────────────────────────────
 
     /// Rebuild the per-entity RuneBehaviour map from all ScriptBundle components.
-    /// Call when entering play mode or after a scene load.
+    /// Call when entering play mode, after a scene load, or after a hot-reload
+    /// of any `.rn` script during play.
+    ///
+    /// **State migration (A6):** inspector-exposed script fields persist across
+    /// rebuild because [`Self::tick_gameplay_scripts`] mirrors them back to
+    /// [`fluxion_core::ScriptBundle::fields`] on every tick, and the new
+    /// behaviour reads them from the bundle on its first tick. Local Rune state
+    /// (variables not exposed as inspector fields) is intentionally lost — same
+    /// trade-off as commercial engines' domain reload. Document any state that
+    /// must survive as an inspector field.
     pub fn rebuild_gameplay_scripts(&mut self) {
+        let prev_count = self.gameplay_scripts.len();
         self.gameplay_scripts.clear();
         let mut entries: Vec<(fluxion_core::EntityId, String, String)> = Vec::new();
         self.world.query_active::<&fluxion_core::ScriptBundle, _>(|id, bundle| {
@@ -250,7 +260,16 @@ impl EditorHost {
         }
         let error_count = total - self.gameplay_scripts.len();
         set_compile_summary(total, error_count);
-        log::info!("[ScriptBundle] {}/{} gameplay scripts loaded", self.gameplay_scripts.len(), total);
+        if prev_count > 0 {
+            // Hot-reload path. Field values survived via ScriptBundle.fields;
+            // local Rune state was reset.
+            log::info!(
+                "[ScriptBundle] Hot-reloaded {}/{} gameplay scripts (inspector-exposed fields preserved; local script state reset)",
+                self.gameplay_scripts.len(), total,
+            );
+        } else {
+            log::info!("[ScriptBundle] {}/{} gameplay scripts loaded", self.gameplay_scripts.len(), total);
+        }
     }
 
     /// Tick all gameplay scripts at the physics fixed-step rate (play mode only).

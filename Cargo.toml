@@ -34,7 +34,7 @@ symphonia   = { version = "0.5", features = ["mp3", "ogg", "wav", "aac"] }
 egui        = "0.34"
 egui-wgpu   = "0.34"
 egui-winit  = "0.34"
-egui_dock   = "0.19.1"
+egui_dock   = { version = "0.19.1", features = ["serde"] }
 egui_extras = { version = "0.34", features = ["svg"] }
 dirs-next   = "2.0"
 chrono      = { version = "0.4", features = ["clock"] }
