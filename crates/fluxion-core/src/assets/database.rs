@@ -584,98 +584,54 @@ fn days_to_ymd(mut days: u64) -> (u32, u32, u32) {
     (y, mo, days as u32 + 1)
 }
 
-// ── .fluxmeta JSON (minimal, no serde dep in core) ───────────────────────────
+// ── .fluxmeta JSON ───────────────────────────────────────────────────────────
+
+/// Owned form for deserialization. `#[serde(default)]` keeps this tolerant of
+/// missing fields — older `.fluxmeta` files predating tags/import still load.
+#[derive(serde::Deserialize, Default)]
+struct MetaJsonOwned {
+    #[serde(default)]
+    guid:        String,
+    #[serde(default)]
+    imported_at: String,
+    #[serde(default)]
+    tags:        Vec<String>,
+    #[serde(default)]
+    import:      BTreeMap<String, String>,
+}
+
+/// Borrowed form for pretty-printing without cloning.
+#[derive(serde::Serialize)]
+struct MetaJsonRef<'a> {
+    guid:        &'a str,
+    imported_at: &'a str,
+    tags:        &'a [String],
+    import:      &'a BTreeMap<String, String>,
+}
 
 /// Parse `{ "guid": "…", "imported_at": "…", "tags": […], "import": { … } }`.
+///
+/// Returns `None` only if the JSON is malformed or `guid` is missing/empty —
+/// matching the old hand-rolled parser's contract.
 fn parse_meta_json(raw: &str) -> Option<(String, String, Vec<String>, BTreeMap<String, String>)> {
-    let guid        = json_str(raw, "guid")?;
-    let imported_at = json_str(raw, "imported_at").unwrap_or_else(iso_now);
-    let tags        = json_str_array(raw, "tags").unwrap_or_default();
-    let import      = json_str_object(raw, "import").unwrap_or_default();
-    Some((guid, imported_at, tags, import))
-}
-
-fn write_meta_json(guid: &str, imported_at: &str, tags: &[String], import: &BTreeMap<String, String>) -> String {
-    let tags_json = tags
-        .iter()
-        .map(|t| format!("\"{}\"", t.replace('"', "\\\"")))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let import_json = import
-        .iter()
-        .map(|(k, v)| format!("    \"{}\": \"{}\"",
-            k.replace('"', "\\\""), v.replace('"', "\\\"")))
-        .collect::<Vec<_>>()
-        .join(",\n");
-    let import_block = if import_json.is_empty() {
-        "  \"import\": {}".to_string()
-    } else {
-        format!("  \"import\": {{\n{}\n  }}", import_json)
-    };
-    format!(
-        "{{\n  \"guid\": \"{guid}\",\n  \"imported_at\": \"{imported_at}\",\n  \"tags\": [{tags_json}],\n{import_block}\n}}\n"
-    )
-}
-
-/// Extract the first string value for `key` from a flat JSON object.
-fn json_str(raw: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\"");
-    let start  = raw.find(&needle)?;
-    let after  = raw[start + needle.len()..].trim_start_matches(|c: char| c == ':' || c.is_whitespace());
-    if !after.starts_with('"') { return None; }
-    let inner  = &after[1..];
-    let end    = inner.find('"')?;
-    Some(inner[..end].to_string())
-}
-
-/// Extract a JSON string array for `key` from a flat JSON object.
-fn json_str_array(raw: &str, key: &str) -> Option<Vec<String>> {
-    let needle  = format!("\"{key}\"");
-    let start   = raw.find(&needle)?;
-    let after   = raw[start + needle.len()..].trim_start_matches(|c: char| c == ':' || c.is_whitespace());
-    if !after.starts_with('[') { return None; }
-    let end     = after.find(']')?;
-    let content = &after[1..end];
-    let items   = content.split(',').filter_map(|s| {
-        let s = s.trim();
-        if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-            Some(s[1..s.len()-1].to_string())
-        } else {
-            None
-        }
-    }).collect();
-    Some(items)
-}
-
-/// Extract a flat `{ "key": "value", … }` object for `key` from a JSON document.
-/// Only parses string values; non-string values are skipped.
-fn json_str_object(raw: &str, key: &str) -> Option<BTreeMap<String, String>> {
-    let needle = format!("\"{key}\"");
-    let start  = raw.find(&needle)?;
-    let after  = raw[start + needle.len()..].trim_start_matches(|c: char| c == ':' || c.is_whitespace());
-    if !after.starts_with('{') { return None; }
-    let end = after.find('}')?;
-    let inner = &after[1..end];
-    let mut map = BTreeMap::new();
-    let mut rest = inner;
-    while let Some(ks) = rest.find('"') {
-        rest = &rest[ks + 1..];
-        let ke = rest.find('"')?;
-        let k  = rest[..ke].to_string();
-        rest   = &rest[ke + 1..];
-        let colon = rest.find(':')?;
-        rest = rest[colon + 1..].trim_start_matches(|c: char| c.is_whitespace());
-        if rest.starts_with('"') {
-            rest = &rest[1..];
-            let ve = rest.find('"')?;
-            let v  = rest[..ve].to_string();
-            rest   = &rest[ve + 1..];
-            map.insert(k, v);
-        } else {
-            break;
-        }
+    let m: MetaJsonOwned = serde_json::from_str(raw).ok()?;
+    if m.guid.is_empty() {
+        return None;
     }
-    Some(map)
+    let imported_at = if m.imported_at.is_empty() { iso_now() } else { m.imported_at };
+    Some((m.guid, imported_at, m.tags, m.import))
+}
+
+fn write_meta_json(
+    guid:        &str,
+    imported_at: &str,
+    tags:        &[String],
+    import:      &BTreeMap<String, String>,
+) -> String {
+    let m = MetaJsonRef { guid, imported_at, tags, import };
+    let mut out = serde_json::to_string_pretty(&m).unwrap_or_default();
+    out.push('\n');
+    out
 }
 
 /// Normalise a path to forward-slash, no leading slash.

@@ -5,7 +5,9 @@
       "Bash(chmod +x /c/Users/tibig/Documents/gameengines/fluxion-rs/build.sh)",
       "Bash(cmd //c \"build.bat run\")",
       "Bash(cmd //c \".\\\\\\\\build.bat run\")",
-      "Bash(xargs grep *)"
+      "Bash(xargs grep *)",
+      "Bash(awk 'NR>=1080 && NR<=1100' \"c:/Users/tibig/Documents/gameengines/fluxion-rs/crates/fluxion-editor/src/main.rs\")",
+      "Bash(grep -n \"render_ui_only\\\\|^        \\\\}\\); *$\\\\|let mut do_save_scene\\\\|drain_action_signals\" \"c:/Users/tibig/Documents/gameengines/fluxion-rs/crates/fluxion-editor/src/main.rs\")"
     ]
   }
 }

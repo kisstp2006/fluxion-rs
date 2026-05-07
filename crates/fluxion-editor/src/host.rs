@@ -939,7 +939,7 @@ impl EditorHost {
                         } else {
                             if let Some(inv) = inverse {
                                 let label = format!("Edit {}.{}", edit.component, edit.field);
-                                self.undo.push(label, vec![inv]);
+                                self.undo.push_field_edit_coalesced(label, inv);
                             }
                             // Enforce single-main-camera via CameraManager.
                             if is_main_set {

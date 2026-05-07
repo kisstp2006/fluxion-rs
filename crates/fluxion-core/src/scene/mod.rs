@@ -200,6 +200,50 @@ pub fn save_scene_file(path: &str, scene: &SceneFileData) -> Result<(), String> 
     Ok(())
 }
 
+/// Atomic save with a side-channel `.recovery` file. Order:
+///
+/// 1. Write `<path>.recovery` (full new content).
+/// 2. Atomic write `<path>` via `<path>.tmp` + rename.
+/// 3. Delete `<path>.recovery`.
+///
+/// If the editor crashes between step 1 and step 2, the recovery file holds
+/// the user's intended save — [`check_recovery_file`] surfaces it on next
+/// project open. If the crash is between step 2 and 3, the recovery file is
+/// stale (older than `<path>`) and `check_recovery_file` filters it out.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_scene_file_with_recovery(path: &str, scene: &SceneFileData) -> Result<(), String> {
+    let json     = serialize_scene(scene)?;
+    let recovery = format!("{path}.recovery");
+    let tmp      = format!("{path}.tmp");
+
+    std::fs::write(&recovery, &json)
+        .map_err(|e| format!("Failed to write recovery '{recovery}': {e}"))?;
+    std::fs::write(&tmp, &json)
+        .map_err(|e| format!("Failed to write '{tmp}': {e}"))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("Failed to rename scene file: {e}"))?;
+    // Best-effort delete; a leftover .recovery is harmless because mtime
+    // ordering will mark it stale.
+    let _ = std::fs::remove_file(&recovery);
+    Ok(())
+}
+
+/// If `<path>.recovery` exists and is strictly newer than `<path>` (or `<path>`
+/// is missing entirely), return its location. The editor should surface this
+/// on project open and offer to restore.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn check_recovery_file(path: &str) -> Option<String> {
+    let recovery = format!("{path}.recovery");
+    let rec_meta = std::fs::metadata(&recovery).ok()?;
+    let rec_mtime = rec_meta.modified().ok()?;
+    match std::fs::metadata(path).ok().and_then(|m| m.modified().ok()) {
+        // Scene exists and is at least as fresh as the recovery → no restore.
+        Some(scene_mtime) if scene_mtime >= rec_mtime => None,
+        // Scene missing, or older than recovery → recovery is the right one.
+        _ => Some(recovery),
+    }
+}
+
 // ── World → SceneFileData serialization ───────────────────────────────────────
 
 /// Serialize a live [`ECSWorld`] into a [`SceneFileData`] ready for [`save_scene_file`].

@@ -39,7 +39,7 @@ use fluxion_renderer::{FluxionRenderer, RendererConfig};
 use fluxion_core::{ProjectConfig, EditorPrefs};
 #[cfg(not(target_arch = "wasm32"))]
 use fluxion_core::{load_editor_prefs, save_editor_prefs, save_project};
-use fluxion_core::scene::{load_scene_into_world, world_to_scene_data, SceneSettings, save_scene_file, load_scene_file};
+use fluxion_core::scene::{load_scene_into_world, world_to_scene_data, SceneSettings, save_scene_file_with_recovery, load_scene_file, check_recovery_file};
 
 use crate::dock::{default_dock_state, show_dock, EditorTab};
 use crate::host::EditorHost;
@@ -117,6 +117,23 @@ enum EditorApp {
 }
 
 /// All per-window state once a project is open.
+/// Destructive operation that has been deferred pending user confirmation
+/// because the current scene has unsaved changes (A2 — unsaved-changes guard).
+#[derive(Clone, Debug)]
+enum PendingAction {
+    Quit,
+    NewScene,
+    LoadScene(PathBuf),
+}
+
+/// User's resolution of the unsaved-changes modal.
+#[derive(Clone, Copy)]
+enum ModalChoice {
+    Save,
+    Discard,
+    Cancel,
+}
+
 struct EditorInner {
     window:     Arc<Window>,
     host:       EditorHost,
@@ -129,6 +146,10 @@ struct EditorInner {
     project_root: PathBuf,
     scene_path:   Option<PathBuf>,
     scene_dirty:  bool,
+    /// Set when a destructive op (Quit / NewScene / LoadScene) was attempted on
+    /// a dirty scene. The unsaved-changes modal blocks further action until the
+    /// user picks Save / Discard / Cancel.
+    pending_action: Option<PendingAction>,
 
     // Runtime state
     editor_mode:    EditorMode,
@@ -243,7 +264,14 @@ impl ApplicationHandler for EditorApp {
                 if egui_resp.consumed { return; }
 
                 match event {
-                    WindowEvent::CloseRequested => event_loop.exit(),
+                    WindowEvent::CloseRequested => {
+                        if g.scene_dirty {
+                            g.pending_action = Some(PendingAction::Quit);
+                            // Exit deferred — modal will set WANT_QUIT on user confirm.
+                        } else {
+                            event_loop.exit();
+                        }
+                    }
                     WindowEvent::ModifiersChanged(mods) => {
                         g.modifiers = mods.state();
                     }
@@ -338,7 +366,18 @@ impl EditorApp {
         let scene_path = if !choice.config.default_scene.is_empty() {
             let sp = choice.root.join(&choice.config.default_scene);
             if sp.exists() {
-                if let Ok(data) = load_scene_file(sp.to_str().unwrap_or("")) {
+                let load_target = match check_recovery_file(sp.to_str().unwrap_or("")) {
+                    Some(rec) => {
+                        log::warn!(
+                            "Recovery file detected for {:?} — loading from {} (previous session crashed mid-save)",
+                            sp.file_name().unwrap_or_default(),
+                            rec,
+                        );
+                        rec
+                    }
+                    None => sp.to_string_lossy().into_owned(),
+                };
+                if let Ok(data) = load_scene_file(&load_target) {
                     let _ = load_scene_into_world(&mut host.world, &data, true, &host.registry);
                     host.camera_manager.rebuild(&host.world);
                     log::info!("Loaded scene: {}", sp.display());
@@ -420,6 +459,7 @@ impl EditorApp {
             project_root:   choice.root,
             scene_path,
             scene_dirty:    false,
+            pending_action: None,
             editor_mode:    EditorMode::Editing,
             transform_tool: TransformTool::Translate,
             modifiers:      ModifiersState::default(),
@@ -715,6 +755,11 @@ impl EditorInner {
         let mut do_new_scene   = false;
         let mut do_load_scene: Option<std::path::PathBuf> = None;
 
+        // A2 — unsaved-changes confirmation modal. The closure writes the
+        // user's choice into `modal_choice`; we drain it after paint.
+        let pending_active = self.pending_action.is_some();
+        let mut modal_choice: Option<ModalChoice> = None;
+
         let result = self.renderer.render_ui_only(|device, queue, encoder, view| {
             ui_shell.paint(&window, device, queue, encoder, view, w, h, |ui| {
                 let ctx = ui.ctx().clone();
@@ -836,6 +881,30 @@ impl EditorInner {
                             });
                     }
                 }
+
+                // ── Unsaved-changes confirmation modal (A2) ──────────────
+                // Drawn last so it overlays everything else. While shown,
+                // background panels are still interactive via egui — that's
+                // acceptable; the modal is rendered every frame and dismissed
+                // only by an explicit Save / Discard / Cancel click.
+                if pending_active {
+                    egui::Window::new("Unsaved Changes")
+                        .id(egui::Id::new("__fluxion_unsaved_changes__"))
+                        .collapsible(false)
+                        .resizable(false)
+                        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                        .show(&ctx, |ui| {
+                            ui.set_min_width(360.0);
+                            ui.label("The current scene has unsaved changes.");
+                            ui.label("What do you want to do?");
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Save").clicked()    { modal_choice = Some(ModalChoice::Save); }
+                                if ui.button("Discard").clicked() { modal_choice = Some(ModalChoice::Discard); }
+                                if ui.button("Cancel").clicked()  { modal_choice = Some(ModalChoice::Cancel); }
+                            });
+                        });
+                }
             })
         });
 
@@ -845,7 +914,13 @@ impl EditorInner {
                 "new_scene"      => do_new_scene  = true,
                 "open_scene"     => do_open_scene = true,
                 "save_scene"     => do_save_scene = true,
-                "exit"           => WANT_QUIT.store(true, Ordering::Relaxed),
+                "exit"           => {
+                    if self.scene_dirty {
+                        self.pending_action = Some(PendingAction::Quit);
+                    } else {
+                        WANT_QUIT.store(true, Ordering::Relaxed);
+                    }
+                }
                 "rescan_assets"  => {
                     self.host.asset_db.scan(&self.project_root);
                     self.host.physmat_cache.clear();
@@ -1233,6 +1308,29 @@ impl EditorInner {
             self.load_scene_from_path(path);
         }
 
+        // A2 — resolve the user's unsaved-changes modal choice (after the
+        // paint closure's borrows have been released, so we can call
+        // `self.save_scene()` etc.).
+        match modal_choice {
+            Some(ModalChoice::Save) => {
+                self.save_scene();
+                // save_scene clears scene_dirty on success; only execute the
+                // pending action if the save actually succeeded, otherwise
+                // leave pending_action set so the modal stays open next frame.
+                if !self.scene_dirty {
+                    self.execute_pending_action();
+                }
+            }
+            Some(ModalChoice::Discard) => {
+                self.scene_dirty = false;
+                self.execute_pending_action();
+            }
+            Some(ModalChoice::Cancel) => {
+                self.pending_action = None;
+            }
+            None => {}
+        }
+
         // ── Settings saves (drain dirty flags written by Rune settings panel) ──
         {
             let (proj_save, prefs_save) = crate::rune_bindings::drain_settings_saves();
@@ -1309,7 +1407,7 @@ impl EditorInner {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "scene".to_string());
         let data = world_to_scene_data(&self.host.world, &self.host.registry, scene_name, settings, None);
-        match save_scene_file(path.to_str().unwrap_or(""), &data) {
+        match save_scene_file_with_recovery(path.to_str().unwrap_or(""), &data) {
             Ok(()) => {
                 self.scene_dirty = false;
                 log::info!("Scene saved to {}", path.display());
@@ -1329,6 +1427,10 @@ impl EditorInner {
     }
 
     pub fn new_scene(&mut self) {
+        if self.scene_dirty {
+            self.pending_action = Some(PendingAction::NewScene);
+            return;
+        }
         self.host.world.clear();
         host::EditorHost::spawn_default_scene_pub(&mut self.host.world);
         self.host.camera_manager.rebuild(&self.host.world);
@@ -1337,8 +1439,40 @@ impl EditorInner {
         log::info!("New scene created");
     }
 
+    /// Resolve the pending destructive action queued by [`PendingAction`].
+    /// Caller must have either saved the scene (clearing `scene_dirty`) or
+    /// explicitly discarded changes (manually clearing `scene_dirty`) before
+    /// invoking — otherwise `new_scene` / `load_scene_from_path` will re-queue.
+    fn execute_pending_action(&mut self) {
+        let Some(action) = self.pending_action.take() else { return; };
+        match action {
+            PendingAction::Quit => WANT_QUIT.store(true, Ordering::Relaxed),
+            PendingAction::NewScene => self.new_scene(),
+            PendingAction::LoadScene(p) => self.load_scene_from_path(p),
+        }
+    }
+
     fn load_scene_from_path(&mut self, path: std::path::PathBuf) {
-        match load_scene_file(path.to_str().unwrap_or("")) {
+        if self.scene_dirty {
+            self.pending_action = Some(PendingAction::LoadScene(path));
+            return;
+        }
+        // Crash-recovery: if a `.recovery` sidecar exists and is newer than the
+        // scene file, the previous editor session crashed mid-save. Load from
+        // the recovery copy and warn — the user's most recent in-flight edits
+        // are there, not in the on-disk scene file.
+        let load_path: std::path::PathBuf = match check_recovery_file(path.to_str().unwrap_or("")) {
+            Some(rec) => {
+                log::warn!(
+                    "Recovery file detected for {:?} — loading from {} (previous session crashed mid-save)",
+                    path.file_name().unwrap_or_default(),
+                    rec,
+                );
+                std::path::PathBuf::from(rec)
+            }
+            None => path.clone(),
+        };
+        match load_scene_file(load_path.to_str().unwrap_or("")) {
             Ok(data) => {
                 self.host.world.clear();
                 if let Err(e) = load_scene_into_world(

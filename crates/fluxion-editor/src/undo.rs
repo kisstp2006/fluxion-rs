@@ -9,9 +9,15 @@
 // inverse, apply the undo action, push redo.
 // ============================================================
 
+use std::time::Instant;
+
 use crate::rune_bindings::PendingEdit;
 use fluxion_core::scene::SerializedComponent;
 use fluxion_core::{ComponentRegistry, ECSWorld, EntityId};
+
+/// Window in which consecutive field edits on the same `(entity, component, field)`
+/// tuple are coalesced into a single undo entry. Tuned for slider/gizmo drags.
+const COALESCE_WINDOW_MS: u128 = 250;
 
 /// Full snapshot of an entity — enough to recreate it from scratch.
 #[derive(Clone)]
@@ -115,6 +121,10 @@ pub struct UndoStack {
     undos: Vec<UndoEntry>,
     redos: Vec<UndoEntry>,
     capacity: usize,
+    /// Wall-clock time of the most recent push, used by [`push_field_edit_coalesced`]
+    /// to decide whether a new edit on the same field should merge into the
+    /// previous entry (drag) or start a fresh entry (discrete click).
+    last_push_at: Option<Instant>,
 }
 
 impl UndoStack {
@@ -123,6 +133,7 @@ impl UndoStack {
             undos:    Vec::new(),
             redos:    Vec::new(),
             capacity: 200,
+            last_push_at: None,
         }
     }
 
@@ -133,6 +144,7 @@ impl UndoStack {
         if self.undos.len() > self.capacity {
             self.undos.remove(0);
         }
+        self.last_push_at = Some(Instant::now());
     }
 
     /// Convenience: push a field-edit undo (backwards compat with existing callers).
@@ -141,6 +153,41 @@ impl UndoStack {
             return;
         }
         self.push_action(label, UndoAction::FieldEdits(inverse));
+    }
+
+    /// Push a single field-edit inverse with temporal coalescing.
+    ///
+    /// If the previous undo entry was a single-field `FieldEdits` on the same
+    /// `(entity, component, field)` tuple AND was pushed within
+    /// [`COALESCE_WINDOW_MS`], the new push is dropped — the existing inverse
+    /// already points to the original pre-drag value, which is what undo should
+    /// restore.
+    ///
+    /// Use this for slider / gizmo drags that fire many edits per second.
+    /// The 200-entry undo cap (line 125) used to exhaust in seconds; now a
+    /// single drag occupies a single entry.
+    pub fn push_field_edit_coalesced(
+        &mut self,
+        label:   impl Into<String>,
+        inverse: PendingEdit,
+    ) {
+        let now = Instant::now();
+        if let (Some(last_at), Some(last_entry)) = (self.last_push_at, self.undos.last()) {
+            if now.duration_since(last_at).as_millis() < COALESCE_WINDOW_MS {
+                if let UndoAction::FieldEdits(prev) = &last_entry.action {
+                    if prev.len() == 1
+                        && prev[0].entity    == inverse.entity
+                        && prev[0].component == inverse.component
+                        && prev[0].field     == inverse.field
+                    {
+                        // Coalesce: keep the original inverse, just slide the window.
+                        self.last_push_at = Some(now);
+                        return;
+                    }
+                }
+            }
+        }
+        self.push_action(label, UndoAction::FieldEdits(vec![inverse]));
     }
 
     pub fn can_undo(&self) -> bool { !self.undos.is_empty() }
